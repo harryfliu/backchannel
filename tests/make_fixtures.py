@@ -49,18 +49,19 @@ ME_NAME = "Harry Liu"
 CONTACTS: list[dict[str, Any]] = [
     dict(key="jordan", first="Jordan", last="Park", phones=["(415) 555-0134"], emails=["Jordan.Park@icloud.example"], photo="thumb"),
     dict(key="priya", first="Priya", last="Natarajan", phones=["+1 415-555-0178"], photo="image"),
-    dict(key="mom", first="Linda", last="Liu", nickname="Mom", phones=["+1 (510) 555-0122"], photo="thumb"),
-    dict(key="dad", first="David", last="Liu", nickname="Dad", phones=["510.555.0123"]),
-    dict(key="grace", first="Grace", last="Liu", phones=["(628) 555-0190"]),
+    dict(key="mom", first="Linda", last="Liu", nickname="Mom", phones=["+1 (510) 555-0122"], photo="external"),
+    dict(key="dad", first="David", last="Liu", nickname="Dad", phones=["510.555.0123"], photo="broken"),
+    dict(key="grace", first="Grace", last="Liu", phones=["(628) 555-0190"], photo="garbage"),
     dict(key="marcus", first="Marcus", last="Webb", org="Webb Renovations", phones=["415-555-0161"]),
-    dict(key="ellie", first="Ellie", last="Chen", phones=["(650) 555-0147"]),
+    dict(key="ellie", first="Ellie", last="Chen", phones=["(650) 555-0147"], photo="imagedata"),
     dict(key="sam", first="Sam", last="Rivera", phones=["(415) 555-0112"]),
     dict(key="tomas", first="Tomás", last="Ortega", phones=["(415) 555-0118"]),
-    dict(key="kevin", first="Kevin", last="Huang", phones=["(415) 555-0126"]),
+    dict(key="kevin", first="Kevin", last="Huang", phones=["(415) 555-0126"], photo="tiff"),
     dict(key="aisha", first="Aisha", last="Bello", phones=["(415) 555-0139"]),
     dict(key="ben", first="Ben", last="Carter", phones=["(415) 555-0143"], source="local"),
     dict(key="sunset", org="Sunset Auto Repair", phones=["(415) 555-0170"], source="local"),
-    dict(key="me", first="Harry", last="Liu", phones=["(510) 555-0100"], emails=[ME_EMAIL], source="root"),
+    dict(key="me", first="Harry", last="Liu", phones=["(510) 555-0100"], emails=[ME_EMAIL], source="root",
+         photo="thumb_png"),
 ]
 
 # chat.db handle ids (E.164 / lowercase email / short code) for everyone who texts
@@ -124,19 +125,37 @@ def write_addressbook(out: Path) -> dict[str, str]:
         record = pk[source]
         unique = det_uuid(f"contact:{contact['key']}") + ":ABPerson"
         unique_ids[contact["key"]] = unique
-        thumb = None
-        if contact.get("photo") == "thumb":
-            thumb = b"\x01" + avatar_jpeg(index)  # real thumbnails carry a leading format byte
-        elif contact.get("photo") == "image":
+        # Core Data binary storage: 0x01 + inline bytes, or 0x02 + a UUID naming a file in
+        # .AddressBook-v22_SUPPORT/_EXTERNAL_DATA/. Older cards use Images/<unique id>.
+        thumb = image_data = None
+        kind = contact.get("photo")
+        if kind == "thumb":
+            thumb = b"\x01" + avatar_jpeg(index)
+        elif kind == "thumb_png":
+            thumb = b"\x01" + media_gen.png(48, 48, lambda x, y: (40, 90 + y, 160 + x))
+        elif kind == "image":
             images = sources[source].parent / "Images"
             images.mkdir(parents=True, exist_ok=True)
             (images / unique.split(":")[0]).write_bytes(avatar_jpeg(index))
+        elif kind in ("external", "broken"):
+            ref = det_uuid(f"external:{contact['key']}")
+            thumb = b"\x02" + ref.encode() + b"\x00"
+            if kind == "external":
+                external = sources[source].parent / ".AddressBook-v22_SUPPORT" / "_EXTERNAL_DATA"
+                external.mkdir(parents=True, exist_ok=True)
+                (external / ref).write_bytes(avatar_jpeg(index))
+        elif kind == "garbage":
+            thumb = b"\x07bplist00 not an image \xff\xd8 trailing junk" + bytes(range(40))
+        elif kind == "tiff":
+            thumb = b"\x01" + media_gen.tiff(16, 16, (120, 180, 90))
+        elif kind == "imagedata":
+            image_data = b"\x01" + media_gen.png(40, 40, lambda x, y: (250, 120 + x, 90 + y))
         conn.execute(
             """INSERT INTO ZABCDRECORD (Z_PK, Z_ENT, Z_OPT, ZFIRSTNAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION,
-                   ZDISPLAYFLAGS, ZUNIQUEID, ZTHUMBNAILIMAGEDATA, ZME, ZCREATIONDATE, ZMODIFICATIONDATE)
-               VALUES (?, 22, 1, ?, ?, ?, ?, ?, ?, ?, ?, 700000000, 780000000)""",
+                   ZDISPLAYFLAGS, ZUNIQUEID, ZTHUMBNAILIMAGEDATA, ZIMAGEDATA, ZME, ZCREATIONDATE, ZMODIFICATIONDATE)
+               VALUES (?, 22, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 700000000, 780000000)""",
             (record, contact.get("first"), contact.get("last"), contact.get("nickname"), contact.get("org"),
-             1 if contact.get("org") and not contact.get("first") else 0, unique, thumb,
+             1 if contact.get("org") and not contact.get("first") else 0, unique, thumb, image_data,
              1 if contact["key"] == "me" else 0),
         )
         for order, phone in enumerate(contact.get("phones", [])):
@@ -228,7 +247,8 @@ class ChatBuilder:
         self.manifest["chats"][key] = {"rowid": rowid, "guid": guid}
 
     def _attachment(self, msg_guid: str, part: int, name: str, data: bytes | None, mime: str | None,
-                    uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float) -> dict:
+                    uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float,
+                    **columns: Any) -> dict:
         guid = f"at_{part}_{msg_guid}"
         if data is None:  # offloaded to iCloud: the row exists, the file doesn't
             filename = f"~/Library/Messages/Attachments/{fakedb.attachment_relpath(guid, name)}"
@@ -238,7 +258,7 @@ class ChatBuilder:
         self.manifest["attachments"][f"{msg_guid}:{part}"] = guid
         return {"guid": guid, "filename": filename, "mime_type": mime, "uti": uti, "transfer_name": name,
                 "total_bytes": size, "is_sticker": int(sticker), "is_outgoing": int(outgoing),
-                "transfer_state": 5 if data is not None else 0, "created_date": unix_to_apple_ns(when)}
+                "transfer_state": 5 if data is not None else 0, "created_date": unix_to_apple_ns(when), **columns}
 
     def msg(self, chat_key: str, sender: str, text: str | None, when: float, *, label: str | None = None,
             unread: bool = False, attachments: list[tuple] = (), mentions: list[tuple[int, int, str]] = (),
@@ -422,7 +442,7 @@ def build_story(b: ChatBuilder) -> None:
           message_summary_info=edit_history("yes!! bringing it saturday", "yes!! bringing it sunday", sent, sent + 95))
     b.tapback("jordan", "me", "j_bring", 2001, b.day(6, 18, 34))
     b.msg("jordan", "jordan", "the new place 🏠", b.day(2, 12, 10), label="j_place",
-          attachments=[("IMG_4821.HEIC", media_gen.heic_placeholder(4032, 3024), HEIC, "public.heic")])
+          attachments=[("IMG_4821.HEIC", media_gen.heic_iphone(4032, 3024, turns=1), HEIC, "public.heic")])
     b.tapback("jordan", "me", "j_place", 2000, b.day(2, 12, 14))
     unsent_at = b.day(2, 12, 15)
     b.msg("jordan", "me", None, unsent_at, label="j_unsent", attributedBody=None, date_edited=unix_to_apple_ns(unsent_at + 30),
@@ -471,6 +491,11 @@ def build_story(b: ChatBuilder) -> None:
     # -- Ellie: video + custom emoji tapback --------------------------------------------------
     b.msg("ellie", "ellie", "omg did you see this", b.day(7, 22, 10),
           attachments=[("IMG_0937.MOV", media_gen.mov_placeholder(1920, 1080), MOV, "com.apple.quicktime-movie")])
+    genmoji = media_gen.png(64, 64, lambda x, y: (240, 200, 60) if (x - 32) ** 2 + (y - 32) ** 2 < 700 else (255, 255, 255))
+    b.msg("ellie", "ellie", None, b.day(7, 22, 12), label="e_genmoji",
+          attachments=[("Genmoji.png", genmoji, "image/png", "public.png",
+                        {"emoji_image_content_identifier": "genmoji:" + det_uuid("genmoji-dog"),
+                         "emoji_image_short_description": "dog wearing sunglasses"})])
     b.msg("ellie", "me", "LOL", b.day(7, 22, 15), label="e_lol")
     b.tapback("ellie", "ellie", "e_lol", 2006, b.day(7, 22, 16), emoji="🔥", label="e_fire")
 

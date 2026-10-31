@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Conversation } from '../api/types'
 import { fileSize, timeShort, whenLabel } from '../lib/format'
 import { Icon } from '../lib/icons'
-import { attachmentKind, clearDrafts, draftKey, requestDrafts, sendFiles, sendMessage, setDraft, useStore } from '../state/store'
+import { EMOJI } from '../lib/emoji'
+import { attachmentKind, clearDrafts, draftKey, requestDrafts, sendFiles, sendMessage, setDraft, stageImageForSend, useStore } from '../state/store'
+import { EmojiPicker } from './EmojiPicker'
 import { Menu, Modal, useMenu } from './common'
 
-const EMOJI = ['😂', '❤️', '👍', '🙏', '😭', '🔥', '🎉', '😅', '🥹', '😍', '🫡', '🙌', '👀', '💯', '🤝', '😮', '🤔', '😴', '🥳', '🍕', '☕', '🏃', '⚽', '🦃', '🎃', '🍰', '🚗', '🏠', '✅', '❌']
 
 export function Composer({ c, threadRootId = null, compact = false }: { c: Conversation; threadRootId?: string | null; compact?: boolean }) {
   const key = draftKey(c.id, threadRootId)
@@ -15,6 +16,10 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
   const [text, setText] = useState(draft)
   const ta = useRef<HTMLTextAreaElement>(null)
   const emoji = useMenu()
+  const customEmoji = useStore((s) => s.customEmoji)
+  const [caret, setCaret] = useState(0)
+  const [pick, setPick] = useState(0)
+  const [dismissed, setDismissed] = useState<string | null>(null)
   const schedule = useMenu()
   const [customOpen, setCustomOpen] = useState(false)
   const [files, setFiles] = useState<File[]>([])
@@ -70,6 +75,50 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
   }
   const ready = !!text.trim() || files.length > 0
 
+  // ":par" before the caret suggests emoji, Slack-style. Custom emoji come first.
+  const token = useMemo(() => {
+    const m = text.slice(0, caret).match(/(^|\s):([a-z0-9_+-]{2,40})$/i)
+    return m ? m[2].toLowerCase() : null
+  }, [text, caret])
+  const suggestions = useMemo(() => {
+    if (!token || token === dismissed) return []
+    const rank = (name: string) => (name.startsWith(token) ? 0 : name.includes(token) ? 1 : 2)
+    const mine = canAttach
+      ? customEmoji
+          .filter((e) => rank(e.name) < 2)
+          .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
+          .slice(0, 5)
+          .map((e) => ({ kind: 'custom' as const, name: e.name, url: e.url }))
+      : []
+    const std = EMOJI.filter(([n]) => rank(n) < 2)
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .slice(0, 8 - mine.length)
+      .map(([name, char]) => ({ kind: 'unicode' as const, name, char }))
+    return [...mine, ...std]
+  }, [token, dismissed, customEmoji, canAttach])
+  useEffect(() => setPick(0), [token])
+
+  const accept = (i: number) => {
+    const sug = suggestions[i]
+    if (!sug || !token) return
+    const start = caret - token.length - 1
+    const before = text.slice(0, start)
+    const after = text.slice(caret)
+    if (sug.kind === 'unicode') {
+      const next = before + sug.char + ' ' + after
+      update(next)
+      const pos = before.length + sug.char.length + 1
+      requestAnimationFrame(() => {
+        ta.current?.setSelectionRange(pos, pos)
+        setCaret(pos)
+      })
+    } else {
+      update(before + after)
+      setCaret(before.length)
+      void stageImageForSend(c.id, sug.url, sug.name)
+    }
+  }
+
   const insert = (s: string) => {
     const el = ta.current
     if (!el) return update(text + s)
@@ -84,7 +133,8 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
   }
 
   const who = c.kind === 'dm' ? c.participants[0]?.name : c.title
-  const placeholder = threadRootId ? 'Reply…' : c.service === 'SMS' ? `Text message to ${who}` : `Message ${c.isNamed ? '#' : ''}${who}`
+  const hash = c.isNamed && !c.title.startsWith('#') ? '#' : ''
+  const placeholder = threadRootId ? 'Reply…' : c.service === 'SMS' ? `Text message to ${who}` : `Message ${hash}${who}`
 
   const presets = schedulePresets()
 
@@ -123,6 +173,28 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
         </div>
       )}
       <div className={`composer ${c.service === 'SMS' ? 'is-sms' : ''}`}>
+        {suggestions.length > 0 && (
+          <div className="emoji-suggest" role="listbox" aria-label="Emoji suggestions">
+            {suggestions.map((sug, i) => (
+              <button
+                key={sug.kind + sug.name}
+                type="button"
+                role="option"
+                aria-selected={i === pick}
+                className={`emoji-suggest-row ${i === pick ? 'is-active' : ''}`}
+                onMouseEnter={() => setPick(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  accept(i)
+                }}
+              >
+                {sug.kind === 'custom' ? <img src={sug.url} alt="" /> : <span className="emoji-suggest-char">{sug.char}</span>}
+                <span>:{sug.name}:</span>
+                {sug.kind === 'custom' && <span className="emoji-suggest-note">sends as a picture</span>}
+              </button>
+            ))}
+          </div>
+        )}
         {files.length > 0 && (
           <div className="pending-files">
             {files.map((f, i) => (
@@ -151,13 +223,34 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
           rows={1}
           placeholder={placeholder}
           aria-label={placeholder}
-          onChange={(e) => update(e.target.value)}
+          onChange={(e) => {
+            update(e.target.value)
+            setCaret(e.target.selectionStart ?? e.target.value.length)
+          }}
+          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onPaste={(e) => {
             if (!canAttach || e.clipboardData.files.length === 0) return
             e.preventDefault()
             setFiles((cur) => [...cur, ...Array.from(e.clipboardData.files)])
           }}
           onKeyDown={(e) => {
+            if (suggestions.length) {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault()
+                setPick((p) => (p + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length)
+                return
+              }
+              if ((e.key === 'Enter' || e.key === 'Tab') && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                accept(pick)
+                return
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                setDismissed(token)
+                return
+              }
+            }
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               submit()
@@ -195,7 +288,7 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
             className="ai-btn"
             onClick={() => requestDrafts(c.id, threadRootId)}
             disabled={ai?.loading}
-            title={aiEnabled ? 'Draft a reply in your voice' : 'Needs ANTHROPIC_API_KEY on your Mac'}
+            title={aiEnabled ? 'Draft a reply in your voice' : 'Needs Claude Code (the claude command) on your Mac'}
           >
             <Icon name="sparkles" size={15} /> Draft reply
           </button>
@@ -217,30 +310,8 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
           </div>
         </div>
       </div>
-      {threadRootId && <p className="composer-note">Goes out as a regular text. iMessage doesn’t let other apps send threaded replies, so it stays threaded here only.</p>}
-      {emoji.anchor && (
-        <Menu
-          anchor={emoji.anchor}
-          onClose={emoji.close}
-          items={[]}
-          header={
-            <div className="emoji-grid">
-              {EMOJI.map((e) => (
-                <button
-                  key={e}
-                  type="button"
-                  onClick={() => {
-                    insert(e)
-                    emoji.close()
-                  }}
-                >
-                  {e}
-                </button>
-              ))}
-            </div>
-          }
-        />
-      )}
+      {threadRootId && <p className="composer-note">Sends as a regular text; it stays threaded here.</p>}
+      {emoji.anchor && <EmojiPicker anchor={emoji.anchor} cid={c.id} onUnicode={insert} onClose={emoji.close} allowImages={canAttach} />}
       {schedule.anchor && (
         <Menu
           anchor={schedule.anchor}

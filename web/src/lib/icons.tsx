@@ -35,6 +35,7 @@ const paths: Record<string, ReactNode> = {
       <path d="M12 5v14" />
     </>
   ),
+  minus: <path d="M5 12h14" />,
   home: (
     <>
       <path d="M3 10.5 12 3l9 7.5V20a1.5 1.5 0 0 1-1.5 1.5H15v-6.5H9v6.5H4.5A1.5 1.5 0 0 1 3 20z" />

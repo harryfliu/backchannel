@@ -146,6 +146,8 @@ function image(src: string, name: string, w = 800, h = 600): Attachment {
     width: w,
     height: h,
     isSticker: false,
+    isGenmoji: false,
+    emojiDescription: null,
     missing: false,
   }
 }
@@ -162,6 +164,8 @@ function file(name: string, kind: Attachment['kind'], size: number, mimeType: st
     width: thumb ? 800 : null,
     height: thumb ? 600 : null,
     isSticker: false,
+    isGenmoji: false,
+    emojiDescription: null,
     missing: false,
   }
 }

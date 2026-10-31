@@ -196,3 +196,55 @@ def pdf(lines: list[str]) -> bytes:
         out += f"{offset:010d} 00000 n \n".encode()
     out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
     return bytes(out)
+
+
+# --------------------------------------------------------------------------- TIFF and iPhone-style HEIC
+
+
+def tiff(width: int, height: int, rgb: RGB) -> bytes:
+    """A small uncompressed RGB TIFF (little-endian)."""
+    pixels = bytes(rgb) * (width * height)
+    count = 9
+    ifd_size = 2 + 12 * count + 4
+    bps_offset = 8 + ifd_size
+    strip_offset = bps_offset + 6
+
+    def entry(tag: int, kind: int, n: int, value: int) -> bytes:
+        field = struct.pack("<HH", value, 0) if kind == 3 and n == 1 else struct.pack("<I", value)
+        return struct.pack("<HHI", tag, kind, n) + field
+
+    ifd = struct.pack("<H", count) + b"".join([
+        entry(256, 3, 1, width), entry(257, 3, 1, height), entry(258, 3, 3, bps_offset),
+        entry(259, 3, 1, 1), entry(262, 3, 1, 2), entry(273, 4, 1, strip_offset),
+        entry(277, 3, 1, 3), entry(278, 3, 1, height), entry(279, 4, 1, len(pixels)),
+    ]) + struct.pack("<I", 0)
+    return b"II*\x00" + struct.pack("<I", 8) + ifd + struct.pack("<HHH", 8, 8, 8) + pixels
+
+
+def heic_iphone(width: int, height: int, turns: int = 1, tiles: int = 48) -> bytes:
+    """HEIC laid out like an iPhone photo: 512x512 tile and thumbnail ispe boxes come
+    before the primary grid's full-size ispe; the primary also carries an irot."""
+    ftyp = _box(b"ftyp", b"heic" + struct.pack(">I", 0) + b"mif1heic")
+    hdlr = _fullbox(b"hdlr", 0, 0, b"\x00\x00\x00\x00pict" + b"\x00" * 12 + b"\x00")
+    grid_item, thumb_item = tiles + 1, tiles + 2
+    pitm = _fullbox(b"pitm", 0, 0, struct.pack(">H", grid_item))
+    ipco = _box(b"ipco", b"".join([
+        _fullbox(b"ispe", 0, 0, struct.pack(">II", 512, 512)),       # 1: tiles
+        _fullbox(b"ispe", 0, 0, struct.pack(">II", 320, 240)),       # 2: thumbnail
+        _fullbox(b"ispe", 0, 0, struct.pack(">II", width, height)),  # 3: the full image
+        _box(b"irot", bytes([turns & 0x03])),                        # 4: rotation
+    ]))
+    entries = [struct.pack(">HB", item, 1) + b"\x81" for item in range(1, tiles + 1)]
+    entries.append(struct.pack(">HB", grid_item, 2) + b"\x83\x84")
+    entries.append(struct.pack(">HB", thumb_item, 1) + b"\x02")
+    ipma = _fullbox(b"ipma", 0, 0, struct.pack(">I", len(entries)) + b"".join(entries))
+    meta = _fullbox(b"meta", 0, 0, hdlr + pitm + _box(b"iprp", ipco + ipma))
+    return ftyp + meta + _box(b"mdat", bytes(range(256)) * 16)
+
+
+def heic_without_pitm(sizes: list[tuple[int, int]]) -> bytes:
+    """HEIC whose meta has ispe boxes but no pitm/ipma (exercises the largest-ispe fallback)."""
+    ftyp = _box(b"ftyp", b"heic" + struct.pack(">I", 0) + b"mif1heic")
+    ipco = _box(b"ipco", b"".join(_fullbox(b"ispe", 0, 0, struct.pack(">II", w, h)) for w, h in sizes))
+    meta = _fullbox(b"meta", 0, 0, _box(b"iprp", ipco))
+    return ftyp + meta

@@ -45,7 +45,7 @@ def test_503_without_an_api_key(rw, monkeypatch):
     assert draft.status_code == 503 and "ANTHROPIC_API_KEY" in draft.json()["error"]
     catchup = rw.client.get("/api/ai/catchup")
     assert catchup.status_code == 503 and "ANTHROPIC_API_KEY" in catchup.json()["error"]
-    assert rw.get("/api/health")["ai"] == {"enabled": False, "model": None}
+    assert rw.get("/api/health")["ai"] == {"enabled": False, "model": None, "backend": None}
 
 
 def test_draft_prompt_and_request(ai):

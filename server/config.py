@@ -36,7 +36,10 @@ DEFAULTS: dict[str, Any] = {
     "send_mode": "applescript",
     "me": {"name": None, "handles": []},
     "models": {"draft": "claude-haiku-5-5", "catchup": "claude-sonnet-5-5"},
+    "models_cli": {"draft": "haiku", "catchup": "sonnet"},
+    "claude_bin": None,
     "ai": {
+        "backend": "auto",
         "draft_effort": "low",
         "catchup_effort": "medium",
         "timeout_seconds": 90,
@@ -47,6 +50,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 SEND_MODES = ("applescript", "dry-run")
+AI_BACKENDS = ("auto", "claude-cli", "api")
 
 
 @dataclass
@@ -66,6 +70,8 @@ class Settings:
     me_name: str | None
     me_handles: list[str]
     models: dict[str, str]
+    models_cli: dict[str, str]
+    claude_bin: str | None
     ai: dict[str, Any]
     dist_dir: Path
     dev_origins: list[str] = field(default_factory=list)
@@ -132,6 +138,11 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
 
     style = env.get("BACKCHANNEL_STYLE_PROFILE", raw.get("style_profile_path"))
     chief = env.get("BACKCHANNEL_CHIEF_DB", raw.get("chief_db"))
+    ai = {**DEFAULTS["ai"], **(raw.get("ai") or {})}
+    if env.get("BACKCHANNEL_AI_BACKEND"):
+        ai["backend"] = env["BACKCHANNEL_AI_BACKEND"].strip().lower()
+    if ai["backend"] not in AI_BACKENDS:
+        raise ValueError(f"ai.backend must be one of {', '.join(AI_BACKENDS)}, not {ai['backend']!r}")
 
     return Settings(
         port=int(env.get("BACKCHANNEL_PORT") or raw["port"]),
@@ -149,7 +160,9 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
         me_name=env.get("BACKCHANNEL_ME_NAME") or me.get("name") or None,
         me_handles=me_handles,
         models={**DEFAULTS["models"], **(raw.get("models") or {})},
-        ai={**DEFAULTS["ai"], **(raw.get("ai") or {})},
+        models_cli={**DEFAULTS["models_cli"], **(raw.get("models_cli") or {})},
+        claude_bin=env.get("BACKCHANNEL_CLAUDE_BIN") or raw.get("claude_bin") or None,
+        ai=ai,
         dist_dir=_expand(env.get("BACKCHANNEL_DIST_DIR") or REPO_ROOT / "web" / "dist"),
         dev_origins=_split_list(env.get("BACKCHANNEL_DEV_ORIGINS", "")),
     )

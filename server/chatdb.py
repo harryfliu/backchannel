@@ -39,7 +39,7 @@ MESSAGE_FIELDS = (
 ATTACHMENT_FIELDS = (
     "ROWID", "guid", "created_date", "filename", "uti", "mime_type", "transfer_state",
     "is_outgoing", "transfer_name", "total_bytes", "is_sticker", "hide_attachment",
-    "emoji_image_short_description",
+    "emoji_image_content_identifier", "emoji_image_short_description",
 )
 # Tapbacks, tapback removals and placed stickers never appear in timelines.
 NOT_REACTION_SQL = (

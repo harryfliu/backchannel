@@ -2,6 +2,8 @@
 // It behaves like the real server: sends get confirmed, people reply, new texts arrive.
 import type {
   Api,
+  CustomEmoji,
+  StickerItem,
   ActivityItem,
   CatchUp,
   Conversation,
@@ -29,6 +31,7 @@ import {
   scheduledSeed,
   timedArrivals,
 } from './data'
+import { emojiArt, stickerArt } from './art'
 
 const wait = (ms: number) => new Promise((res) => setTimeout(res, ms))
 const clone = <T,>(v: T): T => (typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v)))
@@ -42,6 +45,28 @@ export function createMockApi(): Api {
   const listeners = new Set<(e: ServerEvent) => void>()
   let started = false
   let nextId = 1000
+  let serverSettings = { markReadInMessages: false }
+  const seededAt = new Date(Date.now() - 20 * 86400000).toISOString()
+  const emojiItem = (name: string, url: string, mimeType = 'image/svg+xml'): CustomEmoji => ({
+    name,
+    url,
+    mimeType,
+    width: 64,
+    height: 64,
+    animated: false,
+    source: 'upload',
+    createdAt: seededAt,
+  })
+  let emoji: CustomEmoji[] = [
+    emojiItem('yay-blob', emojiArt.yayBlob),
+    emojiItem('lgtm', emojiArt.lgtm),
+    emojiItem('nice', emojiArt.nice),
+    emojiItem('hype', emojiArt.hype),
+  ]
+  const stickerList: StickerItem[] = [
+    { id: 'st-dog', kind: 'genmoji', description: 'dog wearing sunglasses', url: stickerArt.coolDog, timesUsed: 7, lastUsedAt: new Date(Date.now() - 2 * 86400000).toISOString(), sentByMe: true },
+    { id: 'st-pizza', kind: 'sticker', description: 'pizza slice', url: stickerArt.pizza, timesUsed: 4, lastUsedAt: new Date(Date.now() - 5 * 86400000).toISOString(), sentByMe: false },
+  ]
   let nextLoop = 81
 
   const emit = (e: ServerEvent) => listeners.forEach((fn) => fn(clone(e)))
@@ -185,8 +210,9 @@ export function createMockApi(): Api {
         chatDb: { path: '~/Library/Messages/chat.db', readable: true, error: null },
         contacts: { count: db.people.size },
         send: { mode: 'dry-run' },
-        ai: { enabled: true, model: 'claude-haiku-5-5' },
+        ai: { enabled: true, model: 'haiku', backend: 'claude-cli' },
         chief: { available: true },
+        messagesUi: { enabled: serverSettings.markReadInMessages, permission: 'unknown', lastResult: null, lastAt: null },
       }
     },
     async me() {
@@ -256,6 +282,8 @@ export function createMockApi(): Api {
               width: null,
               height: null,
               isSticker: false,
+              isGenmoji: false,
+              emojiDescription: null,
               missing: false,
             },
           ],
@@ -394,6 +422,39 @@ export function createMockApi(): Api {
     },
     async addChiefLoop(_cid, _mid, title) {
       return { id: nextLoop++, title }
+    },
+    async serverSettings() {
+      return { ...serverSettings }
+    },
+    async setServerSettings(patch) {
+      serverSettings = { ...serverSettings, ...patch }
+      return { ...serverSettings }
+    },
+    async customEmoji() {
+      return clone(emoji)
+    },
+    async addCustomEmoji(name, source) {
+      if (emoji.some((e) => e.name === name)) throw new Error(`:${name}: is already taken. Pick another name.`)
+      const url = 'file' in source ? URL.createObjectURL(source.file) : source.url
+      const mimeType = 'file' in source ? source.file.type || 'image/png' : 'image/gif'
+      const item: CustomEmoji = { ...emojiItem(name, url, mimeType), source: 'file' in source ? 'upload' : 'link', createdAt: new Date().toISOString() }
+      emoji = [...emoji, item]
+      return clone(item)
+    },
+    async removeCustomEmoji(name) {
+      emoji = emoji.filter((e) => e.name !== name)
+    },
+    async stickers() {
+      await wait(250)
+      return clone(stickerList)
+    },
+    async saveStickerAsEmoji(id, name) {
+      const st = stickerList.find((x) => x.id === id)
+      if (!st) throw new Error('That sticker is gone.')
+      if (emoji.some((e) => e.name === name)) throw new Error(`:${name}: is already taken. Pick another name.`)
+      const item: CustomEmoji = { ...emojiItem(name, st.url), source: 'imessage', createdAt: new Date().toISOString() }
+      emoji = [...emoji, item]
+      return clone(item)
     },
     async catchUp(refresh) {
       await wait(refresh ? 1400 : 300)

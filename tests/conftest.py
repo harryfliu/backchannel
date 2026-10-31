@@ -37,6 +37,8 @@ def settings_for(fx: Path, state: Path, **extra: str) -> Settings:
         "BACKCHANNEL_CACHE_DIR": str(state / "cache"),
         "BACKCHANNEL_STYLE_PROFILE": str(fx / "texting_style.json"),
         "BACKCHANNEL_CHIEF_DB": str(fx / "chief.db"),
+        # Never reach a real `claude` on the test machine; CLI tests opt in with a fake one.
+        "BACKCHANNEL_AI_BACKEND": "api",
         "BACKCHANNEL_SEND_MODE": "dry-run",
         "BACKCHANNEL_FAKE_DB": "1",
         "BACKCHANNEL_ME_NAME": "Harry Liu",

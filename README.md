@@ -35,8 +35,10 @@ imessage-checker sends digests.
    open it again.
 2. On your first send, macOS asks whether Backchannel may control Messages. Click **Allow**.
 3. Right-click its Dock icon › **Options › Keep in Dock**.
-4. Optional: put `ANTHROPIC_API_KEY=sk-ant-…` in `.env` to turn on **Draft reply**
-   and **Catch up**. Drafts use the texting-style profile imessage-checker already keeps.
+4. **Draft reply** and **Catch up** run through Claude Code (`claude -p`) on your
+   Claude subscription, like Chief, so there's no API key to set up. Backchannel
+   finds `claude` even when it's opened from the Dock. Drafts use the texting-style
+   profile imessage-checker already keeps.
 
 Building the app needs Apple's command line tools (`xcode-select --install`).
 The app runs the server from this folder, so leave the repo where it is. Pulling
@@ -72,11 +74,16 @@ Access instead.
 - **Chief**: profile cards show what Chief knows (birthday, open loops, notes), and
   **Add to Chief loops** turns a text into a loop.
 - Photos and files: the + button, paste, or drag onto a conversation.
+- **Custom emoji**, Slack-style: add your own (upload an image or paste a link, e.g.
+  from slackmojis.com), plus the stickers and Genmoji already in your messages. Type
+  `:name:` or use the smiley button. iMessage has no custom emoji, so they go out
+  as small pictures.
 
 **iMessage limits**
 - Other apps can't send tapbacks or true threaded replies. Everyone else's show
   up here; your thread replies go out as normal texts.
-- Reading here doesn't send read receipts or clear unread on your phone.
+- Reading here doesn't mark texts read in Messages (or on your phone), and doesn't
+  send read receipts. Backchannel does pick up reads you make elsewhere.
 - Your Mac must be awake with Backchannel running for sends, scheduled sends and reminders.
 
 ## Commands

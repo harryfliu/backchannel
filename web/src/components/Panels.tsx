@@ -44,7 +44,7 @@ function ThreadPanel({ cid, mid }: { cid: string; mid: string }) {
   if (!c) return null
   return (
     <aside className="panel" aria-label="Thread">
-      <PanelHeader title="Thread" sub={`${c.kind === 'group' && c.isNamed ? '#' : ''}${c.title}`} />
+      <PanelHeader title="Thread" sub={`${c.kind === 'group' && c.isNamed && !c.title.startsWith('#') ? '#' : ''}${c.title}`} />
       <div className="panel-scroll thread-scroll">
         {!t || t.loading ? (
           <div className="panel-loading">
@@ -170,7 +170,12 @@ function ProfilePanel({ handle }: { handle: string }) {
             <h4>Shared photos</h4>
             <div className="profile-photos">
               {photos.map((m) => (
-                <img key={m.attachment.id} src={m.attachment.thumbUrl ?? m.attachment.url} alt={m.attachment.name} />
+                <img
+                  key={m.attachment.id}
+                  src={m.attachment.thumbUrl ?? m.attachment.url}
+                  alt={m.attachment.name}
+                  onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+                />
               ))}
             </div>
           </section>

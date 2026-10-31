@@ -59,6 +59,16 @@ not be able to drive it.
 | GET | `/api/ai/catchup?refresh=0` | `CatchUp` |
 | GET | `/api/people/{handle}/chief` | `ChiefCard`, or `null` when Chief doesn't know them or isn't installed |
 | POST | `/api/chief/loops` | body `{ conversationId, messageId, title }` → `{ id, title }` |
+| GET | `/api/settings` | `ServerSettings` |
+| PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` |
+| GET | `/api/emoji` | `{ items: CustomEmoji[] }` |
+| POST | `/api/emoji` | multipart `name`, `file` → `CustomEmoji` |
+| POST | `/api/emoji/link` | body `{ name, url }` → `CustomEmoji` (the server downloads the image) |
+| DELETE | `/api/emoji/{name}` | 204 |
+| GET | `/api/emoji/{name}/image` | the emoji image |
+| GET | `/api/stickers?limit=300` | `{ items: StickerItem[] }` |
+| GET | `/api/stickers/{id}/image` | browser-friendly sticker/Genmoji image (PNG for HEIC, transparency kept) |
+| POST | `/api/stickers/{id}/save` | body `{ name }` → `CustomEmoji` |
 | GET | `/api/avatar/{handle}` | contact photo (JPEG/PNG) or 404 |
 | GET | `/api/attachments/{id}` | the file (HEIC converted to JPEG) |
 | GET | `/api/attachments/{id}/thumb` | ~800px JPEG preview, falls back to the file |
@@ -157,3 +167,33 @@ their title mentions the person's full or first name. New loops are inserted
 as `owner='harry', urgency='medium', category='imessage', autonomy_tier='ask',
 status='open'`, with `source_ref='backchannel:<message guid>'` and no calendar
 event (the same shape Chief's own meeting tool uses for undated loops).
+
+**Custom emoji.** Slack-style emoji Harry adds himself: an uploaded file or an
+image link (often from slackmojis.com; nothing is bundled). Names match
+`^[a-z0-9_+-]{2,40}$` and are unique (409 when taken). Images must really be
+images by their bytes (PNG, GIF, JPEG, WebP; HEIC is converted to PNG), at
+most 5 MB; link downloads accept http(s) only, follow at most 3 redirects, time
+out after 15 s, and never reach private or loopback addresses. Files live in
+`<state_dir>/emoji/`, metadata in state.db. iMessage can't carry custom emoji, so
+the UI sends them as image attachments through the normal file route.
+
+**Stickers and Genmoji.** `/api/stickers` lists attachments with
+`is_sticker = 1` or a Genmoji identifier (`emoji_image_content_identifier`, with
+`emoji_image_short_description` as the description), deduplicated by content
+(identifier, else file hash), counted by how often they appear, most used first.
+Files missing from disk are skipped. Message attachments carry `isGenmoji` and
+`emojiDescription` so the UI can draw Genmoji at emoji size.
+
+**Mark read in Messages (experimental, opt-in).** Apple gives other apps no way
+to mark texts read, so with `markReadInMessages` on, `POST /read` also asks the
+Messages app to do it through macOS Accessibility (System Events), but only when
+chat.db still has unread incoming messages in that conversation. It runs in the
+background, never blocks the request, at most one at a time, and gives up after
+~8 s. Strategy, in order: (1) find the conversation's row in Messages' sidebar
+by its display name, select it, and use the menu bar's Conversation › Mark as
+Read when present; (2) the row's context menu (AXShowMenu) › Mark as Read. It
+never types into Messages and never sends anything. Results go to the log and to
+`Health.messagesUi` (permission granted/denied; denied = macOS error -1719/-25211,
+"not allowed assistive access"). `./backchannel doctor --messages-ui` prints the
+Messages window's accessibility structure (roles, counts and menu titles only; no
+message text) so the script can be tuned to the user's macOS version.

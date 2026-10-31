@@ -22,6 +22,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from .imagetypes import BROWSER_IMAGES, MIME, sniff_file, sniff_format
+
 log = logging.getLogger("backchannel.media")
 
 MESSAGES_ATTACHMENTS_PREFIX = "~/Library/Messages/Attachments"
@@ -122,13 +124,117 @@ def _exif_rotated(tiff: bytes) -> bool:
     return False
 
 
-def _heif_size(data: bytes) -> tuple[int, int] | None:
-    i = data.find(b"ispe")
-    if i < 0 or i + 16 > len(data):
+def _boxes(data: bytes, start: int, end: int):
+    """(type, payload start, box end) for each ISO-BMFF box in data[start:end]; stops at bad sizes."""
+    pos = start
+    while pos + 8 <= end:
+        size, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        header = 8
+        if size == 1:
+            if pos + 16 > end:
+                return
+            size = struct.unpack(">Q", data[pos + 8 : pos + 16])[0]
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            return
+        yield kind, pos + header, pos + size
+        pos += size
+
+
+def _child(data: bytes, start: int, end: int, kind: bytes) -> tuple[int, int] | None:
+    for k, s, e in _boxes(data, start, end):
+        if k == kind:
+            return s, e
+    return None
+
+
+def _heif_primary(data: bytes) -> tuple[int, int, int] | None:
+    """(width, height, rotation quarter-turns) of the primary item: pitm → ipma → ipco."""
+    meta = _child(data, 0, len(data), b"meta")
+    if meta is None:
         return None
-    w, h = struct.unpack(">II", data[i + 8 : i + 16])
-    rot = data.find(b"irot")
-    if rot >= 0 and rot + 5 <= len(data) and data[rot + 4] & 0x03 in (1, 3):
+    body = meta[0] + 4  # FullBox version/flags
+    pitm = _child(data, body, meta[1], b"pitm")
+    iprp = _child(data, body, meta[1], b"iprp")
+    if pitm is None or iprp is None:
+        return None
+    version = data[pitm[0]]
+    primary = struct.unpack(">H" if version == 0 else ">I", data[pitm[0] + 4 : pitm[0] + (6 if version == 0 else 8)])[0]
+    ipco = _child(data, iprp[0], iprp[1], b"ipco")
+    ipma = _child(data, iprp[0], iprp[1], b"ipma")
+    if ipco is None or ipma is None:
+        return None
+    properties = list(_boxes(data, ipco[0], ipco[1]))  # 1-based indexes in ipma
+    version, flags = data[ipma[0]], int.from_bytes(data[ipma[0] + 1 : ipma[0] + 4], "big")
+    pos = ipma[0] + 4
+    (entries,) = struct.unpack(">I", data[pos : pos + 4])
+    pos += 4
+    for _ in range(entries):
+        if version < 1:
+            (item,) = struct.unpack(">H", data[pos : pos + 2])
+            pos += 2
+        else:
+            (item,) = struct.unpack(">I", data[pos : pos + 4])
+            pos += 4
+        count = data[pos]
+        pos += 1
+        indexes = []
+        for _ in range(count):
+            if flags & 1:
+                (value,) = struct.unpack(">H", data[pos : pos + 2])
+                pos += 2
+                indexes.append(value & 0x7FFF)
+            else:
+                indexes.append(data[pos] & 0x7F)
+                pos += 1
+        if item != primary:
+            continue
+        size = None
+        turns = 0
+        for index in indexes:
+            if not 1 <= index <= len(properties):
+                continue
+            kind, start, _ = properties[index - 1]
+            if kind == b"ispe":
+                size = struct.unpack(">II", data[start + 4 : start + 12])
+            elif kind == b"irot":
+                turns = data[start] & 0x03
+        return (size[0], size[1], turns) if size else None
+    return None
+
+
+def _heif_size(data: bytes) -> tuple[int, int] | None:
+    """Displayed size of a HEIC/HEIF: the primary item's ispe, rotated by its irot.
+
+    iPhone photos list 512x512 tile and thumbnail ispe boxes before the full-size
+    grid's, so the first ispe is usually wrong. Without a usable pitm/ipma, fall
+    back to the largest ispe.
+    """
+    try:
+        primary = _heif_primary(data)
+    except (struct.error, IndexError):
+        primary = None
+    if primary is not None:
+        w, h, turns = primary
+    else:
+        best = None
+        pos = 0
+        while True:
+            i = data.find(b"ispe", pos)
+            if i < 0 or i + 16 > len(data):
+                break
+            pos = i + 4
+            cw, ch = struct.unpack(">II", data[i + 8 : i + 16])
+            if cw and ch and (best is None or cw * ch > best[0] * best[1]):
+                best = (cw, ch)
+        if best is None:
+            return None
+        w, h = best
+        rot = data.find(b"irot")
+        turns = data[rot + 4] & 0x03 if rot >= 0 and rot + 5 <= len(data) else 0
+    if turns in (1, 3):
         w, h = h, w
     return (w, h) if w and h else None
 
@@ -199,6 +305,7 @@ class Media:
         self.afconvert = _which("afconvert") if self.is_mac else None
         self.qlmanage = _which("qlmanage") if self.is_mac else None
         self._dims: dict[tuple[str, float], tuple[int | None, int | None]] = {}
+        self._formats: dict[tuple[str, float, str], str | None] = {}
         self._lock = threading.Lock()
         roots = {os.path.realpath(self.attachments_root),
                  os.path.realpath(os.path.expanduser(MESSAGES_ATTACHMENTS_PREFIX))}
@@ -276,18 +383,60 @@ class Media:
             tmp.unlink(missing_ok=True)
         return False
 
+    def image_format(self, path: Path) -> str | None:
+        """The real format of an image file, judged by its bytes (cached by mtime)."""
+        try:
+            key = (str(path), path.stat().st_mtime, "fmt")
+        except OSError:
+            return None
+        with self._lock:
+            if key in self._formats:
+                return self._formats[key]
+        fmt = sniff_file(path)
+        with self._lock:
+            if len(self._formats) > 20000:
+                self._formats.clear()
+            self._formats[key] = fmt
+        return fmt
+
+    def drawable(self, path: Path | None) -> bool:
+        """Can an <img> show this file (as is, or after we convert it)?"""
+        if path is None:
+            return False
+        fmt = self.image_format(path)
+        return fmt in BROWSER_IMAGES or (fmt is not None and self.sips is not None)
+
     def full_file(self, src: Path, guid: str, mime: str) -> tuple[Path, str]:
-        """The file to serve for /attachments/{id}: HEIC→JPEG and CAF→M4A on macOS."""
-        ext = src.suffix.lower()
-        if self.sips and ext in NEEDS_JPEG:
-            out = self._cache_path(guid, "-full.jpg")
-            if self._fresh(out, src) or self._run([self.sips, "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
-                return out, "image/jpeg"
-        if self.afconvert and ext == ".caf":
+        """The file to serve for /attachments/{id}: HEIC/TIFF→JPEG and CAF→M4A on macOS.
+
+        Images are judged by their bytes, not their name (iPhones send HEIC named .JPG).
+        """
+        fmt = self.image_format(src)
+        if fmt in BROWSER_IMAGES:
+            return src, MIME[fmt]
+        if fmt is not None or src.suffix.lower() in NEEDS_JPEG:
+            if self.sips:
+                out = self._cache_path(guid, "-full.jpg")
+                if self._fresh(out, src) or self._run([self.sips, "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
+                    if sniff_file(out) == "jpeg":
+                        return out, "image/jpeg"
+            return src, MIME.get(fmt or "", mime)
+        if self.afconvert and src.suffix.lower() == ".caf":
             out = self._cache_path(guid, ".m4a")
             if self._fresh(out, src) or self._run([self.afconvert, "-f", "m4af", "-d", "aac", str(src), "{out}"], out):
                 return out, "audio/mp4"
         return src, mime
+
+    def preview_file(self, src: Path, guid: str, kind: str) -> tuple[Path, str] | None:
+        """Something an <img> can draw for /thumb: a thumbnail, else (images only) a browser-friendly full file."""
+        thumb = self.thumbnail(src, guid, kind)
+        if thumb is not None:
+            return thumb
+        if kind != "image" and self.image_format(src) is None:
+            return None  # never hand a video or document to an <img>
+        path, mime = self.full_file(src, guid, "application/octet-stream")
+        fmt = self.image_format(path)
+        return (path, MIME[fmt]) if fmt in BROWSER_IMAGES else None
 
     def thumbnail(self, src: Path, guid: str, kind: str) -> tuple[Path, str] | None:
         """~800px JPEG preview on macOS; None when we can't make one."""
@@ -296,9 +445,10 @@ class Media:
         out = self._cache_path(guid, "-thumb.jpg")
         if self._fresh(out, src):
             return out, "image/jpeg"
-        if kind == "image":
+        if kind == "image" or self.image_format(src) is not None:
             if self._run([self.sips, "-Z", "800", "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
-                return out, "image/jpeg"
+                if sniff_file(out) == "jpeg":
+                    return out, "image/jpeg"
             return None
         if kind == "video" and self.qlmanage:
             with tempfile.TemporaryDirectory(prefix="bc-thumb-") as tmpdir:
@@ -312,7 +462,8 @@ class Media:
                     return None
                 pngs = list(Path(tmpdir).glob("*.png"))
                 if pngs and self._run([self.sips, "-s", "format", "jpeg", str(pngs[0]), "--out", "{out}"], out):
-                    return out, "image/jpeg"
+                    if sniff_file(out) == "jpeg":
+                        return out, "image/jpeg"
         return None
 
     def resize_avatar(self, data: bytes, key: str) -> tuple[bytes, str] | None:
@@ -325,7 +476,9 @@ class Media:
             return out.read_bytes(), "image/jpeg"
         src.write_bytes(data)
         if self._run([self.sips, "-Z", "256", "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
-            return out.read_bytes(), "image/jpeg"
+            result = out.read_bytes()
+            if sniff_format(result[:64]) == "jpeg":
+                return result, "image/jpeg"
         return None
 
 

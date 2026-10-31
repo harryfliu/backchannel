@@ -6,6 +6,9 @@ import type {
   ActivityItem,
   CatchUp,
   ChiefCard,
+  CustomEmoji,
+  ServerSettings,
+  StickerItem,
   Conversation,
   ConversationPrefs,
   Health,
@@ -107,6 +110,14 @@ export interface State {
   chiefCards: Record<string, ChiefCard | null | 'loading' | undefined>
   /** The "Add to Chief loops" dialog. */
   chiefDraft: { cid: string; mid: string; title: string } | null
+  /** Your own emoji (Slack-style), loaded at startup. */
+  customEmoji: CustomEmoji[]
+  /** Stickers and Genmoji from your iMessage history; null until first opened. */
+  stickers: StickerItem[] | null
+  /** The "Add emoji" dialog; a sticker to save, or blank for a new one. */
+  emojiDialog: { sticker?: StickerItem } | null
+  /** Preferences that change what the Mac does (null until loaded). */
+  serverSettings: ServerSettings | null
 }
 
 // ------------------------------------------------------------------ storage
@@ -177,6 +188,10 @@ let state: State = {
   pendingOpen: null,
   chiefCards: {},
   chiefDraft: null,
+  customEmoji: [],
+  stickers: null,
+  emojiDialog: null,
+  serverSettings: null,
 }
 
 const listeners = new Set<() => void>()
@@ -457,7 +472,9 @@ export async function boot(initial?: string) {
     } else if (first) {
       openConversation(first)
     }
-    // Catch up needs the Anthropic key on the Mac; without it the view shows a plain fallback.
+    void loadCustomEmoji()
+    void api.serverSettings().then((ss) => setState({ serverSettings: ss })).catch(() => {})
+    // Catch up needs Claude on the Mac; without it the view shows a plain fallback.
     if (health?.ai.enabled) void loadCatchUp(false)
   } catch (err) {
     setState({ bootError: err instanceof Error ? err.message : String(err), booted: true })
@@ -766,6 +783,8 @@ export async function sendFiles(cid: string, files: File[]) {
           width: null,
           height: null,
           isSticker: false,
+          isGenmoji: false,
+          emojiDescription: null,
           missing: false,
         },
       ],
@@ -1023,3 +1042,111 @@ export function moveConversation(delta: 1 | -1, unreadOnly = false, order: strin
 }
 
 export { isNarrow }
+
+// ------------------------------------------------------------------ custom emoji and stickers
+
+export async function loadCustomEmoji() {
+  try {
+    const items = await api.customEmoji()
+    setState({ customEmoji: items.sort((a, b) => a.name.localeCompare(b.name)) })
+  } catch {
+    // the picker just shows none
+  }
+}
+
+export async function loadStickers(force = false) {
+  if (state.stickers && !force) return
+  try {
+    setState({ stickers: await api.stickers() })
+  } catch {
+    setState({ stickers: [] })
+  }
+}
+
+export async function addCustomEmoji(name: string, source: { file: File } | { url: string }) {
+  const item = await api.addCustomEmoji(name, source)
+  setState((s) => ({ customEmoji: [...s.customEmoji.filter((e) => e.name !== item.name), item].sort((a, b) => a.name.localeCompare(b.name)) }))
+  toast(`Added :${item.name}:`)
+  return item
+}
+
+export async function saveStickerAsEmoji(stickerId: string, name: string) {
+  const item = await api.saveStickerAsEmoji(stickerId, name)
+  setState((s) => ({ customEmoji: [...s.customEmoji.filter((e) => e.name !== item.name), item].sort((a, b) => a.name.localeCompare(b.name)) }))
+  toast(`Saved as :${item.name}:`)
+  return item
+}
+
+export async function removeCustomEmoji(name: string) {
+  setState((s) => ({ customEmoji: s.customEmoji.filter((e) => e.name !== name) }))
+  try {
+    await api.removeCustomEmoji(name)
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't remove that emoji.", 'error')
+    void loadCustomEmoji()
+  }
+}
+
+/** data: URLs are decoded here (fetching them can be blocked); everything else is fetched with our session. */
+async function urlToBlob(url: string): Promise<Blob> {
+  if (url.startsWith('data:')) {
+    const comma = url.indexOf(',')
+    const meta = url.slice(5, comma)
+    const body = url.slice(comma + 1)
+    const type = meta.split(';')[0] || 'application/octet-stream'
+    if (meta.includes(';base64')) {
+      const bin = atob(body)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      return new Blob([bytes], { type })
+    }
+    return new Blob([decodeURIComponent(body)], { type })
+  }
+  const res = await fetch(url, { credentials: 'same-origin' })
+  if (!res.ok) throw new Error(`Couldn't load that image (${res.status}).`)
+  return res.blob()
+}
+
+const EXT: Record<string, string> = { 'image/png': 'png', 'image/gif': 'gif', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/heic': 'heic' }
+
+/** Put an emoji or sticker in the composer as an attachment; iMessage carries it as a picture. */
+export async function stageImageForSend(cid: string, url: string, baseName: string) {
+  try {
+    const blob = await urlToBlob(url)
+    const ext = EXT[blob.type] ?? 'png'
+    const safe = baseName.replace(/[^a-z0-9 _+-]+/gi, '').trim().slice(0, 60) || 'sticker'
+    const file = new File([blob], `${safe}.${ext}`, { type: blob.type || 'image/png' })
+    window.dispatchEvent(new CustomEvent('bc:attach', { detail: { cid, files: [file] } }))
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't add that.", 'error')
+  }
+}
+
+// ------------------------------------------------------------------ server-side preferences
+
+export async function refreshHealth() {
+  try {
+    setState({ health: await api.health() })
+  } catch {
+    // keep the last one
+  }
+}
+
+export async function setServerSetting(patch: Partial<ServerSettings>) {
+  // In the Mac app, turning on "mark read in Messages" asks macOS for Accessibility right away.
+  if (patch.markReadInMessages && isNative) {
+    window.__bcAccessibility = (trusted) => {
+      if (!trusted) toast('Turn on Backchannel in System Settings › Privacy & Security › Accessibility, then try again.')
+    }
+    postNative({ type: 'requestAccessibility' })
+  }
+  const before = state.serverSettings
+  if (before) setState({ serverSettings: { ...before, ...patch } })
+  try {
+    setState({ serverSettings: await api.setServerSettings(patch) })
+    void refreshHealth()
+  } catch (err) {
+    setState({ serverSettings: before })
+    toast(err instanceof Error ? err.message : "Couldn't save that setting.", 'error')
+  }
+}

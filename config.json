@@ -21,7 +21,13 @@
     "draft": "claude-haiku-5-5",
     "catchup": "claude-sonnet-5-5"
   },
+  "models_cli": {
+    "draft": "haiku",
+    "catchup": "sonnet"
+  },
+  "claude_bin": null,
   "ai": {
+    "backend": "auto",
     "draft_effort": "low",
     "catchup_effort": "medium",
     "timeout_seconds": 90,

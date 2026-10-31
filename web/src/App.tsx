@@ -22,6 +22,7 @@ import { RightPanel } from './components/Panels'
 import { Rail, SidebarColumn, useSections } from './components/Sidebar'
 import { CatchUpView, ScheduledView, ThreadsView } from './components/Views'
 import {
+  AddEmojiModal,
   ChiefLoopModal,
   ComposeModal,
   openTour,
@@ -120,6 +121,7 @@ export function App() {
       <ShortcutsModal />
       <TourModal />
       <ChiefLoopModal />
+      <AddEmojiModal />
       <Toasts />
     </div>
   )

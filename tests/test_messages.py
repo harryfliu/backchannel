@@ -82,8 +82,12 @@ def test_group_events(ro):
 
 def test_attachments(ro):
     heic = ro.message("j_place")["attachments"][0]
-    assert heic["kind"] == "image" and heic["name"] == "IMG_4821.HEIC" and (heic["width"], heic["height"]) == (4032, 3024)
-    assert heic["url"] == f"/api/attachments/{heic['id']}" and heic["thumbUrl"] == heic["url"] + "/thumb"
+    # iPhone layout: tile ispe boxes come first; the primary grid is 4032x3024 rotated a quarter turn.
+    assert heic["kind"] == "image" and heic["name"] == "IMG_4821.HEIC" and (heic["width"], heic["height"]) == (3024, 4032)
+    assert heic["url"] == f"/api/attachments/{heic['id']}"
+    # Without sips (Linux) a HEIC can't become something an <img> draws, so no thumbnail is offered.
+    assert heic["thumbUrl"] == (heic["url"] + "/thumb" if ro.services.media.sips else None)
+    assert heic["isGenmoji"] is False and heic["emojiDescription"] is None
     table = ro.message("f_table")["attachments"][0]
     assert (table["kind"], table["width"], table["height"], table["missing"]) == ("image", 128, 96, False)
     missing = ro.message("f_missing")["attachments"][0]

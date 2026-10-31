@@ -357,7 +357,7 @@ function ConversationIntro({ c }: { c: Conversation }) {
         {dm
           ? `This is the start of your conversation with ${dm.name}.`
           : c.isNamed
-            ? `This is the start of #${c.title}. ${plural(c.participants.length + 1, 'person', 'people')} are in this group.`
+            ? `This is the start of ${c.title.startsWith('#') ? '' : '#'}${c.title}. ${plural(c.participants.length + 1, 'person', 'people')} are in this group.`
             : `This is the start of your group conversation with ${c.participants.map((p) => p.shortName).join(', ')}.`}
       </p>
     </div>
@@ -392,7 +392,12 @@ function MediaTab({ c }: { c: Conversation }) {
           <div className="media-grid">
             {visual.map((i) => (
               <a key={i.attachment.id} className="media-cell" href={i.attachment.url} target="_blank" rel="noreferrer" title={i.attachment.name}>
-                <img src={i.attachment.thumbUrl ?? i.attachment.url} alt={i.attachment.name} loading="lazy" />
+                <img
+                  src={i.attachment.thumbUrl ?? i.attachment.url}
+                  alt={i.attachment.name}
+                  loading="lazy"
+                  onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
+                />
                 {i.attachment.kind === 'video' && (
                   <span className="media-play is-small">
                     <Icon name="play" size={14} filled />

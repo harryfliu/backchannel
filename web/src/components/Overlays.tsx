@@ -1,13 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { isMock } from '../api/client'
 import { isNative } from '../native'
+import { EMOJI_NAME_RE, suggestEmojiName } from '../lib/emoji'
+import type { StickerItem } from '../api/types'
 import type { Conversation, SearchResult } from '../api/types'
 import { ageShort, formatHandle, timeShort } from '../lib/format'
 import { Icon } from '../lib/icons'
 import {
   addChiefLoop,
+  addCustomEmoji,
+  removeCustomEmoji,
+  saveStickerAsEmoji,
   closeSearch,
   displayName,
+  refreshHealth,
+  setServerSetting,
   getState,
   openConversation,
   openProfile,
@@ -338,7 +345,12 @@ export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen)
   const settings = useStore((s) => s.settings)
   const health = useStore((s) => s.health)
+  const serverSettings = useStore((s) => s.serverSettings)
+  useEffect(() => {
+    if (open) void refreshHealth()
+  }, [open])
   if (!open) return null
+  const ui = health?.messagesUi
   const close = () => setState({ settingsOpen: false })
   return (
     <Modal onClose={close} label="Settings" className="settings-modal">
@@ -420,6 +432,36 @@ export function SettingsModal() {
           </fieldset>
         )}
         <fieldset className="setting">
+          <legend>Read status in Messages</legend>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              id="mark-read-messages"
+              checked={!!serverSettings?.markReadInMessages}
+              disabled={!serverSettings}
+              onChange={(e) => setServerSetting({ markReadInMessages: e.target.checked })}
+            />
+            <span>
+              Also mark texts read in Messages <span className="beta-tag">Experimental</span>
+              <span className="field-help">
+                When you open a conversation here that Messages still shows as unread, Backchannel tells Messages to mark it read, which syncs to
+                your phone. It works through macOS Accessibility: allow Backchannel in System Settings › Privacy & Security › Accessibility.
+                Messages may switch to that conversation in the background.
+              </span>
+            </span>
+          </label>
+          {ui && (ui.enabled || ui.lastResult) && (
+            <p className={`field-help ui-status ${ui.permission === 'denied' ? 'is-bad' : ''}`}>
+              {ui.permission === 'denied'
+                ? 'macOS is blocking Accessibility for Backchannel. Turn it on in System Settings › Privacy & Security › Accessibility.'
+                : ui.lastResult
+                  ? `Last try: ${ui.lastResult}`
+                  : 'Nothing to mark yet. It runs the next time you open an unread conversation.'}
+            </p>
+          )}
+        </fieldset>
+        <CustomEmojiSettings />
+        <fieldset className="setting">
           <legend>Density</legend>
           <label className="toggle-row">
             <input type="checkbox" id="compact" checked={settings.compact} onChange={(e) => setSettings({ compact: e.target.checked })} />
@@ -445,7 +487,11 @@ export function SettingsModal() {
             </li>
             <li className={health?.ai.enabled ? 'is-ok' : 'is-warn'}>
               <Icon name={health?.ai.enabled ? 'check' : 'alert'} size={15} />
-              {health?.ai.enabled ? 'Drafts and catch-up are on' : 'Drafts and catch-up need ANTHROPIC_API_KEY'}
+              {health?.ai.enabled
+                ? health.ai.backend === 'claude-cli'
+                  ? 'Drafts and catch-up use Claude Code (claude -p) on your subscription'
+                  : 'Drafts and catch-up use your Anthropic API key'
+                : 'Drafts and catch-up need Claude Code (the claude command) or an API key'}
             </li>
           </ul>
         </fieldset>
@@ -547,6 +593,14 @@ const TOUR: { title: string; body: string; go: () => void }[] = [
     go: () => openView('scheduled'),
   },
   {
+    title: 'Custom emoji and stickers',
+    body: 'Add your own emoji (upload one, or paste a link from slackmojis.com) and reuse stickers and Genmoji from your messages. Type :name: or use the smiley button.',
+    go: () => {
+      openConversation('dm-jordan')
+      setTimeout(() => document.querySelector<HTMLButtonElement>('.main [aria-label="Emoji"]')?.click(), 50)
+    },
+  },
+  {
     title: 'Chief in profiles',
     body: 'Click a name to see what Chief knows: birthdays, open loops, the last time you hung out.',
     go: () => {
@@ -640,6 +694,167 @@ function ChiefLoopInner({ initial }: { initial: string }) {
           </button>
           <button type="submit" className="btn is-primary" disabled={!title.trim()}>
             Add loop
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+// ------------------------------------------------------------------ custom emoji
+
+function CustomEmojiSettings() {
+  const emoji = useStore((s) => s.customEmoji)
+  return (
+    <fieldset className="setting">
+      <legend>Custom emoji</legend>
+      {emoji.length > 0 ? (
+        <div className="emoji-manage">
+          {emoji.map((e) => (
+            <span key={e.name} className="emoji-manage-item" title={`:${e.name}:`}>
+              <img src={e.url} alt="" />
+              <span className="emoji-manage-name">:{e.name}:</span>
+              <button type="button" className="icon-btn" aria-label={`Remove :${e.name}:`} title="Remove" onClick={() => removeCustomEmoji(e.name)}>
+                <Icon name="x" size={13} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="field-help">None yet. Add your own images, or links from slackmojis.com, and send them with :name:.</p>
+      )}
+      <div>
+        <button type="button" className="btn" onClick={() => setState({ emojiDialog: {}, settingsOpen: false })}>
+          <Icon name="plus" size={14} /> Add emoji
+        </button>
+      </div>
+    </fieldset>
+  )
+}
+
+export function AddEmojiModal() {
+  const dialog = useStore((s) => s.emojiDialog)
+  if (!dialog) return null
+  return <AddEmojiInner key={dialog.sticker?.id ?? 'new'} sticker={dialog.sticker ?? null} />
+}
+
+function AddEmojiInner({ sticker }: { sticker: StickerItem | null }) {
+  const existing = useStore((s) => s.customEmoji)
+  const [mode, setMode] = useState<'upload' | 'link'>('upload')
+  const [file, setFile] = useState<File | null>(null)
+  const [url, setUrl] = useState('')
+  const [name, setName] = useState(sticker ? suggestEmojiName(sticker.description ?? sticker.kind) : '')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [filePreview, setFilePreview] = useState<string | null>(null)
+  useEffect(() => {
+    if (!file) return setFilePreview(null)
+    const u = URL.createObjectURL(file)
+    setFilePreview(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
+  const linkOk = /^https?:\/\/\S+$/i.test(url.trim())
+  const preview = sticker ? sticker.url : mode === 'upload' ? filePreview : linkOk ? url.trim() : null
+  const taken = existing.some((e) => e.name === name)
+  const nameOk = EMOJI_NAME_RE.test(name) && !taken
+  const sourceOk = sticker ? true : mode === 'upload' ? !!file : linkOk
+  const close = () => setState({ emojiDialog: null })
+
+  const save = async () => {
+    if (!nameOk || !sourceOk || saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      if (sticker) await saveStickerAsEmoji(sticker.id, name)
+      else if (mode === 'upload' && file) await addCustomEmoji(name, { file })
+      else await addCustomEmoji(name, { url: url.trim() })
+      close()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't add that emoji.")
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal onClose={close} label="Add emoji" className="small-modal add-emoji">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+      >
+        <h2 className="modal-title">{sticker ? 'Save as a custom emoji' : 'Add a custom emoji'}</h2>
+        {!sticker && (
+          <div className="segmented" role="radiogroup" aria-label="Where the image comes from">
+            <button type="button" role="radio" aria-checked={mode === 'upload'} className={mode === 'upload' ? 'is-on' : ''} onClick={() => setMode('upload')}>
+              Upload
+            </button>
+            <button type="button" role="radio" aria-checked={mode === 'link'} className={mode === 'link' ? 'is-on' : ''} onClick={() => setMode('link')}>
+              Image link
+            </button>
+          </div>
+        )}
+        <div className="add-emoji-row">
+          <div className="add-emoji-preview" aria-hidden="true">
+            {preview ? <img src={preview} alt="" /> : <Icon name="image" size={24} />}
+          </div>
+          <div className="add-emoji-fields">
+            {!sticker && mode === 'upload' && (
+              <label className="field">
+                <span>Image</span>
+                <input
+                  id="emoji-file"
+                  type="file"
+                  accept="image/png,image/gif,image/jpeg,image/webp,image/heic"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null
+                    setFile(f)
+                    if (f && !name) setName(suggestEmojiName(f.name))
+                  }}
+                />
+              </label>
+            )}
+            {!sticker && mode === 'link' && (
+              <label className="field">
+                <span>Image link</span>
+                <input
+                  id="emoji-url"
+                  type="url"
+                  placeholder="https://…/party.gif"
+                  value={url}
+                  onChange={(e) => {
+                    setUrl(e.target.value)
+                    if (!name) setName(suggestEmojiName(e.target.value))
+                  }}
+                />
+              </label>
+            )}
+            <label className="field">
+              <span>Name</span>
+              <span className="emoji-name-input">
+                <span>:</span>
+                <input id="emoji-name" value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_+-]/g, '-'))} />
+                <span>:</span>
+              </span>
+            </label>
+          </div>
+        </div>
+        <p className="field-help">
+          {taken
+            ? `:${name}: is already taken.`
+            : name && !EMOJI_NAME_RE.test(name)
+              ? 'Use 2 to 40 lowercase letters, numbers, dashes or underscores.'
+              : mode === 'link' && !sticker
+                ? 'Paste a direct image link, like the one from right-clicking an emoji on slackmojis.com › Copy Image Address.'
+                : 'Square images work best. GIFs stay animated.'}
+        </p>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="btn" onClick={close}>
+            Cancel
+          </button>
+          <button type="submit" className="btn is-primary" disabled={!nameOk || !sourceOk || saving}>
+            {saving ? 'Saving…' : 'Save emoji'}
           </button>
         </div>
       </form>

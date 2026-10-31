@@ -27,6 +27,7 @@ from .contacts import ContactBook
 from .conversations import ConversationService, NotFound, build_me, conv_title, my_handles
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
+from .imagetypes import AVATAR_IMAGES, MIME
 from .messages import MessageBuilder
 from .reminders import Reminders, later_json
 from .search import SearchIndex
@@ -117,9 +118,9 @@ class Services:
         self.token = new_token()
         self.db = ChatDB(settings.chat_db)
         self.tracker = ChangeTracker(self.db)
-        self.contacts = ContactBook(settings.addressbook_globs)
-        self.state = State(settings.state_dir / "state.db")
         self.media = Media(settings.attachments_root, settings.cache_dir)
+        self.contacts = ContactBook(settings.addressbook_globs, can_convert=self.media.sips is not None)
+        self.state = State(settings.state_dir / "state.db")
         self.hub = EventHub()
         self._full_name: str | None = None
         self.builder: MessageBuilder
@@ -211,6 +212,9 @@ def create_app(
             tasks.append(asyncio.create_task(services.watcher.run()))
             tasks.append(asyncio.create_task(services.sending.scheduler_loop()))
             tasks.append(asyncio.create_task(services.reminders.loop()))
+            if settings.ai.get("backend") in ("auto", "claude-cli"):
+                # Finding `claude` may need the login shell (a few seconds): do it now, off the request path.
+                tasks.append(asyncio.create_task(asyncio.to_thread(services.ai.cli.locate)))
             services.search.start_background()
         log.info("Backchannel %s on http://127.0.0.1:%s (send mode: %s%s)", __version__, settings.port,
                  services.sender.availability, ", fake chat.db" if settings.fake_db else "")
@@ -287,8 +291,10 @@ def create_app(
             "chatDb": {"path": str(settings.chat_db), "readable": readable, "error": error},
             "contacts": {"count": s.contacts.count},
             "send": {"mode": s.sender.availability},
-            "ai": {"enabled": s.ai.enabled, "model": settings.models.get("draft") if s.ai.enabled else None},
+            "ai": {"enabled": s.ai.backend is not None, "model": s.ai.model_label, "backend": s.ai.backend},
             "chief": {"available": s.chief.available},
+            # "Mark read in Messages" (api.md) isn't built yet: report it as off.
+            "messagesUi": {"enabled": False, "permission": "unknown", "lastResult": None, "lastAt": None},
         }
 
     @app.get("/api/me")
@@ -522,12 +528,14 @@ def create_app(
         photo = s.contacts.photo(contact)
         if photo is None:
             raise ApiError(404, "No contact photo for that handle.")
-        data, mime = photo
-        if len(data) > 200_000:
-            smaller = s.media.resize_avatar(data, contact.key.replace(":", "-"))
-            if smaller:
-                data, mime = smaller
-        return Response(content=data, media_type=mime, headers={
+        data, fmt = photo
+        if fmt not in AVATAR_IMAGES or len(data) > 200_000:
+            converted = s.media.resize_avatar(data, contact.key.replace(":", "-"))  # JPEG, 256px
+            if converted:
+                data, fmt = converted[0], "jpeg"
+            elif fmt not in AVATAR_IMAGES:
+                raise ApiError(404, "That contact photo isn't in a format Backchannel can show.")
+        return Response(content=data, media_type=MIME[fmt], headers={
             "Cache-Control": "private, max-age=3600",
             "Content-Security-Policy": "sandbox; default-src 'none'",
         })
@@ -561,12 +569,12 @@ def create_app(
     def attachment_thumb(att_id: str):
         row, path, name, mime = _attachment_file(att_id)
         kind = kind_of(row["mime_type"], row["uti"], name)
-        thumb = s.media.thumbnail(path, row["guid"], kind)
-        if thumb:
-            path, mime = thumb
+        preview = s.media.preview_file(path, row["guid"], kind)
+        if preview is None:  # never hand an <img> a video, a document or a HEIC it can't draw
+            raise ApiError(404, "There's no preview for this attachment.")
+        path, mime = preview
+        if mime == "image/jpeg" and not name.lower().endswith((".jpg", ".jpeg")):
             name = Path(name).with_suffix(".jpg").name
-        else:
-            path, mime = s.media.full_file(path, row["guid"], mime)
         mime, headers = serving_headers(mime, name)
         return FileResponse(path, media_type=mime, headers=headers)
 

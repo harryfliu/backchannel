@@ -112,6 +112,10 @@ export interface Attachment {
   width: number | null
   height: number | null
   isSticker: boolean
+  /** An iOS 18+ Genmoji (custom emoji made on device). Rendered at emoji size. */
+  isGenmoji: boolean
+  /** iMessage's description of a Genmoji or sticker, e.g. "dog wearing sunglasses". */
+  emojiDescription: string | null
   /** The file isn't on this Mac (offloaded to iCloud). */
   missing: boolean
 }
@@ -258,9 +262,53 @@ export interface Health {
   chatDb: { path: string; readable: boolean; error: string | null }
   contacts: { count: number }
   send: { mode: 'applescript' | 'dry-run' | 'unavailable' }
-  ai: { enabled: boolean; model: string | null }
+  /** backend: 'claude-cli' = `claude -p` on your Claude subscription; 'api' = ANTHROPIC_API_KEY. */
+  ai: { enabled: boolean; model: string | null; backend: 'claude-cli' | 'api' | null }
   /** Chief's database was found (profile cards + "Add to Chief loops"). */
   chief: { available: boolean }
+  /** "Also mark read in Messages" (drives the Messages app through Accessibility). */
+  messagesUi: {
+    enabled: boolean
+    /** Whether macOS lets Backchannel use Accessibility: unknown until the first try. */
+    permission: 'granted' | 'denied' | 'unknown'
+    /** The last attempt, e.g. "Marked Jordan Park read" or why it failed. */
+    lastResult: string | null
+    lastAt: string | null
+  }
+}
+
+/** Server-side preferences (they change what the Mac does, so they live on the server). */
+export interface ServerSettings {
+  /** When you open a conversation here that Messages still shows as unread, mark it read in Messages too. */
+  markReadInMessages: boolean
+}
+
+/** An emoji you added (Slack-style custom emoji). Sent through iMessage as an image. */
+export interface CustomEmoji {
+  /** Shortcode without colons: lowercase letters, digits, "-", "_", "+". */
+  name: string
+  /** Image URL (served by Backchannel). */
+  url: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  animated: boolean
+  source: 'upload' | 'link' | 'imessage'
+  createdAt: string
+}
+
+/** A sticker or Genmoji found in your iMessage history. */
+export interface StickerItem {
+  /** Attachment GUID of the newest copy in chat.db. */
+  id: string
+  kind: 'sticker' | 'genmoji'
+  description: string | null
+  /** Browser-friendly image (PNG with transparency for HEIC stickers). */
+  url: string
+  timesUsed: number
+  lastUsedAt: string
+  /** You've sent it yourself at least once. */
+  sentByMe: boolean
 }
 
 /** What Chief knows about a person, shown on their profile. */
@@ -352,6 +400,16 @@ export interface Api {
   chiefCard(handle: string): Promise<ChiefCard | null>
   /** Track a message as an open loop in Chief. */
   addChiefLoop(conversationId: string, messageId: string, title: string): Promise<{ id: number; title: string }>
+  serverSettings(): Promise<ServerSettings>
+  setServerSettings(patch: Partial<ServerSettings>): Promise<ServerSettings>
+  customEmoji(): Promise<CustomEmoji[]>
+  /** Add an emoji from a file or from an image link (e.g. slackmojis.com). */
+  addCustomEmoji(name: string, source: { file: File } | { url: string }): Promise<CustomEmoji>
+  removeCustomEmoji(name: string): Promise<void>
+  /** Stickers and Genmoji from your iMessage history, most used first. */
+  stickers(): Promise<StickerItem[]>
+  /** Copy a sticker or Genmoji into your custom emoji under a name. */
+  saveStickerAsEmoji(stickerId: string, name: string): Promise<CustomEmoji>
   /** Live updates. onStatus reports the connection so the UI can show "Reconnecting…". */
   subscribe(onEvent: (e: ServerEvent) => void, onStatus?: (s: 'open' | 'reconnecting') => void): () => void
 }
