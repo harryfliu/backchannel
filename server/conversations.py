@@ -766,8 +766,14 @@ def event_line(row: Any, directory: Directory) -> tuple[str, str] | None:
 
 
 def my_handles(configured: list[str], discovered: list[str]) -> list[str]:
+    """Configured handles first, then discovered ones in a fixed order (phone numbers, then emails).
+
+    The note-to-self conversation's id is built from the first handle, so this order must not
+    depend on which address the latest messages happened to go out from.
+    """
+    found = sorted({normalize_handle(h) or "" for h in discovered} - {""}, key=lambda h: ("@" in h, h))
     out: list[str] = []
-    for raw in [*configured, *discovered]:
+    for raw in [*configured, *found]:
         norm = normalize_handle(raw)
         if norm and norm not in out:
             out.append(norm)

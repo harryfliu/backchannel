@@ -116,3 +116,14 @@ def test_list_is_fast(ro):
     start = time.perf_counter()
     ro.get("/api/conversations")
     assert time.perf_counter() - start < 0.3
+
+
+def test_my_handles_order_is_stable_so_the_self_chat_keeps_its_id():
+    # Discovered handles come from recent outgoing messages in no fixed order; if the first one
+    # flipped, the note-to-self conversation got a new id and showed up twice in the sidebar.
+    from server.conversations import my_handles
+    a = my_handles([], ["me@icloud.example", "+15105550100"])
+    b = my_handles([], ["+15105550100", "me@icloud.example"])
+    assert a == b == ["+15105550100", "me@icloud.example"]
+    # Configured handles still come first, in the order given.
+    assert my_handles(["me@icloud.example"], ["+15105550100"]) == ["me@icloud.example", "+15105550100"]

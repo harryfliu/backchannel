@@ -980,7 +980,12 @@ def safe_titles(raw: str, private: set[str] | frozenset[str] = frozenset()) -> s
     return " | ".join(out)
 
 
-def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
+# Accessibility identifiers worth showing: developer names like "ConversationList". Anything with
+# digits, @, + or spaces could be a chat id, number or address, so it's hidden.
+_SAFE_IDENT = re.compile(r"[A-Za-z][A-Za-z._-]{0,59}")
+
+
+def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
             private: set[str] | frozenset[str] = frozenset()) -> list[str]:
     """Report lines about Messages' accessibility structure: roles, counts and menu/button titles only.
 
@@ -1018,6 +1023,16 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
         elif key == "tree" and len(parts) == 4 and parts[1].isdigit() and parts[3].isdigit():
             role = parts[2] if _ROLE.match(parts[2]) else "(other)"
             tree.append(f"    {'  ' * min(int(parts[1]), 12)}{role} ({parts[3]})")
+        elif key == "tree" and len(parts) == 9 and parts[1].isdigit() and parts[4].isdigit():
+            # depth, role, subrole, children, identifier, description length, value length, menu flag
+            depth, role, sub, kids, ident, dlen, vlen, menu = parts[1:]
+            role = role if _ROLE.match(role) else "(other)"
+            sub = f" ‹{sub}›" if sub and _ROLE.match(sub) else ""
+            ident = f" id={ident}" if _SAFE_IDENT.fullmatch(ident or "") else (" id=(hidden)" if ident else "")
+            text = "".join(f" {k}{n}" for k, n in (("desc:", dlen), ("value:", vlen)) if n.isdigit() and n != "0")
+            tree.append(f"    {'  ' * min(int(depth), 16)}{role}{sub} ({kids}){ident}{text}{' [menu]' if menu == 'menu' else ''}")
+        elif key == "skip" and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            tree.append(f"    {'  ' * min(int(parts[1]), 16)}… {parts[2]} more")
         elif key == "rows" and len(parts) == 8 and all(p.isdigit() for p in parts[1:]):
             count, desc, name, value, max_desc, max_name, max_value = parts[1:]
             lines.append(f"- row-like elements (AXRow/AXCell): {count}; with description {desc} (longest {max_desc}),"
@@ -1040,6 +1055,6 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
             role = parts[1] if _ROLE.match(parts[1]) else "(other)"
             lines.append(f"- reply field: {role}, AXValue settable: {'yes' if parts[2].lower() == 'true' else 'no'}")
     if tree:
-        lines.append("- front window (roles and child counts):")
-        lines.extend(tree[:400])
+        lines.append("- front window (role ‹subrole› (children) id=…, text lengths only):")
+        lines.extend(tree[:500])
     return lines or ["- inspection: no output"]
