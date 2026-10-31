@@ -27,8 +27,7 @@ from .config import Settings, load_dotenv, load_settings, system_full_name
 from .contacts import ContactBook
 from .conversations import ConversationService, NotFound, build_me, conv_title, my_handles
 from .emoji import EmojiError, EmojiStore, clean_name
-from .handles import format_handle
-from .messages_ui import Job, MessagesUI, Runner, osascript_runner
+from .messages_ui import Job, MessagesUI, Runner, candidate_names, osascript_runner
 from .stickers import StickerLibrary
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
@@ -357,21 +356,20 @@ def create_app(
     def media(conv_id: str, before: str | None = None, limit: int = Query(60, ge=1, le=200)):
         return s.builder.media_page(s.convs.get(conv_id), before, limit)
 
-    def _sidebar_names(conv, title: str) -> list[str]:
-        """Names Messages might show for this conversation, most specific first."""
-        names = [title]
+    def _messages_ui_job(conv, title: str) -> Job:
+        """What to look for in Messages' sidebar for this conversation."""
         if conv.kind == "dm" and conv.persons:
             person = conv.persons[0]
             contact = s.contacts.lookup(person.handle)
-            if contact is not None:
-                names += [" ".join(p for p in (contact.first, contact.last) if p), contact.nickname or "",
-                          contact.organization or ""]
-            names += [person.name, format_handle(person.handle), person.short_name]
-        out: list[str] = []
-        for name in names:
-            if name and name.strip() and name.strip() not in out:
-                out.append(name.strip())
-        return out
+            names, loose = candidate_names(
+                title,
+                full_name=" ".join(p for p in (contact.first, contact.last) if p) if contact else None,
+                nickname=contact.nickname if contact else None,
+                organization=contact.organization if contact else None,
+                person_name=person.name, handle=person.handle, short_name=person.short_name)
+        else:
+            names, loose = candidate_names(title)
+        return Job(conv.id, title, names, list(conv.chat_ids), loose)
 
     @app.post("/api/conversations/{conv_id}/read")
     def mark_read(conv_id: str):
@@ -379,8 +377,7 @@ def create_app(
         summary = s.convs.mark_read(conv)
         s.watcher.note_state_change(summary["id"])
         if s.messages_ui.enabled:  # experimental: also mark it read in Messages, in the background
-            s.messages_ui.request(Job(conv.id, summary["title"], _sidebar_names(conv, summary["title"]),
-                                      list(conv.chat_ids)))
+            s.messages_ui.request(_messages_ui_job(conv, summary["title"]))
         return summary
 
     # ------------------------------------------------------------------ server settings

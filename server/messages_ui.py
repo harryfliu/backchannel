@@ -5,8 +5,9 @@ on, `POST /read` queues a job (one worker, repeats coalesced, ~8 s timeout)
 that runs one osascript driving System Events against process "Messages":
 find the conversation's sidebar row by its display name, select it, click the
 menu bar's Conversation › Mark as Read, else the row's context menu › Mark as
-Read, else press Escape. It never types text and never sends anything.
-Candidate names are passed as argv, never put into the script source.
+Read, else press Escape. It never types text and never sends anything, and it
+only ever selects or presses rows (never buttons). Candidate names are passed
+as argv, never put into the script source.
 
 Never runs in dry-run / fake-DB mode unless a runner is injected (tests).
 """
@@ -25,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .chatdb import ChatDB, ChatDBError, NOT_REACTION_SQL
+from .handles import format_handle
 from .state import State
 from .timeutil import iso
 
@@ -37,16 +39,25 @@ DENIED = re.compile(r"-1719|-25211|assistive access", re.IGNORECASE)
 DENIED_TEXT = ("macOS hasn't let Backchannel control Messages. Allow Backchannel in System Settings › Privacy & "
                "Security › Accessibility, then try again.")
 
+# argv: "names", how many of the names may match a label's beginning, then the names, most specific first.
+# A name first has to match a whole label line (or "Name, preview, time"); only the first N (full names,
+# numbers) may then match as a prefix, so a short name like "Jordan" never picks "Jordan Lee".
+# Only rows/cells are ever selected or pressed; anything else just gets its context menu.
 MARK_READ_SCRIPT = (
     "on run argv",
-    "set candidates to rest of argv",
+    "set looseCount to 0",
+    "try",
+    "set looseCount to (item 2 of argv) as integer",
+    "end try",
+    "set candidates to {}",
+    "if (count of argv) > 2 then set candidates to items 3 thru -1 of argv",
     'tell application "System Events"',
     'if not (exists process "Messages") then return "not-running"',
     'tell process "Messages"',
     'if (count of windows) is 0 then return "no-window"',
     "set win to window 1",
-    "set els to {}",
-    "set labels to {}",
+    "set rowEls to {}",
+    "set rowLabels to {}",
     "repeat with el in (entire contents of win)",
     "try",
     "set r to role of el",
@@ -62,38 +73,30 @@ MARK_READ_SCRIPT = (
     "set lbl to lbl & ((value of el) as text) & linefeed",
     "end try",
     'if lbl is not "" then',
-    "set end of els to (contents of el)",
-    "set end of labels to lbl",
+    "set end of rowEls to (contents of el)",
+    "set end of rowLabels to lbl",
     "end if",
     "end if",
     "end try",
     "end repeat",
+    "end tell",
+    "end tell",
     "set foundRow to missing value",
-    "repeat with c in candidates",
-    "set needle to c as text",
-    "if (length of needle) > 0 then",
-    "repeat with i from 1 to (count of els)",
-    "repeat with part in paragraphs of (item i of labels)",
-    "if (part as text) starts with needle then",
-    "set foundRow to item i of els",
-    "exit repeat",
-    "end if",
+    "repeat with ci from 1 to (count of candidates)",
+    "set foundRow to my findRow(rowEls, rowLabels, (item ci of candidates) as text, true)",
+    "if foundRow is not missing value then exit repeat",
     "end repeat",
+    "if foundRow is missing value then",
+    "repeat with ci from 1 to looseCount",
+    "if ci > (count of candidates) then exit repeat",
+    "set foundRow to my findRow(rowEls, rowLabels, (item ci of candidates) as text, false)",
     "if foundRow is not missing value then exit repeat",
     "end repeat",
     "end if",
-    "if foundRow is not missing value then exit repeat",
-    "end repeat",
     'if foundRow is missing value then return "row-not-found"',
-    "set foundRow to my climbToRow(foundRow)",
-    "try",
-    'set value of attribute "AXSelected" of foundRow to true',
-    "on error",
-    "try",
-    'perform action "AXPress" of foundRow',
-    "end try",
-    "end try",
-    "delay 0.5",
+    'tell application "System Events"',
+    'tell process "Messages"',
+    "if my selectRow(foundRow) then",
     "try",
     'set markItem to menu item "Mark as Read" of menu 1 of menu bar item "Conversation" of menu bar 1',
     "if enabled of markItem then",
@@ -101,6 +104,7 @@ MARK_READ_SCRIPT = (
     'return "ok-menu"',
     "end if",
     "end try",
+    "end if",
     "try",
     'perform action "AXShowMenu" of foundRow',
     "delay 0.4",
@@ -120,6 +124,28 @@ MARK_READ_SCRIPT = (
     "end tell",
     "end tell",
     "end run",
+    "on findRow(rowEls, rowLabels, needle, strict)",
+    "if (length of needle) is 0 then return missing value",
+    "set fallback to missing value",
+    "repeat with i from 1 to (count of rowEls)",
+    "set hit to false",
+    "repeat with aLine in paragraphs of (item i of rowLabels)",
+    "set t to aLine as text",
+    "if strict then",
+    'if t is needle or t starts with (needle & ",") then set hit to true',
+    "else",
+    "if t starts with needle then set hit to true",
+    "end if",
+    "if hit then exit repeat",
+    "end repeat",
+    "if hit then",
+    "set rowEl to my climbToRow(item i of rowEls)",
+    "if rowEl is not missing value then return rowEl",
+    "if fallback is missing value then set fallback to item i of rowEls",
+    "end if",
+    "end repeat",
+    "return fallback",
+    "end findRow",
     "on climbToRow(el)",
     'tell application "System Events"',
     "try",
@@ -135,8 +161,28 @@ MARK_READ_SCRIPT = (
     "end try",
     "end repeat",
     "end tell",
-    "return el",
+    "return missing value",
     "end climbToRow",
+    "on selectRow(rowEl)",
+    'tell application "System Events"',
+    "try",
+    'if role of rowEl is not in {"AXRow", "AXCell"} then return false',
+    "on error",
+    "return false",
+    "end try",
+    "try",
+    'set value of attribute "AXSelected" of rowEl to true',
+    "delay 0.3",
+    'if (value of attribute "AXSelected" of rowEl) is true then return true',
+    "end try",
+    "try",
+    'perform action "AXPress" of rowEl',
+    "delay 0.3",
+    'if (value of attribute "AXSelected" of rowEl) is true then return true',
+    "end try",
+    "end tell",
+    "return false",
+    "end selectRow",
 )
 
 # Prints roles, counts, booleans/lengths and menu titles only: never names, descriptions or values.
@@ -288,8 +334,43 @@ def osascript_runner(script: tuple[str, ...], argv: list[str], timeout: float) -
 class Job:
     conversation_id: str
     title: str
-    candidates: list[str]
+    candidates: list[str]  # names to look for in Messages' sidebar, most specific first
     chat_ids: list[int] = field(default_factory=list)
+    loose: int | None = None  # how many of `candidates` may match a label's beginning (default: all)
+
+    def argv(self) -> list[str]:
+        loose = len(self.candidates) if self.loose is None else min(self.loose, len(self.candidates))
+        return ["names", str(loose), *self.candidates]
+
+
+def candidate_names(title: str, *, full_name: str | None = None, nickname: str | None = None,
+                    organization: str | None = None, person_name: str | None = None,
+                    handle: str | None = None, short_name: str | None = None) -> tuple[list[str], int]:
+    """(names Messages might show for a conversation, how many of them may match as a prefix).
+
+    Full names, nicknames, organizations and numbers can match the start of a
+    label ("Jordan Park, can carpool…, 2:41 PM"); the short name has to match a
+    whole label (or "Jordan, …") so it can't pick another Jordan.
+    """
+    loose: list[str] = [title, full_name or "", nickname or "", organization or "", person_name or ""]
+    if handle:
+        if "@" in handle:
+            loose.append(handle)
+        else:
+            formatted = format_handle(handle)
+            loose.append(formatted)
+            if formatted.startswith("(") and handle.startswith("+1"):
+                loose.append("+1 " + formatted)  # how Messages shows numbers that aren't in Contacts
+    names: list[str] = []
+    for name in loose:
+        name = (name or "").strip()
+        if name and name.lower() not in (n.lower() for n in names):
+            names.append(name)
+    count = len(names)
+    short = (short_name or "").strip()
+    if short and short.lower() not in (n.lower() for n in names):
+        names.append(short)
+    return names, count
 
 
 def outcome_code(outcome: Outcome) -> str:
@@ -418,7 +499,7 @@ class MessagesUI:
         if newest is None:
             return  # Messages already agrees: nothing to do
         assert self.runner is not None
-        outcome = self.runner(MARK_READ_SCRIPT, ["names", *job.candidates], TIMEOUT)
+        outcome = self.runner(MARK_READ_SCRIPT, job.argv(), TIMEOUT)
         permission, result, succeeded = interpret(outcome, job.title)
         code = outcome_code(outcome)
         if succeeded:
@@ -472,6 +553,8 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 30.0,
     outcome = runner(INSPECT_SCRIPT, [], timeout)
     if outcome.timed_out:
         return ["- inspection: timed out"]
+    if outcome.returncode == 127:
+        return ["- inspection: skipped (osascript isn't available: this needs macOS)"]
     if outcome.returncode != 0:
         if DENIED.search(outcome.stderr):
             return ["- Accessibility: NOT allowed for this app (System Settings › Privacy & Security › Accessibility)"]
