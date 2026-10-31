@@ -342,15 +342,20 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
 - Thread reply (`threadRepliesViaMessages`): when a send (immediate or
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root
-  bubble and start replying: its "Reply…" action, else its right-click menu's
-  Reply. Reply mode counts only when the text field's placeholder changes or
-  another text field takes the focus (on macOS 26.3 the action changed an inner
-  group of the entry area while the placeholder stayed "iMessage", and the text
-  went out unthreaded); otherwise nothing is typed (`no-reply-mode`).
-  Replies to other people are only attempted once a real reply has threaded on
-  this Mac (in the user's own chat, or `doctor --messages-reply-test`); until
-  then they fail with "Not sent as a reply: real replies haven't worked on this
-  Mac yet…", and a reply that comes back unthreaded turns them off again.
+  bubble and start replying: focus and select the bubble's row, then the menu
+  bar's Reply command (on macOS 26.3 the only way that switches Messages into
+  reply mode: the placeholder turns "Reply"); else its "Reply…" action, else
+  its right-click menu's Reply. Reply mode counts only when the text field's
+  placeholder changes or another text field takes the focus (the action alone
+  changed an inner group of the entry area while the placeholder stayed
+  "iMessage", and the text went out unthreaded); otherwise nothing is typed
+  (`no-reply-mode`). The log names the way and the menu command used.
+  Replies to other people are only attempted once a real reply to an older
+  message has threaded on this Mac, in the user's own chat (Messages' Reply
+  answers the newest message by default, so a reply to the newest proves
+  nothing); until then they fail with "Not sent as a reply: real replies haven't
+  worked on this Mac yet…". A reply that comes back unthreaded, or threaded
+  under a different message, turns them off again.
   Then paste the text, as a person would (setting the field's value dropped
   the reply on macOS 26.3 and sent a regular text; setting its selected text
   did nothing). Everything on the clipboard (text, images, files) is saved

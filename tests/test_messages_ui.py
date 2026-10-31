@@ -677,8 +677,11 @@ def test_reply_mode_counts_only_when_the_placeholder_or_focused_field_changes():
     message's right-click menu is the second way in."""
     menus = messages_scripts.MENUS
     start = menus[menus.index("on startReply("):menus.index("end startReply")]
-    assert start.index('my customAction(bcBubble, {"Reply"})') < start.index("my replyFromMenu(bcBubble, bcWin)")
-    assert start.count("my replyEngaged(bcHintBefore, bcFocusBefore)") == 2 and "replyMarks" not in start
+    # Harry's Mac (doctor --messages-reply-test): only the menu bar's Reply turned the placeholder into
+    # "Reply" and threaded; it goes first, aimed at the message, the other two stay as fallbacks.
+    assert start.index("my aimAt(bcBubble)") < start.index("my replyFromMenuBar()") \
+        < start.index('my customAction(bcBubble, {"Reply"})') < start.index("my replyFromMenu(bcBubble, bcWin)")
+    assert start.count("my replyEngaged(bcHintBefore, bcFocusBefore)") == 3 and "replyMarks" not in start
     still = menus[menus.index("on stillReplying("):menus.index("end stillReplying")]
     assert 'my hintNow()' in still and 'my focusKey()' in still
 

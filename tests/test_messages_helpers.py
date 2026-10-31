@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import pytest
 
-from fake_messages import FakeMessages, tagged, write_reply, write_tapback
+from fake_messages import FakeMessages, chat_of, tagged, write_reply, write_tapback
 from server import fakedb
 from server.messages_ui import (DENIED_TEXT, REPLY_SCRIPT, REPLY_TIMEOUT, TAPBACK_SCRIPT, TAPBACK_TIMEOUT, TAPBACKS_OFF,
                                 Outcome)
@@ -481,10 +481,15 @@ def test_replies_to_others_wait_until_one_threads_in_your_own_chat(fake_rw, send
     assert failed[0]["status"] == "failed"
     assert failed[0]["error"].startswith("Not sent as a reply: real replies haven't worked on this Mac yet.")
     assert not [c for c in fake.calls if c[0] == "reply"] and sends == []
-    # In your own chat it's tried; a reply that threads turns replies to others on.
+    # In your own chat it's tried. A reply to the newest message threads but proves nothing (Messages'
+    # Reply answers the newest one by default); one to an older message turns replies to others on.
     mine = rw.get(f"/api/conversations/{SELF}/messages")["messages"][-1]["id"]
     fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, mine, tagged(argv, "M")[0])
-    rw.post(send_url(SELF), {"text": "noted", "clientId": "s-1", "threadRootId": mine})
+    rw.post(send_url(SELF), {"text": "noted", "clientId": "s-0", "threadRootId": mine})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "s-0"])
+    assert sent[0]["status"] == "sent" and not helpers.replies_proven()
+    fakedb.write_as_messages_app(rw.settings.chat_db, chat_of(rw.settings.chat_db, mine), text="another note")
+    rw.post(send_url(SELF), {"text": "noted again", "clientId": "s-1", "threadRootId": mine})
     sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "s-1"])
     assert sent[0]["status"] == "sent" and helpers.replies_proven()
     # One that goes out unthreaded turns them off again.

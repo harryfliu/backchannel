@@ -966,7 +966,8 @@ on replyFromMenu(bcBalloon, bcWin)
     return false
 end replyFromMenu
 
--- A Reply command in the menu bar, if Messages has one: "bar<n>", "bar-disabled" or "bar-none".
+-- A Reply command in the menu bar, if Messages has one: "bar<n>:<its title>" when chosen, else
+-- "bar-disabled", "bar-failed" or "bar-none".
 on replyFromMenuBar()
     set bcBarCount to 0
     try
@@ -986,7 +987,7 @@ on replyFromMenuBar()
                 if bcEnabled is not true then return "bar-disabled"
                 try
                     tell application "System Events" to click menu item i of menu 1 of menu bar item bcBar of menu bar 1 of process "Messages"
-                    return "bar" & (bcBar as text)
+                    return "bar" & (bcBar as text) & ":" & my asText(item i of bcTitles)
                 end try
                 return "bar-failed"
             end if
@@ -995,9 +996,39 @@ on replyFromMenuBar()
     return "bar-none"
 end replyFromMenuBar
 
--- Put Messages in reply mode for this message: its "Reply…" action, else its right-click menu's
--- Reply. Counts only when the placeholder or the focused field changes. The way that worked, or "".
+-- Make this message the one Messages acts on: focus its row and select it (where Messages lets
+-- that be set), so the menu bar's Reply answers it rather than the newest message.
+on aimAt(bcBubble)
+    set bcRow to missing value
+    try
+        tell application "System Events" to set bcRow to value of attribute "AXParent" of bcBubble
+    end try
+    if bcRow is not missing value then
+        try
+            tell application "System Events" to set focused of bcRow to true
+        end try
+        try
+            tell application "System Events" to set selected of bcRow to true
+        end try
+    end if
+    try
+        tell application "System Events" to set focused of bcBubble to true
+    end try
+    delay 0.3
+end aimAt
+
+-- Put Messages in reply mode for this message. On macOS 26.3 only the menu bar's Reply does it
+-- (the placeholder turns "Reply"; the message's "Reply…" action and its right-click menu don't), so
+-- that comes first, aimed at the message; the other two stay as fallbacks. Counts only when the
+-- placeholder or the focused field changes. The way that worked, or "".
 on startReply(bcBubble, bcWin, bcHintBefore, bcFocusBefore)
+    my aimAt(bcBubble)
+    set bcBar to my replyFromMenuBar()
+    if bcBar is not in {"bar-none", "bar-disabled", "bar-failed"} then
+        delay 0.5
+        if my replyEngaged(bcHintBefore, bcFocusBefore) then return "menubar " & bcBar
+    end if
+    my pressEscape()
     if my customAction(bcBubble, {"Reply"}) then
         delay 0.5
         if my replyEngaged(bcHintBefore, bcFocusBefore) then return "action"

@@ -76,9 +76,9 @@ TAPBACKS_OFF = "Sending tapbacks is off. Turn it on in Settings › Messages hel
 TAPBACK_UNCONFIRMED = "Messages didn't confirm the tapback."
 REPLY_UNCONFIRMED = "Messages didn't confirm your reply. Check Messages before you try again."
 # Real replies to other people wait until one has threaded on this Mac (in the user's own chat).
-REPLY_PROOF_KEY = "reply_proof"
-REPLY_UNPROVEN = ("real replies haven't worked on this Mac yet. Reply in a thread in your own chat first; once "
-                  "one threads there, replies to others go through too.")
+REPLY_PROOF_KEY = "reply_proof_v2"  # v1 came from a test reply to the newest message: proved nothing about aiming
+REPLY_UNPROVEN = ("real replies haven't worked on this Mac yet. Reply in a thread to an older message in your own "
+                  "chat first; once one threads there, replies to others go through too.")
 
 # The six classic tapbacks, their chat.db offsets (2000 + k adds, 3000 + k removes) and what the
 # Messages app may call them (button descriptions or menu titles).
@@ -1089,10 +1089,28 @@ class MessagesUI:
         if self.runner is not None:
             self._record(interp, result.detail, "Reply")
             if result.kind == "done":
-                self.note_reply_proof(True)
-            elif result.kind == "regular" and not row["thread_originator_guid"]:
+                # Messages' Reply answers the newest message by default, so only a reply to an older
+                # one shows that aiming works.
+                if self._has_newer(job, row["guid"]):
+                    self.note_reply_proof(True)
+            elif result.kind == "regular":  # unthreaded, or threaded under the wrong message
                 self.note_reply_proof(False)
         return result
+
+    def _has_newer(self, job: ReplyJob, reply_guid: str) -> bool:
+        """Something other than the reply itself (and copies of the root, as a self-chat shows) is newer
+        than the root."""
+        try:
+            conv = self.convs.get(job.conversation_id)
+            recent = self.builder.recent(conv, 30)
+        except (LookupError, ChatDBError):
+            return False
+        ids = [m["id"] for m in recent]
+        if job.root_id not in ids:
+            return True  # the root is older than the last 30 messages
+        root_text = _norm(job.root_text)
+        newer = recent[ids.index(job.root_id) + 1:]
+        return any(m["id"] != reply_guid and _norm(m.get("text") or "") != root_text for m in newer)
 
     # ------------------------------------------------------------------ has a real reply worked here?
 

@@ -358,7 +358,7 @@ def check_system(report: Report, services: Any) -> None:
         report.item("web UI", "not built (web/dist missing)")
 
 
-_SHOWABLE = re.compile(r"[A-Za-z][A-Za-z .'’…|_-]{0,40}")
+_SHOWABLE = re.compile(r"[A-Za-z][A-Za-z0-9 .:'’…|_-]{0,48}")
 
 
 def check_messages_reply_test(report: Report, services: Any) -> None:
@@ -438,8 +438,8 @@ def check_messages_reply_test(report: Report, services: Any) -> None:
             report.item(f"{method}, test reply", "sent, but it isn't in chat.db")
         elif row["thread_originator_guid"]:
             report.item(f"{method}, test reply", "THREADED")
-            helpers.note_reply_proof(True)
-            report.item("result", f"real replies work on this Mac ({method}); replies to others are on")
+            report.item("result", f"Messages replies this way ({method}). Now reply in a thread to an older message "
+                                  "in your own chat in Backchannel: once that one threads, replies to others are on")
             return
         else:
             report.item(f"{method}, test reply", "went out as a regular text (not threaded)")

@@ -374,7 +374,8 @@ checks the title): for each way of starting a reply (the newest message's
 prints whether Messages started, the text field's placeholder and the focused
 field before → after, and whether that counts as reply mode. For the first way
 that does, it pastes "Backchannel reply test N", sends it to you and checks
-chat.db for the thread; a threaded one turns real replies to others on.
+chat.db for the thread. It replies to the newest message, so it doesn't turn
+real replies to others on: a reply to an older message in your own chat does.
 
 **`./backchannel doctor --messages-open "Name"`** brings a conversation (by the
 name Backchannel shows) up in Messages the way tapbacks and replies do, without
