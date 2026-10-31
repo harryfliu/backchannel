@@ -50,9 +50,10 @@ __all__ = [
 log = logging.getLogger("backchannel.messages_ui")
 
 # Each step into Messages costs about a tenth of a second on a busy macOS 26 Messages window.
-TIMEOUT = 15.0  # mark read
-TAPBACK_TIMEOUT = 20.0
-REPLY_TIMEOUT = 30.0
+# Finding a chat may mean scrolling Messages' sidebar a page at a time (and back, for read sync).
+TIMEOUT = 30.0  # mark read
+TAPBACK_TIMEOUT = 45.0
+REPLY_TIMEOUT = 60.0
 PROBE_TIMEOUT = 90.0
 VERIFY_SECONDS = 5.0
 CHECK_AFTER = 3.0
@@ -162,6 +163,25 @@ def candidate_names(title: str, *, full_name: str | None = None, nickname: str |
     if short and short.lower() not in (n.lower() for n in names):
         names.append(short)
     return names, count
+
+
+_LINK_PHONE = re.compile(r"^\+?\d{3,15}$")
+_LINK_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+
+
+def messages_link(conv: Conv) -> str | None:
+    """Messages' own link to a one-to-one chat (imessage: or sms:), which opens it directly, even
+    when it's far down Messages' sidebar. None for groups and handles that aren't a plain number or
+    address (nothing else may end up in the link)."""
+    if conv.kind != "dm" or len(conv.persons) != 1:
+        return None
+    handle = conv.persons[0].handle or ""
+    if not (_LINK_PHONE.match(handle) or _LINK_EMAIL.match(handle)):
+        return None
+    services = {(c.service or "").lower() for c in conv.chats}
+    if "@" in handle or "imessage" in services:
+        return f"imessage://{handle}"
+    return f"sms:{handle}"
 
 
 def names_argv(names: list[str], loose: int | None) -> list[str]:
@@ -275,6 +295,7 @@ class TapbackJob:
     bubble: Bubble
     target_chat_id: int | None = None
     target_text: str = ""
+    links: list[str] = field(default_factory=list)  # Messages' own link to the chat (one-to-one chats)
     action = "tapback"
 
     def key(self) -> tuple | None:
@@ -282,7 +303,7 @@ class TapbackJob:
 
     def argv(self) -> list[str]:
         return ["tapback", *names_argv(self.candidates, self.loose), *self.bubble.argv(),
-                *[f"R:{s}" for s in SYNONYMS[self.kind]]]
+                *[f"R:{s}" for s in SYNONYMS[self.kind]], *[f"U:{u}" for u in self.links]]
 
 
 @dataclass
@@ -309,13 +330,15 @@ class ReplyJob:
     ran_script: bool = False
     result: ReplyResult | None = None
     finished: threading.Event = field(default_factory=threading.Event)
+    links: list[str] = field(default_factory=list)
     action = "reply"
 
     def key(self) -> tuple | None:
         return None
 
     def argv(self) -> list[str]:
-        return ["reply", *names_argv(self.candidates, self.loose), *self.bubble.argv(), f"M:{self.text}"]
+        return ["reply", *names_argv(self.candidates, self.loose), *self.bubble.argv(), f"M:{self.text}",
+                *[f"U:{u}" for u in self.links]]
 
 
 @dataclass
@@ -341,11 +364,19 @@ class Interp:
 
 
 _STDERR_NUMBER = re.compile(r"\((-?\d{1,6})\)\s*$")
+_TRAIL_JUNK = re.compile(r"[^a-z0-9:,/ -]")
+
+
+def _split(outcome: Outcome) -> tuple[str, str]:
+    """(answer, trail). Scripts may add "|<trail>": how they got to the chat, as step names and
+    item positions ("link no row3/0 p:3,14 o:3"), never names or text."""
+    answer, _, trail = outcome.stdout.strip().partition("|")
+    return answer.strip(), _TRAIL_JUNK.sub("", trail.lower()).strip()[:120]
 
 
 def _answer(outcome: Outcome) -> tuple[str, int | None]:
     """(code, error number) from what a script printed ("error:-1719" → ("error", -1719))."""
-    text = outcome.stdout.strip()
+    text, _ = _split(outcome)
     head, number = text, None
     for sep in (":", "\t"):
         before, found, after = text.partition(sep)
@@ -392,11 +423,12 @@ def _common(outcome: Outcome, timeout: float) -> Interp | None:
 
 def _specific(outcome: Outcome, answers: dict[str, tuple[str | None, str, str]], title: str,
               unexpected_state: str) -> Interp:
-    code = outcome.stdout.strip()
+    code, trail = _split(outcome)
+    suffix = f" [{trail}]" if trail else ""
     if code in answers:
         permission, sentence, state = answers[code]
-        return Interp(permission, sentence.format(title=title), state, code)
-    return Interp(None, "The Messages script gave an unexpected answer.", unexpected_state, "unexpected answer")
+        return Interp(permission, sentence.format(title=title), state, code + suffix)
+    return Interp(None, "The Messages script gave an unexpected answer.", unexpected_state, "unexpected answer" + suffix)
 
 
 def outcome_code(outcome: Outcome) -> str:
@@ -404,7 +436,7 @@ def outcome_code(outcome: Outcome) -> str:
     base = _common(outcome, TIMEOUT)
     if base is not None:
         return base.code
-    answer = outcome.stdout.strip()
+    answer, _ = _split(outcome)
     return answer if re.fullmatch(r"[a-z-]{1,24}", answer) else "unexpected answer"
 
 
@@ -458,6 +490,8 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
     "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "sent-paste": ("granted", "Sent as a reply in Messages.", "done"),
+    "reply-mode-lost": ("granted", "Messages stopped replying to that message before it was sent, so nothing "
+                        "was sent.", "nothing"),
     "returned-unconfirmed": ("granted", "Messages didn't confirm your reply.", "maybe"),
     "typed-not-sent": ("granted", "Your reply is in Messages' reply field, but it wasn't sent.", "maybe"),
     "typed-unknown": ("granted", "Messages didn't confirm your reply.", "maybe"),
@@ -471,8 +505,9 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-reply-field": ("granted", "Messages didn't open its reply field.", "nothing"),
     "no-reply-mode": ("granted", "Messages didn't switch to replying to that message.", "nothing"),
     "field-busy": ("granted", "Messages' reply field already had text in it.", "nothing"),
-    "clipboard-busy": ("granted", "The clipboard holds more than text, so Backchannel didn't paste.", "nothing"),
-    "nothing-typed": ("granted", "Couldn't put the text in Messages' reply field.", "nothing"),
+    "clipboard-busy": ("granted", "The clipboard holds an image or a file, so Backchannel didn't paste your "
+                       "reply.", "nothing"),
+    "nothing-typed": ("granted", "Couldn't paste your reply into Messages' reply field.", "nothing"),
     "no-text": (None, "There was no text to send.", "nothing"),
 }
 
@@ -680,9 +715,10 @@ class MessagesUI:
             raise ValueError("That isn't one of Messages' tapbacks.")
         row, message = self.target(conv, message_id)
         title, names, loose = self._names(conv)
+        link = messages_link(conv)
         return TapbackJob(conv.id, title, names, loose, list(conv.chat_ids), message_id, kind, remove,
                           self.bubble_for(conv, message), target_chat_id=row["chat_id"],
-                          target_text=message.get("text") or "")
+                          target_text=message.get("text") or "", links=[link] if link else [])
 
     def reply_job(self, conv: Conv, root_id: str, text: str, client_id: str) -> ReplyJob | None:
         """None when the root can't be found in Messages' terms (the reply is then not sent: "Not sent as a reply")."""
@@ -691,9 +727,16 @@ class MessagesUI:
         except (LookupError, ValueError):
             return None
         title, names, loose = self._names(conv)
+        link = messages_link(conv)
         return ReplyJob(client_id, conv.id, title, names, loose, list(conv.chat_ids), root_id, text,
                         self.bubble_for(conv, message), root_chat_id=row["chat_id"],
-                        root_text=message.get("text") or "")
+                        root_text=message.get("text") or "", links=[link] if link else [])
+
+    def open_argv(self, conv: Conv) -> list[str]:
+        """The inspect script's "open" mode for this conversation (doctor --messages-open)."""
+        _title, names, loose = self._names(conv)
+        link = messages_link(conv)
+        return ["open", *names_argv(names, loose), *([f"U:{link}"] if link else [])]
 
     # ------------------------------------------------------------------ queueing
 

@@ -66,6 +66,8 @@ def spot_ref(path: tuple[int, ...], base: str = "bcWin") -> str:
 # --------------------------------------------------------------------------- shared handlers
 
 RUN = """
+property bcTrail : ""
+
 on run argv
     set bcPrevApp to my frontBundle()
     set bcAnswer to "error-late:unknown"
@@ -75,6 +77,7 @@ on run argv
         set bcAnswer to "error-late:" & (bcErrNum as text)
     end try
     my restoreFront(bcPrevApp)
+    if bcTrail is not "" then return bcAnswer & "|" & bcTrail
     return bcAnswer
 end run
 """
@@ -354,7 +357,7 @@ end spotTitle
 -- match the whole label or its "Name, " start; L names may also match its beginning. The earliest
 -- name wins.
 on findRow(bcList, bcStrictNames, bcLooseNames)
-    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    set bcAt to item 1 of (my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12))
     if bcAt is 0 then return missing value
     return my atPath(bcList, {bcAt})
 end findRow
@@ -401,45 +404,184 @@ on findRowIndex(bcList, bcStrictNames, bcLooseNames)
     return bcBestAt
 end findRowIndex
 
--- Make this conversation the only selected one, so its chat is the one on screen. Pressing a list
--- item in Messages toggles it like a Command-click (two chats end up selected and neither shows),
--- so: set the list's selection; else press it and press any other selected item off; else click it.
-on selectOnly(bcList, bcAt)
-    set bcRowEl to my atPath(bcList, {bcAt})
-    if bcRowEl is missing value then return false
-    if my onlySelected(bcList, bcAt) then return true
-    set bcPick to {bcRowEl}
+-- ---- opening a conversation (tapbacks, replies)
+
+on titleText(bcWin)
+    return my attrText(my spotTitle(bcWin), "AXDescription")
+end titleText
+
+-- Is this conversation the one on screen? The title at the top of the chat is one of its names.
+on titleMatches(bcWin, bcStrictNames, bcLooseNames)
+    set bcTitle to my titleText(bcWin)
+    if bcTitle is "" then return false
+    repeat with bcName in (bcLooseNames & bcStrictNames)
+        set bcWant to my asText(contents of bcName)
+        if bcWant is not "" and bcTitle is bcWant then return true
+    end repeat
+    return false
+end titleMatches
+
+-- The chat on screen is this conversation: its title says so, or its item is the only one selected.
+on chatShown(bcWin, bcList, bcStrictNames, bcLooseNames)
+    if my titleMatches(bcWin, bcStrictNames, bcLooseNames) then return true
+    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    if bcAt is 0 then return false
+    return my onlySelected(bcList, bcAt)
+end chatShown
+
+-- Positions of the selected items, like "3,14" ("-" for none), for the log.
+on selectedList(bcList)
+    set bcSels to my selectedFlags(bcList)
+    set bcOut to {}
+    repeat with i from 1 to count of bcSels
+        if (item i of bcSels) is true then set bcOut to bcOut & {i as text}
+    end repeat
+    if bcOut is {} then return "-"
+    return my joinWith(bcOut, ",")
+end selectedList
+
+-- Press a list item. Messages treats that like a Command-click: it toggles the item's selection.
+on pressItem(bcList, bcAt)
+    set bcItem to my atPath(bcList, {bcAt})
+    if bcItem is missing value then return false
+    set bcDone to false
     try
-        tell application "System Events" to set value of attribute "AXSelectedChildren" of bcList to bcPick
+        tell application "System Events" to perform action "AXPress" of bcItem
+        set bcDone to true
     end try
-    delay 0.5
-    if my onlySelected(bcList, bcAt) then return true
-    if not my isSelected(bcRowEl) then
-        try
-            tell application "System Events" to perform action "AXPress" of bcRowEl
-        end try
-        delay 0.5
+    return bcDone
+end pressItem
+
+-- Scroll the conversation list a page (AXScrollUpByPage / AXScrollDownByPage): its items pass
+-- these actions on to the list's scroll view.
+on pageList(bcList, bcAction)
+    set bcCount to 0
+    try
+        tell application "System Events" to set bcCount to count of UI elements of bcList
+    end try
+    if bcCount is 0 then return false
+    set bcIndex to bcCount
+    if bcAction is "AXScrollUpByPage" then set bcIndex to 1
+    set bcItem to my atPath(bcList, {bcIndex})
+    if bcItem is missing value then return false
+    set bcDone to false
+    try
+        tell application "System Events" to perform action bcAction of bcItem
+        set bcDone to true
+    end try
+    return bcDone
+end pageList
+
+-- What the list shows, in short (item count, first and last labels), to tell when it stops moving.
+on listKey(bcList)
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcList
+    end try
+    set bcCount to count of bcDescs
+    if bcCount is 0 then return "0"
+    return (bcCount as text) & ":" & my asText(item 1 of bcDescs) & ":" & my asText(item bcCount of bcDescs)
+end listKey
+
+-- Scroll the list back to the top (at most bcPages pages); how many pages it moved.
+on listHome(bcList, bcPages)
+    set bcSeen to my listKey(bcList)
+    set bcMoved to 0
+    repeat bcPages times
+        if not my pageList(bcList, "AXScrollUpByPage") then exit repeat
+        delay 0.3
+        set bcNow to my listKey(bcList)
+        if bcNow is bcSeen then exit repeat
+        set bcSeen to bcNow
+        set bcMoved to bcMoved + 1
+    end repeat
+    return bcMoved
+end listHome
+
+-- The conversation's item in the list. Messages only keeps the items in view (pinned chats and the
+-- most recent ones), so if it isn't there: back to the top, then down a page at a time until it
+-- shows up or the list ends. {position or 0, pages scrolled down}.
+on findRowScrolling(bcList, bcStrictNames, bcLooseNames, bcPages)
+    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    if bcAt > 0 then return {bcAt, 0}
+    if (my listHome(bcList, bcPages)) > 0 then
+        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+        if bcAt > 0 then return {bcAt, 0}
     end if
+    set bcSeen to my listKey(bcList)
+    set bcPage to 0
+    repeat bcPages times
+        if not my pageList(bcList, "AXScrollDownByPage") then exit repeat
+        set bcPage to bcPage + 1
+        delay 0.35
+        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+        if bcAt > 0 then return {bcAt, bcPage}
+        set bcNow to my listKey(bcList)
+        if bcNow is bcSeen then exit repeat
+        set bcSeen to bcNow
+    end repeat
+    return {0, bcPage}
+end findRowScrolling
+
+-- Bring the conversation up in Messages' main window. In order: it's already on screen; for a
+-- one-to-one chat, Messages' own link (argv U:, imessage: or sms:); its item in the list (scrolled
+-- to if needed) pressed, then any other selected item pressed off, then clicked with Messages in
+-- front. Every step is checked with chatShown. Answers "ok", "row-not-found" or "not-selected";
+-- bcTrail says how (step names and item positions only, for the log).
+on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
+    set bcTrace to {}
+    if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", {"shown"})
+    if bcLinks is not {} then
+        set bcTrace to bcTrace & {"link"}
+        try
+            open location (item 1 of bcLinks)
+        end try
+        repeat 6 times
+            delay 0.5
+            if my titleMatches(bcWin, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace & {"title"})
+        end repeat
+        set bcTrace to bcTrace & {"no"}
+    end if
+    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
+    set bcAt to item 1 of bcFound
+    set bcTrace to bcTrace & {"row" & (bcAt as text) & "/" & ((item 2 of bcFound) as text)}
+    if bcAt is 0 then return my traced("row-not-found", bcTrace)
+    if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
+    if not my isSelected(my atPath(bcList, {bcAt})) then
+        my pressItem(bcList, bcAt)
+        delay 0.7
+    end if
+    set bcTrace to bcTrace & {"p:" & my selectedList(bcList)}
+    if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
+    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    if bcAt is 0 then return my traced("not-selected", bcTrace & {"lost"})
     set bcSels to my selectedFlags(bcList)
     repeat with i from 1 to count of bcSels
-        if i is not bcAt and (item i of bcSels) is true then
-            try
-                tell application "System Events" to perform action "AXPress" of UI element i of bcList
-            end try
-        end if
+        if i is not bcAt and (item i of bcSels) is true then my pressItem(bcList, i)
     end repeat
-    delay 0.6
-    if my onlySelected(bcList, bcAt) then return true
+    delay 0.7
+    set bcTrace to bcTrace & {"o:" & my selectedList(bcList)}
+    if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
     my bringForward()
-    set bcFrame to my frameOf(bcRowEl)
-    if bcFrame is missing value then return false
-    set bcPoint to {(item 1 of bcFrame) + ((item 3 of bcFrame) / 2), (item 2 of bcFrame) + ((item 4 of bcFrame) / 2)}
-    try
-        tell application "System Events" to click at bcPoint
-    end try
-    delay 0.6
-    return my onlySelected(bcList, bcAt)
-end selectOnly
+    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    set bcFrame to missing value
+    if bcAt > 0 then set bcFrame to my frameOf(my atPath(bcList, {bcAt}))
+    if bcFrame is not missing value then
+        set bcPoint to {(item 1 of bcFrame) + ((item 3 of bcFrame) / 2), (item 2 of bcFrame) + ((item 4 of bcFrame) / 2)}
+        try
+            tell application "System Events" to click at bcPoint
+        end try
+        delay 0.7
+    end if
+    set bcTrace to bcTrace & {"c:" & my selectedList(bcList)}
+    if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
+    return my traced("not-selected", bcTrace)
+end openChat
+
+on traced(bcAnswer, bcTrace)
+    set bcTrail to my joinWith(bcTrace, " ")
+    return bcAnswer
+end traced
 
 on selectedFlags(bcList)
     set bcSels to {}
@@ -624,7 +766,7 @@ on clipboardIsText()
     end try
     repeat with bcPair in bcInfo
         set bcKind to item 1 of bcPair
-        if bcKind is not in {string, Unicode text, text, «class utf8», «class ut16»} then return false
+        if bcKind is not in {string, Unicode text, text, «class utf8», «class ut16», «class RTF », «class HTML», «class rtfd»} then return false
     end repeat
     return true
 end clipboardIsText
@@ -642,6 +784,26 @@ on setClip(bcText)
         set the clipboard to bcText
     end try
 end setClip
+
+-- The clipboard as it was: every kind of text it held when AppleScript can keep them, and its text.
+on clipSave()
+    set bcRec to missing value
+    try
+        set bcRec to (the clipboard as record)
+    end try
+    return {bcRec, my clipText()}
+end clipSave
+
+on clipRestore(bcSaved)
+    set bcDone to false
+    if item 1 of bcSaved is not missing value then
+        try
+            set the clipboard to (item 1 of bcSaved)
+            set bcDone to true
+        end try
+    end if
+    if not bcDone then my setClip(item 2 of bcSaved)
+end clipRestore
 """
 
 # --------------------------------------------------------------------------- mark read
@@ -655,11 +817,22 @@ on act(argv)
     tell application "System Events" to set bcWin to window 1 of process "Messages"
     set bcList to my spotList(bcWin)
     if bcList is missing value then return "no-list"
-    set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
-    if bcRowEl is missing value then return "row-not-found"
-    if my customAction(bcRowEl, {"Mark as Read"}) then return "ok-action"
-    if my hasAction(bcRowEl, {"Mark as Unread"}) then return "already-read"
-    return "no-mark-item"
+    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
+    set bcAt to item 1 of bcFound
+    set bcTrail to "row" & (bcAt as text) & "/" & ((item 2 of bcFound) as text)
+    if bcAt is 0 then
+        my listHome(bcList, 12)
+        return "row-not-found"
+    end if
+    set bcRowEl to my atPath(bcList, {bcAt})
+    set bcAnswer to "no-mark-item"
+    if my customAction(bcRowEl, {"Mark as Read"}) then
+        set bcAnswer to "ok-action"
+    else if my hasAction(bcRowEl, {"Mark as Unread"}) then
+        set bcAnswer to "already-read"
+    end if
+    if (item 2 of bcFound) > 0 then my listHome(bcList, 12)
+    return bcAnswer
 end act
 """
 
@@ -682,9 +855,8 @@ on act(argv)
         tell application "System Events" to set bcWin to window 1 of process "Messages"
         set bcList to my spotList(bcWin)
         if bcList is missing value then return "no-list"
-        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
-        if bcAt is 0 then return "row-not-found"
-        if not my selectOnly(bcList, bcAt) then return "not-selected"
+        set bcOpened to my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, "U"))
+        if bcOpened is not "ok" then return bcOpened
         set bcTranscript to my spotTranscript(bcWin)
         if bcTranscript is missing value then
             delay 0.8
@@ -728,9 +900,8 @@ on act(argv)
         tell application "System Events" to set bcWin to window 1 of process "Messages"
         set bcList to my spotList(bcWin)
         if bcList is missing value then return "no-list"
-        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
-        if bcAt is 0 then return "row-not-found"
-        if not my selectOnly(bcList, bcAt) then return "not-selected"
+        set bcOpened to my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, "U"))
+        if bcOpened is not "ok" then return bcOpened
         set bcTranscript to my spotTranscript(bcWin)
         if bcTranscript is missing value then
             delay 0.8
@@ -745,6 +916,7 @@ on act(argv)
         if bcBubble is missing value then return "bubble-not-found"
         set bcEntry to my spotEntry(bcWin)
         if bcEntry is missing value then return "no-reply-field"
+        if not my clipboardIsText() then return "clipboard-busy"
         set bcShapeBefore to my replyMarks(bcEntry)
         my bringForward()
         if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
@@ -765,48 +937,48 @@ on act(argv)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    set bcHow to ""
+    -- Paste, as a person would. Messages keeps the reply attached to text that's typed or pasted,
+    -- but not to text set straight into the field: on macOS 26.3 that went out as a regular text.
+    set bcSaved to my clipSave()
+    my setClip(bcReply)
+    set bcPasted to true
     try
-        tell application "System Events" to set value of bcBox to bcReply
+        tell application "System Events" to key code 9 using command down
+    on error
+        set bcPasted to false
     end try
-    delay 0.2
-    considering case
-        if (my fieldText(bcBox)) is bcReply then set bcHow to "axvalue"
-    end considering
-    if bcHow is "" then
-        if (my fieldText(bcBox)) is not "" then return "typed-unknown"
-        if not my clipboardIsText() then return "clipboard-busy"
-        my bringForward()
-        try
-            tell application "System Events" to set focused of bcBox to true
-        end try
+    set bcHow to ""
+    set bcFocused to missing value
+    repeat 10 times
         delay 0.15
         set bcFocused to my focusedTextField()
-        if bcFocused is missing value then return "nothing-typed"
-        if (my fieldText(bcFocused)) is not "" then return "nothing-typed"
-        set bcSaved to my clipText()
-        my setClip(bcReply)
-        set bcPasted to true
-        try
-            tell application "System Events" to key code 9 using command down
-        on error
-            set bcPasted to false
-        end try
-        delay 0.4
-        my setClip(bcSaved)
-        if not bcPasted then return "typed-unknown"
-        set bcFocused to my focusedTextField()
+        if bcFocused is not missing value then
+            considering case
+                if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
+            end considering
+        end if
+        if bcHow is not "" then exit repeat
+    end repeat
+    my clipRestore(bcSaved)
+    if bcHow is "" then
         if bcFocused is missing value then return "typed-unknown"
-        considering case
-            if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
-        end considering
-        if bcHow is "" then return "typed-unknown"
+        if (my fieldText(bcFocused)) is "" then
+            my pressEscape()
+            return "nothing-typed"
+        end if
+        return "typed-unknown"
+    end if
+    -- Still replying? If Messages let go of the message being answered, take the text back out
+    -- rather than send it as a regular text.
+    if my replyMarks(bcEntry) is not greater than bcShapeBefore then
+        set bcBox to bcFocused
+        try
+            tell application "System Events" to set value of bcBox to ""
+        end try
+        my pressEscape()
+        return "reply-mode-lost"
     end if
     my bringForward()
-    try
-        tell application "System Events" to set focused of bcBox to true
-    end try
-    delay 0.1
     set bcFocused to my focusedTextField()
     if bcFocused is missing value then return "typed-not-sent"
     set bcReady to false
@@ -840,6 +1012,7 @@ end run
 
 INSPECT_RUN = """
 property bcBudget : 320
+property bcTrail : ""
 
 on run argv
     set bcAccessErr to 0
@@ -879,6 +1052,16 @@ on run argv
             set bcReport to bcReport & {my walk(bcWin, 0, 16)}
         else if bcMode is "title" then
             set bcReport to bcReport & {"title_text" & tab & my titleText(bcWin)}
+        else if bcMode is "open" then
+            set bcPrevApp to my frontBundle()
+            set bcList to my spotList(bcWin)
+            if bcList is missing value then
+                set bcReport to bcReport & {"open" & tab & "no-list" & tab & ""}
+            else
+                set bcOpened to my openChat(bcWin, bcList, my tagged(argv, "N"), my tagged(argv, "L"), my tagged(argv, "U"))
+                set bcReport to bcReport & {"open" & tab & bcOpened & tab & bcTrail}
+            end if
+            my restoreFront(bcPrevApp)
         else if bcMode is "try-tapback" then
             set bcReport to bcReport & my tryTapback(bcWin, bcFront, my tagged(argv, "R"))
         else if bcMode is "try-reply" then
@@ -1199,10 +1382,6 @@ on walk(bcEl, bcDepth, bcMaxDepth)
 end walk
 
 -- ---- live tries (doctor --messages-try; it checks first that your own chat is the open one)
-
-on titleText(bcWin)
-    return my attrText(my spotTitle(bcWin), "AXDescription")
-end titleText
 
 on newestBalloon(bcWin)
     set bcTranscript to my spotTranscript(bcWin)

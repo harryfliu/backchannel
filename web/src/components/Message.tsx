@@ -501,7 +501,9 @@ function StatusLine({ m }: { m: Message }) {
   if (m.status === 'failed' && m.threadRootId && realReplies)
     return (
       <p className="msg-status is-failed">
-        <Icon name="alert" size={14} /> {reason ?? 'Not sent as a reply.'}{' '}
+        <span className="msg-status-why">
+          <Icon name="alert" size={14} /> {reason ?? 'Not sent as a reply.'}
+        </span>
         <button type="button" className="link-btn" onClick={() => retrySend(m.conversationId, m.id)}>
           Try again
         </button>

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import shutil
 import sqlite3
 import sys
@@ -357,6 +358,51 @@ def check_system(report: Report, services: Any) -> None:
         report.item("web UI", "not built (web/dist missing)")
 
 
+def check_messages_open(report: Report, services: Any, name: str) -> None:
+    """Find a conversation by the name Backchannel shows and bring it up in Messages, the way
+    tapbacks and replies do (link for one-to-one chats, else its sidebar item, scrolling to it).
+    Nothing is typed or sent. Prints the steps (names of steps and item positions only)."""
+    from . import messages_ui
+
+    report.section("Messages helpers, open a chat")
+    try:
+        summaries = services.convs.list()
+    except ChatDBError:
+        report.item("result", "skipped: chat.db isn't readable")
+        return
+    want = " ".join(name.split()).lower()
+    exact = [c for c in summaries if (c.get("title") or "").lower() == want]
+    loose = [c for c in summaries if want in (c.get("title") or "").lower()]
+    found = exact or loose
+    if not found:
+        report.item("result", "no conversation in Backchannel has that name")
+        return
+    conv = services.convs.get(found[0]["id"])
+    report.item("conversation", f"found ({conv.kind}{', more than one match: used the first' if len(found) > 1 else ''})")
+    report.item("Messages link", "yes" if messages_ui.messages_link(conv) else "no (group or unusual handle)")
+    started = time.monotonic()
+    outcome = messages_ui.inspect_mode(services.messages_ui.open_argv(conv), timeout=90.0)
+    took = int((time.monotonic() - started) * 1000)
+    if outcome.timed_out:
+        report.item("result", f"timed out after {took} ms")
+        return
+    answer, trail = "", ""
+    for line in outcome.stdout.splitlines():
+        if line.startswith("open\t"):
+            parts = line.split("\t")
+            answer = parts[1] if len(parts) > 1 else ""
+            trail = re.sub(r"[^a-z0-9:,/ -]", "", (parts[2] if len(parts) > 2 else "").lower())
+    if not answer:
+        detail = (outcome.stderr.splitlines() or [""])[-1][:160]
+        report.item("result", f"the script failed: {detail or 'no answer'}")
+        return
+    report.item("result", {"ok": "open in Messages", "row-not-found": "not found in Messages' sidebar",
+                           "not-selected": "found, but couldn't open it", "no-list": "Messages' sidebar not found"}
+                .get(answer, re.sub(r"[^a-z-]", "", answer) or "?"))
+    report.item("steps", trail or "-")
+    report.item("took", f"{took} ms")
+
+
 def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str]:
     parser = argparse.ArgumentParser(prog="backchannel doctor", description=__doc__)
     parser.add_argument("--ai", action="store_true", help="also make one tiny real Claude call")
@@ -364,6 +410,9 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
                         help="live check in your own chat: press Heart (then take it off) and Reply (then Escape)")
     parser.add_argument("--messages-tree", action="store_true",
                         help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
+    parser.add_argument("--messages-open", metavar="NAME",
+                        help="bring a conversation up in Messages the way tapbacks and replies do (its name as "
+                             "Backchannel shows it); nothing is sent. Prints how it got there")
     parser.add_argument("--messages-ui", action="store_true",
                         help="describe what the scripts can reach in Messages (spots, label shapes and action "
                              "names only); opens the newest bubble's menu and Tapback picker and closes them "
@@ -388,6 +437,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
             check_messages_ui(report, services, tree=args.messages_tree)
         if args.messages_try:
             check_messages_try(report, services)
+        if args.messages_open:
+            check_messages_open(report, services, args.messages_open)
     finally:
         services.close()
     report.section("Result")

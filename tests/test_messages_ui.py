@@ -334,7 +334,7 @@ def test_inspect_script_never_prints_text():
     (Outcome(0, "error-late:-1728", ""), None, False, "failed (error -1728)"),
     (Outcome(0, "error-late:unknown", ""), None, False, "failed (error None)"),
     (Outcome(1, "", "System Events got an error: Messages isn't allowed (-1719)"), "denied", False, "Accessibility"),
-    (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 15 seconds"),
+    (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 30 seconds"),
     (Outcome(0, "weird", ""), None, False, "unexpected"),
 ])
 def test_interpret(outcome, permission, ok, words):
@@ -570,3 +570,67 @@ def test_spots_are_reached_in_one_request():
     for name in ("list", "transcript", "entry"):
         assert f"set bcEl to {spot_ref(SPOTS[name])}" in source, name
     assert "atPath(bcWin, {1, 1, 1" not in source
+
+
+# --------------------------------------------------------------------------- opening a chat (macOS 26)
+
+
+def _conv(kind: str, handle: str, service: str, persons: int = 1):
+    from server.chatdb import ChatInfo
+    from server.conversations import Conv, Person
+    people = [Person(f"p{i}", handle, [handle], "Someone", "Some", True, False) for i in range(persons)]
+    chat = ChatInfo(1, "chat-guid", 45 if kind == "dm" else 43, handle, service, None, (1,))
+    return Conv("c1", kind, [chat], people)
+
+
+@pytest.mark.parametrize("kind, handle, service, persons, link", [
+    ("dm", "+14155550134", "iMessage", 1, "imessage://+14155550134"),
+    ("dm", "+14155550134", "SMS", 1, "sms:+14155550134"),
+    ("dm", "jordan@example.com", "iMessage", 1, "imessage://jordan@example.com"),
+    ("dm", "+14155550134&body=hi", "iMessage", 1, None),  # nothing but a number or an address goes in a link
+    ("dm", "jordan@example.com?x", "iMessage", 1, None),
+    ("group", "+14155550134", "iMessage", 3, None),
+])
+def test_messages_link_opens_one_to_one_chats_directly(kind, handle, service, persons, link):
+    assert messages_ui.messages_link(_conv(kind, handle, service, persons)) == link
+
+
+def test_the_trail_goes_to_the_log_but_not_into_the_sentence():
+    outcome = Outcome(0, "not-selected|link no row3/0 p:3,14 o:3,14 c:14", "")
+    tap = messages_ui.interpret_tapback(outcome, "Jordan Park")
+    assert tap.sentence == "Couldn't open Jordan Park in Messages." and tap.state == "nothing"
+    assert tap.code == "not-selected [link no row3/0 p:3,14 o:3,14 c:14]"
+    assert messages_ui.interpret_reply(Outcome(0, "sent-paste|link title", ""), "Jordan").code == "sent-paste [link title]"
+    # Only step names and positions survive, whatever a script printed.
+    assert messages_ui.interpret_reply(Outcome(0, "no-list|Jordan's (iPhone)!", ""), "J").code == "no-list [jordans iphone]"
+    assert outcome_code(Outcome(0, "ok-action|row3/0", "")) == "ok-action"
+    got_permission, sentence, ok = interpret(Outcome(0, "error-late:-1743|link", ""), "Jordan")
+    assert got_permission == "denied" and not ok
+
+
+def test_scripts_open_the_chat_by_title_link_or_sidebar():
+    for script in (TAPBACK_SCRIPT, REPLY_SCRIPT):
+        source = "\n".join(script)
+        assert "my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, \"U\"))" in source
+        assert "selectOnly" not in source
+        assert "open location (item 1 of bcLinks)" in source  # the link comes from argv only
+        assert 'property bcTrail : ""' in source and 'return bcAnswer & "|" & bcTrail' in source
+    mark = "\n".join(MARK_READ_SCRIPT)
+    assert "my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)" in mark and "my listHome(bcList, 12)" in mark
+    assert "openChat" not in messages_scripts.MARK_READ_ACT  # read sync never changes which chat Messages shows
+
+
+def test_reply_is_pasted_never_set_and_only_sent_while_still_replying():
+    act = messages_scripts.REPLY_ACT
+    assert "set value of bcBox to bcReply" not in act  # that went out as a regular text on macOS 26.3
+    assert act.count("set value of bcBox to") == 1 and 'set value of bcBox to ""' in act  # only to take it back out
+    assert act.index("my clipboardIsText()") < act.index('customAction(bcBubble, {"Reply"})')  # check before touching
+    before_return = act[:act.index("key code 36")]
+    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > before_return.index("key code 9")
+    assert before_return.index("my clipRestore(bcSaved)") > before_return.index("key code 9")
+
+
+def test_open_mode_is_in_the_inspect_script():
+    source = "\n".join(INSPECT_SCRIPT)
+    assert 'else if bcMode is "open" then' in source
+    assert 'set bcReport to bcReport & {"open" & tab & bcOpened & tab & bcTrail}' in source

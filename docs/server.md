@@ -236,9 +236,9 @@ turned on in Settings › Messages helpers (`PATCH /api/settings`):
 
 | Setting | What Messages is asked to do | Checked in chat.db |
 |---|---|---|
-| `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: find the conversation's row in Messages' list and use its "Mark as Read" action | 3 s later the messages that were unread are read |
-| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: select only that conversation, find the bubble, use its action for the tapback ("Heart", "Thumbs up"…) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
-| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): bring Messages forward, select only that conversation, find the root bubble, use its "Reply…" action, check the reply field opened, put the text in, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
+| `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: find the conversation's row in Messages' list (scrolling to it if needed, then back) and use its "Mark as Read" action | 3 s later the messages that were unread are read |
+| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: open the chat (see below), find the bubble, use its action for the tapback ("Heart", "Thumbs up"…) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
+| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): open the chat, bring Messages forward, find the root bubble, use its "Reply…" action, check the reply field opened, paste the text, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
 
 **Permissions.** Two macOS prompts, both for the app that runs the server
 (Backchannel.app, or your terminal): *Accessibility* (System Settings › Privacy
@@ -255,7 +255,8 @@ action got through, and the permission check alone only reports `lastResult:
 and the permission check share the queue), never blocking a request. Each
 action is one `osascript`: the script lines as `-e`, every name and text as
 argv (tagged values, see `server/messages_scripts.py`), never in the source.
-Timeouts: 15 s (mark read), 20 s (tapback), 30 s (reply). Each accessibility
+Timeouts: 30 s (mark read), 45 s (tapback), 60 s (reply); finding a chat may
+mean scrolling Messages' list. Each accessibility
 request costs ~0.1 s, so the scripts reach the list, the open chat and the
 entry area with one literal reference each (child-index paths found on macOS
 26.3, checked by accessibility id; a capped search by id if the layout
@@ -278,11 +279,21 @@ mode (see below).
   nickname, company and number (`(415) 555-0134`, `+1 (415) 555-0134`) may
   also match a label's start, the short name ("Jordan") only exactly. Only
   chats in the list's loaded part (pinned plus the most recent ones) can be
-  found. For tapbacks and replies that item must become the *only* selected
-  one: pressing an item toggles it like ⌘-click (two selected chats show
-  neither), so the script sets the list's selection, else presses it and
-  presses any other selected item off, else clicks it; if one chat still isn't
-  the only one selected, nothing happens (`not-selected`).
+  found without scrolling: when it isn't there, the list is scrolled to the top
+  and then down a page at a time (AXScrollDownByPage through its items, at most
+  12 pages, stopping when the list stops moving). Read sync scrolls back to the
+  top afterwards.
+- *Opening the chat* (tapbacks, replies): nothing happens unless Messages' main
+  window shows that conversation, checked by the title at the top of the chat
+  (ConversationTitle's description is one of its names) or its item being the
+  only one selected. Steps, each checked: already on screen; for one-to-one
+  chats Messages' own link (`imessage://<handle>`, or `sms:<handle>` when the
+  chat is SMS-only; the server only builds links from plain numbers and
+  addresses); its list item (scrolled to) pressed, since pressing toggles like
+  ⌘-click any other selected item is pressed off, then a click on it with
+  Messages in front. Otherwise `not-selected`. The script appends a trail of the
+  steps to its answer (`not-selected|link no row3/0 p:3,14 o:3,14 c:14`: step
+  names and item positions only), which goes to the log after the code.
 - *The bubble* (tapbacks, replies): the transcript right of the sidebar row,
   newest first (the window walked backwards). Text: the first line (60 chars);
   8+ characters must appear in a label, shorter ones must be a whole label line.
@@ -302,11 +313,14 @@ mode (see below).
   field counts as open only when the entry area shows the reply preview (on
   macOS 26.3 a group in it goes from one child to two), else Escape and
   `no-reply-mode`. The focused text field must be empty (so a draft is never
-  overwritten). The text goes in by setting the field's value and reading it
-  back; only if that didn't take, by ⌘V with the plain-text clipboard saved and
-  restored (if the clipboard holds anything but text, it's left alone and
-  nothing is typed). Return is pressed only when the focused field holds
-  exactly the reply; the app that was in front gets focus back.
+  overwritten). The text is pasted with ⌘V, never set as the field's value
+  (that dropped the reply on macOS 26.3 and sent a regular text). The clipboard
+  is checked before anything changes (plain or formatted text only; an image
+  or a file means `clipboard-busy`), saved (all its kinds when AppleScript can
+  hold them, else its text) and restored once the field shows the reply.
+  Return is pressed only when the focused field holds exactly the reply and the
+  reply preview is still there; if it's gone, the text is taken back out
+  (`reply-mode-lost`). The app that was in front gets focus back.
 
 **Outcomes.** Every tapback and reply ends with one `ui-action` event
 (`done` / `fallback` / `failed` + a sentence); read sync only reports failures
@@ -343,6 +357,11 @@ the back, then in front), checks chat.db and takes it off again, and opens Reply
 both ways without typing anything. Titles with digits, `@`, `+` or quotes,
 longer than 40 characters, or naming a contact are hidden. This is what to look
 at when a helper says it couldn't find something.
+
+**`./backchannel doctor --messages-open "Name"`** brings a conversation (by the
+name Backchannel shows) up in Messages the way tapbacks and replies do, without
+typing or sending anything, and prints whether it worked, the steps (the same
+trail as the log) and how long it took.
 
 ## Development (no Mac needed)
 
@@ -405,7 +424,8 @@ Tests: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pyt
   sidebar", "Couldn't find that message", "didn't offer that tapback" or "didn't
   offer Reply" usually means your macOS labels things differently: open the
   conversation in Messages, run `./backchannel doctor --messages-ui` and paste
-  the report. Permission errors: allow the app that runs the server
+  the report. `./backchannel doctor --messages-open "Name"` tries opening one
+  chat in Messages the way the helpers do (nothing is sent) and shows the steps. Permission errors: allow the app that runs the server
   (Backchannel, or your terminal) under Privacy & Security › Accessibility and ›
   Automation › System Events. A reply reported as "didn't confirm" may be
   sitting in Messages' reply field: check Messages before sending it again.

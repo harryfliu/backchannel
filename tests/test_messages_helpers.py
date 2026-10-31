@@ -142,7 +142,7 @@ def test_tapback_is_chosen_in_messages_and_verified(fake_rw):
     assert (name, script, timeout) == ("tapback", TAPBACK_SCRIPT, TAPBACK_TIMEOUT)
     assert argv == ["tapback", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan",
                     "T:are you down to hike Saturday?", "S:Jordan Park", "S:Jordan", "K:0", "J:0",
-                    "R:Heart", "R:Love", "R:Loved"]
+                    "R:Heart", "R:Love", "R:Loved", "U:imessage://+14155550134"]
     source = "\n".join(script)
     assert "hike" not in source and "Jordan" not in source  # all of it came as argv
     assert rw.get("/api/health")["messagesUi"]["permission"] == "granted"

@@ -276,8 +276,9 @@ to mark texts read, so with `markReadInMessages` on, `POST /read` also asks the
 Messages app to do it through macOS Accessibility (System Events), but only when
 chat.db still has unread incoming messages in that conversation. It runs in the
 background, never blocks the request, at most one at a time, and gives up after
-15 s. It finds the conversation's row in Messages' conversation list by its
-display name and uses the row's own "Mark as Read" accessibility action (no
+30 s. It finds the conversation's row in Messages' conversation list by its
+display name (scrolling the list a page at a time when it isn't in view, then
+back to the top) and uses the row's own "Mark as Read" accessibility action (no
 selecting, no menus; works with Messages in the background). It never types
 into Messages and never sends anything. Results go to the log and to
 `Health.messagesUi` (permission granted/denied; denied = macOS error -1719/-25211,
@@ -291,8 +292,16 @@ Both act only inside the conversation's own Messages transcript, only on
 messages Messages has loaded (recent ones), and are verified in chat.db. Each
 attempt ends with one `ui-action` event: `result` is `done`, `fallback` (replies
 only) or `failed`, and `detail` is a sentence the UI shows as a toast.
-- Tapback (`tapbacksViaMessages`): make the conversation the only one selected
-  in Messages' list, find the target bubble in the transcript (match sender +
+- Opening the chat (both): nothing happens unless Messages' main window shows
+  that conversation, checked by the title at the top of the chat (or its list
+  item being the only one selected). If it isn't on screen: for one-to-one chats
+  Messages' own link (`imessage://<handle>`, or `sms:<handle>` for SMS-only
+  chats; only plain numbers and addresses); else its item in the list, scrolling
+  the list a page at a time (at most 12) when it isn't in view, pressed, then
+  any other selected item pressed off, then clicked with Messages in front. The
+  log line ends with the steps taken (step names and item positions only).
+- Tapback (`tapbacksViaMessages`): open the chat as above, find the target
+  bubble in the transcript (match sender +
   text, newest match first; attachments by their placeholder) and use the
   bubble's own accessibility action for that tapback ("Heart", "Thumbs up",
   "Ha ha!"…; works with Messages in the background); to remove, use the same
@@ -306,15 +315,17 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   tapback per person per message, like iMessage: picking a different one
   replaces yours.
 - Thread reply (`threadRepliesViaMessages`): when a send (immediate or
-  scheduled) has `threadRootId` and not `regularText`, bring Messages to the
-  front (its Reply only works there), select the conversation the same way,
-  find the root bubble, use its "Reply…" action and check that the reply field
-  really opened. Then put the text in it: first by setting the field's value
-  (no clipboard), read back; only if that didn't take, by pasting (the
-  plain-text clipboard is saved and restored; if the clipboard holds anything
-  but text it isn't touched and nothing is typed). Return is pressed only when
-  the focused field holds exactly the reply; then the app that was in front
-  gets focus back. Verify the sent row has `thread_originator_guid` = root and
+  scheduled) has `threadRootId` and not `regularText`, open the chat as above,
+  bring Messages to the front (its Reply only works there), find the root
+  bubble, use its "Reply…" action and check that the reply field really opened.
+  Then paste the text, as a person would (setting the field's value directly
+  dropped the reply on macOS 26.3 and sent a regular text). The clipboard is
+  saved and restored; it may hold text (plain or formatted), and with anything
+  else (an image, a file) nothing is pasted. Return is pressed only when the
+  focused field holds exactly the reply and the reply preview is still there
+  (if Messages let go of the message being answered, the text is taken back
+  out: `reply-mode-lost`, nothing sent); then the app that was in front gets
+  focus back. Verify the sent row has `thread_originator_guid` = root and
   reconcile it to the clientId as usual (`ui-action` `done`; if the row arrived
   without a thread, `fallback`). If nothing was typed (the chat isn't in
   Messages' list, the message isn't loaded there, the reply field didn't
@@ -334,8 +345,8 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   success → `lastResult: "Ready"` (permission stays as it was: Accessibility
   isn't proven until a real action works).
 - At most one Messages action at a time (queue: read sync, tapbacks, replies
-  and the permission check share it); timeouts 15 s (read sync), 20 s (tapback),
-  30 s (reply). Never in
+  and the permission check share it); timeouts 30 s (read sync), 45 s (tapback),
+  60 s (reply), since finding a chat may mean scrolling Messages' list. Never in
   dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
   row it would have produced into the fake chat.db (like simulated sends), so
   the whole flow can be tried without a Mac. Tests use a fake runner.
