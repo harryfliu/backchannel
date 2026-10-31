@@ -1,11 +1,35 @@
-// The composer's emoji picker: regular emoji, your custom emoji, and stickers/Genmoji from iMessage.
+// The composer's emoji picker: every emoji (by category, with search by name or meaning), your
+// custom emoji, and stickers/Genmoji from iMessage.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { EMOJI } from '../lib/emoji'
+import { emojiName, noteEmojiUsed, POPULAR, recentEmoji, searchEmoji, useEmojiData } from '../lib/emoji'
 import { Icon } from '../lib/icons'
 import { loadStickers, setState, stageImageForSend, useStore } from '../state/store'
 
 type Tab = 'emoji' | 'custom' | 'imessage'
+
+const WIDTH = 440
+const HEIGHT = 470
+const MARGIN = 8
+// One glyph per category for the jump bar, in the full set's group order.
+const GROUP_ICONS = ['😀', '👋', '🐻', '🍔', '✈️', '⚽', '💡', '🔣', '🏳️']
+
+type Place = { left: number; width: number; height: number; top?: number; bottom?: number }
+
+/** Where the picker fits: above or below the button, whichever has more room, never off-screen. */
+function placeFor(anchor: HTMLElement): Place {
+  const r = anchor.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const width = Math.min(WIDTH, vw - MARGIN * 2)
+  const left = Math.max(MARGIN, Math.min(r.left, vw - width - MARGIN))
+  const above = r.top - MARGIN * 2
+  const below = vh - r.bottom - MARGIN * 2
+  if (above >= Math.min(HEIGHT, below)) {
+    return { left, width, height: Math.max(160, Math.min(HEIGHT, above)), bottom: vh - r.top + MARGIN }
+  }
+  return { left, width, height: Math.max(160, Math.min(HEIGHT, below)), top: r.bottom + MARGIN }
+}
 
 export function EmojiPicker({
   anchor,
@@ -23,20 +47,21 @@ export function EmojiPicker({
 }) {
   const [tab, setTab] = useState<Tab>('emoji')
   const [q, setQ] = useState('')
+  const [hover, setHover] = useState<{ char: string; name: string } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const body = useRef<HTMLDivElement>(null)
+  const [place, setPlace] = useState<Place>(() => placeFor(anchor))
   const custom = useStore((s) => s.customEmoji)
   const stickers = useStore((s) => s.stickers)
+  const set = useEmojiData()
 
+  // Sized to the window, not to what's inside: stickers loading later can't push it off-screen.
   useLayoutEffect(() => {
-    if (!ref.current) return
-    const r = anchor.getBoundingClientRect()
-    const m = ref.current.getBoundingClientRect()
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - m.width - 8))
-    let top = r.top - m.height - 8
-    if (top < 8) top = Math.min(r.bottom + 8, window.innerHeight - m.height - 8)
-    setPos({ top, left })
-  }, [anchor, tab])
+    const update = () => setPlace(placeFor(anchor))
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [anchor])
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -59,27 +84,71 @@ export function EmojiPicker({
 
   useEffect(() => {
     if (tab === 'imessage') void loadStickers()
+    body.current?.scrollTo({ top: 0 })
   }, [tab])
 
   const needle = q.trim().toLowerCase().replace(/:/g, '')
-  const emoji = useMemo(() => EMOJI.filter(([n]) => !needle || n.includes(needle)), [needle])
+  const found = useMemo(() => (needle ? searchEmoji(needle, 300, set) : []), [needle, set])
+  const recents = useMemo(() => {
+    const mine = recentEmoji()
+    const chars = mine.length >= 8 ? mine : [...mine, ...POPULAR.map(([, c]) => c).filter((c) => !mine.includes(c))].slice(0, 24)
+    return chars.map((char) => ({ char, name: emojiName(char) }))
+  }, [])
+  const sections = useMemo(() => {
+    if (!set.ready) return []
+    return set.groups.map((title, i) => ({ title, items: set.entries.filter((e) => e.group === i) }))
+  }, [set])
   const mine = useMemo(() => custom.filter((e) => !needle || e.name.includes(needle)), [custom, needle])
   const fromImessage = useMemo(
     () => (stickers ?? []).filter((st) => !needle || (st.description ?? '').toLowerCase().includes(needle) || st.kind.includes(needle)),
     [stickers, needle],
   )
 
+  const pick = (char: string) => {
+    noteEmojiUsed(char)
+    onUnicode(char)
+    onClose()
+  }
   const pickImage = (url: string, name: string) => {
     onClose()
     void stageImageForSend(cid, url, name)
   }
+  const jump = (i: number) => {
+    const el = body.current?.querySelector<HTMLElement>(`[data-section="${i}"]`)
+    if (el && body.current) body.current.scrollTo({ top: el.offsetTop - 4 })
+  }
+  const cell = (char: string, name: string, key: string) => (
+    <button
+      key={key}
+      type="button"
+      className="ep-cell"
+      title={name ? `:${name}:` : undefined}
+      onMouseEnter={() => setHover({ char, name })}
+      onFocus={() => setHover({ char, name })}
+      onClick={() => pick(char)}
+    >
+      {char}
+    </button>
+  )
 
   return createPortal(
-    <div ref={ref} className="emoji-picker" role="dialog" aria-label="Emoji" style={pos ?? { top: -9999, left: -9999 }}>
+    <div
+      ref={ref}
+      className="emoji-picker"
+      role="dialog"
+      aria-label="Emoji"
+      style={{ left: place.left, width: place.width, height: place.height, top: place.top, bottom: place.bottom }}
+    >
       <div className="ep-top">
         <div className="ep-search">
           <Icon name="search" size={15} />
-          <input id="emoji-search" autoFocus placeholder={tab === 'imessage' ? 'Search stickers' : 'Search emoji'} value={q} onChange={(e) => setQ(e.target.value)} />
+          <input
+            id="emoji-search"
+            autoFocus
+            placeholder={tab === 'imessage' ? 'Search stickers' : tab === 'custom' ? 'Search your emoji' : 'Search emoji: a name or what it means'}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
         </div>
         {allowImages && (
           <nav className="ep-tabs" aria-label="Emoji sets">
@@ -90,26 +159,40 @@ export function EmojiPicker({
             ))}
           </nav>
         )}
-      </div>
-      <div className="ep-body">
-        {tab === 'emoji' && (
-          <div className="ep-grid">
-            {emoji.map(([name, char]) => (
-              <button
-                key={name}
-                type="button"
-                className="ep-cell"
-                title={`:${name}:`}
-                onClick={() => {
-                  onUnicode(char)
-                  onClose()
-                }}
-              >
-                {char}
+        {tab === 'emoji' && !needle && set.ready && (
+          <nav className="ep-jump" aria-label="Emoji categories">
+            <button type="button" title="Frequently used" onClick={() => jump(-1)}>
+              <Icon name="clock" size={15} />
+            </button>
+            {set.groups.map((title, i) => (
+              <button key={title} type="button" title={title} onClick={() => jump(i)}>
+                {GROUP_ICONS[i] ?? '•'}
               </button>
             ))}
-            {emoji.length === 0 && <p className="ep-empty">No emoji named “{q}”.</p>}
+          </nav>
+        )}
+      </div>
+      <div className="ep-body" ref={body} onMouseLeave={() => setHover(null)}>
+        {tab === 'emoji' && needle && (
+          <div className="ep-grid">
+            {found.map((h) => cell(h.char, h.name, h.char))}
+            {found.length === 0 && <p className="ep-empty">{set.ready ? `No emoji for “${q}”.` : 'Loading every emoji…'}</p>}
           </div>
+        )}
+        {tab === 'emoji' && !needle && (
+          <>
+            <section className="ep-section" data-section="-1">
+              <h3 className="ep-section-title">Frequently used</h3>
+              <div className="ep-grid">{recents.map((e) => cell(e.char, e.name, 'recent-' + e.char))}</div>
+            </section>
+            {sections.map((s, i) => (
+              <section key={s.title} className="ep-section" data-section={i}>
+                <h3 className="ep-section-title">{s.title}</h3>
+                <div className="ep-grid">{s.items.map((e) => cell(e.char, e.names[0], e.char))}</div>
+              </section>
+            ))}
+            {!set.ready && <p className="ep-empty">Loading every emoji…</p>}
+          </>
         )}
         {tab === 'custom' && (
           <>
@@ -169,6 +252,18 @@ export function EmojiPicker({
           </>
         )}
       </div>
+      {tab === 'emoji' && (
+        <div className="ep-foot" aria-live="polite">
+          {hover ? (
+            <>
+              <span className="ep-foot-char">{hover.char}</span>
+              <span className="ep-foot-name">{hover.name ? `:${hover.name}:` : ''}</span>
+            </>
+          ) : (
+            <span className="ep-foot-hint">Type :name: in a message to find one fast, like :tired: or :lol:</span>
+          )}
+        </div>
+      )}
     </div>,
     document.body,
   )
