@@ -218,7 +218,10 @@ with `threadRootId` goes out as a normal text; the server stores
 (sent message GUID → threadRootId) locally and reports the message with that
 `threadRootId`, so it stays in the thread in Backchannel. With
 `threadRepliesViaMessages` on, it's sent as a real reply through the Messages
-app instead (see "Tapbacks and threaded replies via Messages" below).
+app instead, or not at all (see "Tapbacks and threaded replies via Messages"
+below). `regularText: true` in the `SendRequest` skips Messages and sends it the
+normal way, still kept in the thread in Backchannel: the UI's "Send as a regular
+text" on a reply that couldn't be sent as a real one.
 
 **Live updates.** A watcher polls `PRAGMA data_version` about once a second.
 On change it emits `message` for new rows, `message-updated` for messages whose
@@ -273,14 +276,14 @@ to mark texts read, so with `markReadInMessages` on, `POST /read` also asks the
 Messages app to do it through macOS Accessibility (System Events), but only when
 chat.db still has unread incoming messages in that conversation. It runs in the
 background, never blocks the request, at most one at a time, and gives up after
-~8 s. Strategy, in order: (1) find the conversation's row in Messages' sidebar
-by its display name, select it and, if the selection took, use Conversation ›
-Mark as Read; (2) the row's context menu (AXShowMenu) › Mark as Read. It
-never types into Messages and never sends anything. Results go to the log and to
+15 s. It finds the conversation's row in Messages' conversation list by its
+display name and uses the row's own "Mark as Read" accessibility action (no
+selecting, no menus; works with Messages in the background). It never types
+into Messages and never sends anything. Results go to the log and to
 `Health.messagesUi` (permission granted/denied; denied = macOS error -1719/-25211,
-"not allowed assistive access"). `./backchannel doctor --messages-ui` prints the
-Messages window's accessibility structure (roles, counts and menu titles only; no
-message text) so the script can be tuned to the user's macOS version.
+"not allowed assistive access"). `./backchannel doctor --messages-ui` reports
+what the scripts can reach in Messages (the list, the open chat, label shapes and
+action names; no message text) so they can be tuned to the user's macOS version.
 
 **Tapbacks and threaded replies via Messages (experimental, opt-in).** The same
 Accessibility automation as read sync, for the two things AppleScript can't do.
@@ -288,11 +291,12 @@ Both act only inside the conversation's own Messages transcript, only on
 messages Messages has loaded (recent ones), and are verified in chat.db. Each
 attempt ends with one `ui-action` event: `result` is `done`, `fallback` (replies
 only) or `failed`, and `detail` is a sentence the UI shows as a toast.
-- Tapback (`tapbacksViaMessages`): select the conversation in Messages' sidebar,
-  find the target bubble in the transcript (match sender + text, newest match
-  first; attachments by their placeholder), open its context menu (AXShowMenu)
-  and choose the tapback (Tapback submenu or reaction buttons, whatever the
-  user's macOS exposes); to remove, choose the same tapback again. Because
+- Tapback (`tapbacksViaMessages`): make the conversation the only one selected
+  in Messages' list, find the target bubble in the transcript (match sender +
+  text, newest match first; attachments by their placeholder) and use the
+  bubble's own accessibility action for that tapback ("Heart", "Thumbs up",
+  "Ha ha!"…; works with Messages in the background); to remove, use the same
+  tapback again. Because
   choosing a tapback toggles it, chat.db is checked first: adding one you
   already have, or removing one you don't, is `done` without touching
   Messages. Verify a new row with `associated_message_guid` pointing at the
@@ -302,21 +306,24 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   tapback per person per message, like iMessage: picking a different one
   replaces yours.
 - Thread reply (`threadRepliesViaMessages`): when a send (immediate or
-  scheduled) has `threadRootId`, find the root bubble the same way, choose
-  Reply in its context menu, then put the text in Messages' reply field: first
-  by setting the field's value (no clipboard), read back; only if that didn't
-  take, by pasting (the plain-text clipboard is saved and restored; if the
-  clipboard holds anything but text it isn't touched and nothing is typed).
-  Return is pressed only when the focused field holds exactly the reply.
-  Pasting and Return need Messages in front for about a second, then the app
-  that was in front gets focus back. Verify the sent row has
-  `thread_originator_guid` = root and reconcile it to the clientId as usual
-  (`ui-action` `done`; if the row arrived without a thread, `fallback`). If the
-  reply field couldn't be opened (nothing typed), send it the normal AppleScript
-  way and emit `fallback` ("went out as a regular text"). If text may have been
-  typed but nothing was verified (including timeouts), never send a second
-  copy: emit `failed` and a `send-status` failed whose error says to check
-  Messages before retrying (the row is still reconciled if it shows up later).
+  scheduled) has `threadRootId` and not `regularText`, bring Messages to the
+  front (its Reply only works there), select the conversation the same way,
+  find the root bubble, use its "Reply…" action and check that the reply field
+  really opened. Then put the text in it: first by setting the field's value
+  (no clipboard), read back; only if that didn't take, by pasting (the
+  plain-text clipboard is saved and restored; if the clipboard holds anything
+  but text it isn't touched and nothing is typed). Return is pressed only when
+  the focused field holds exactly the reply; then the app that was in front
+  gets focus back. Verify the sent row has `thread_originator_guid` = root and
+  reconcile it to the clientId as usual (`ui-action` `done`; if the row arrived
+  without a thread, `fallback`). If nothing was typed (the chat isn't in
+  Messages' list, the message isn't loaded there, the reply field didn't
+  open…), nothing is sent: `ui-action` `failed` and `send-status` failed with
+  an error that starts "Not sent as a reply:" and says why. The UI offers Try
+  again and Send as a regular text (`regularText`). If text may have been typed
+  but nothing was verified (including timeouts), never send a second copy:
+  emit `failed` and a `send-status` failed whose error says to check Messages
+  before retrying (the row is still reconciled if it shows up later).
 - Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes
   don't, and neither does "Messages isn't open / has no window" (it would come
   with every conversation you open).
@@ -327,7 +334,8 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   success → `lastResult: "Ready"` (permission stays as it was: Accessibility
   isn't proven until a real action works).
 - At most one Messages action at a time (queue: read sync, tapbacks, replies
-  and the permission check share it), ~10 s timeout each. Never in
+  and the permission check share it); timeouts 15 s (read sync), 20 s (tapback),
+  30 s (reply). Never in
   dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
   row it would have produced into the fake chat.db (like simulated sends), so
   the whole flow can be tried without a Mac. Tests use a fake runner.

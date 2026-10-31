@@ -125,6 +125,8 @@ export interface State {
   serverSettings: ServerSettings | null
   /** Tapbacks you just sent, shown right away until Messages confirms them. Keyed by message id. */
   pendingTapbacks: Record<string, PendingTapback>
+  /** Why a send failed, by local message id (shown under the message). */
+  failReasons: Record<string, string>
 }
 
 export interface PendingTapback {
@@ -136,7 +138,7 @@ export interface PendingTapback {
 // ------------------------------------------------------------------ storage
 
 const LS_KEY = 'backchannel:v1'
-function loadLocal(): Partial<Pick<State, 'settings' | 'collapsed' | 'drafts'>> {
+function loadLocal(): Partial<Pick<State, 'settings' | 'collapsed' | 'drafts' | 'activitySeenAt'>> {
   try {
     const raw = localStorage.getItem(LS_KEY)
     return raw ? JSON.parse(raw) : {}
@@ -146,7 +148,10 @@ function loadLocal(): Partial<Pick<State, 'settings' | 'collapsed' | 'drafts'>> 
 }
 function saveLocal(s: State) {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ settings: s.settings, collapsed: s.collapsed, drafts: s.drafts }))
+    localStorage.setItem(
+      LS_KEY,
+      JSON.stringify({ settings: s.settings, collapsed: s.collapsed, drafts: s.drafts, activitySeenAt: s.activitySeenAt }),
+    )
   } catch {
     // storage blocked; settings just won't persist
   }
@@ -187,7 +192,8 @@ let state: State = {
   later: [],
   scheduled: [],
   activity: [],
-  activitySeenAt: null,
+  // Remembered across restarts; the first run starts at "now" so old activity doesn't count as new.
+  activitySeenAt: local.activitySeenAt ?? new Date().toISOString(),
   catchUp: { data: null, loading: false, error: null, done: [] },
   search: { open: false, q: '', results: [], loading: false, scope: null },
   switcherOpen: false,
@@ -207,14 +213,17 @@ let state: State = {
   emojiDialog: null,
   serverSettings: null,
   pendingTapbacks: {},
+  failReasons: {},
 }
+// Keep the first run's "now", so a restart doesn't count old activity as new.
+if (!local.activitySeenAt) saveLocal(state)
 
 const listeners = new Set<() => void>()
 export const getState = () => state
 export function setState(patch: Partial<State> | ((s: State) => Partial<State>)) {
   const next = typeof patch === 'function' ? patch(state) : patch
   state = { ...state, ...next }
-  if ('settings' in next || 'collapsed' in next || 'drafts' in next) saveLocal(state)
+  if ('settings' in next || 'collapsed' in next || 'drafts' in next || 'activitySeenAt' in next) saveLocal(state)
   listeners.forEach((l) => l())
 }
 const subscribe = (l: () => void) => {
@@ -329,9 +338,24 @@ async function resync() {
     if (open) await loadMessages(open)
     const p = state.panel
     if (p?.kind === 'thread') void refreshThread(p.cid, p.mid)
+    scheduleActivityRefresh()
   } catch {
     // the next hello will try again
   }
+}
+
+let activityTimer: ReturnType<typeof setTimeout> | null = null
+/** Refetch Activity shortly after something that can add to it: a mention, a thread reply, a tapback on yours. */
+function scheduleActivityRefresh() {
+  if (activityTimer) return
+  activityTimer = setTimeout(async () => {
+    activityTimer = null
+    const items = await api.activity().catch(() => null)
+    if (!items) return
+    // Already looking at Activity: what just arrived is seen.
+    const looking = state.rail === 'activity' && document.visibilityState === 'visible'
+    setState(looking ? { activity: items, activitySeenAt: new Date().toISOString() } : { activity: items })
+  }, 1500)
 }
 
 function onEvent(e: ServerEvent) {
@@ -356,6 +380,7 @@ function onEvent(e: ServerEvent) {
     case 'message': {
       const m = e.message
       maybeNotify(m)
+      if (!m.fromMe && (m.mentionsMe || m.threadRootId)) scheduleActivityRefresh()
       setState((s) => {
         const ms = s.messages[m.conversationId]
         const out: Partial<State> = {}
@@ -373,6 +398,7 @@ function onEvent(e: ServerEvent) {
       const m = e.message
       const p = state.pendingTapbacks[m.id]
       if (p && tapbackLanded(m, p)) clearPendingTapback(m.id)
+      if (m.fromMe && m.reactions.length) scheduleActivityRefresh()
       setState((s) => {
         const ms = s.messages[m.conversationId]
         const out: Partial<State> = {}
@@ -397,6 +423,7 @@ function onEvent(e: ServerEvent) {
     case 'send-status':
       if (e.status === 'failed') {
         patchMessage(e.conversationId, `local:${e.clientId}`, { status: 'failed' })
+        if (e.error) setState((s) => ({ failReasons: { ...s.failReasons, [`local:${e.clientId}`]: e.error! } }))
         toast(e.error ?? "Your message didn't send. Messages.app reported an error.", 'error')
       }
       break
@@ -446,7 +473,7 @@ function onUiAction(e: Extract<ServerEvent, { type: 'ui-action' }>) {
     }
   } else if (e.action === 'reply') {
     if (e.result === 'fallback') toast(e.detail || 'Messages couldn’t make it a reply, so it went out as a regular text.')
-    else if (e.result === 'failed') toast(e.detail || 'Messages didn’t confirm your reply. Check Messages before you try again.', 'error')
+    // A failed reply also comes with a failed send-status, which already showed this.
   } else if (e.action === 'mark-read' && e.result === 'failed' && !markReadWarned) {
     markReadWarned = true
     toast(e.detail || 'Couldn’t mark that conversation read in Messages.')
@@ -719,7 +746,11 @@ export function setDraft(key: string, text: string) {
   })
 }
 
-export async function sendMessage(cid: string, text: string, opts: { threadRootId?: string | null; sendAt?: string | null } = {}) {
+export async function sendMessage(
+  cid: string,
+  text: string,
+  opts: { threadRootId?: string | null; sendAt?: string | null; regularText?: boolean } = {},
+) {
   const body = text.trim()
   if (!body) return
   const clientId = uid()
@@ -771,7 +802,13 @@ export async function sendMessage(cid: string, text: string, opts: { threadRootI
     return { aiDrafts }
   })
   try {
-    const res = await api.send(cid, { text: body, clientId, threadRootId: opts.threadRootId ?? null, sendAt: scheduledFor })
+    const res = await api.send(cid, {
+      text: body,
+      clientId,
+      threadRootId: opts.threadRootId ?? null,
+      sendAt: scheduledFor,
+      ...(opts.regularText ? { regularText: true } : {}),
+    })
     if (res.status === 'scheduled' && scheduledFor) {
       toast(`Scheduled for ${whenLabel(scheduledFor)}`)
       if (!state.scheduled.some((x) => x.id === res.scheduledId)) {
@@ -797,18 +834,32 @@ export async function sendMessage(cid: string, text: string, opts: { threadRootI
   }
 }
 
-export async function retrySend(cid: string, localId: string) {
-  const m = state.messages[cid]?.items.find((x) => x.id === localId)
+export async function retrySend(cid: string, localId: string, opts: { regularText?: boolean } = {}) {
+  const m =
+    state.messages[cid]?.items.find((x) => x.id === localId) ??
+    Object.values(state.threads)
+      .flatMap((t) => t.replies)
+      .find((x) => x.id === localId)
   if (!m) return
-  setState((s) => ({
-    messages: { ...s.messages, [cid]: { ...s.messages[cid], items: s.messages[cid].items.filter((x) => x.id !== localId) } },
-  }))
+  setState((s) => {
+    const { [localId]: _gone, ...failReasons } = s.failReasons
+    const threads = { ...s.threads }
+    for (const [k, t] of Object.entries(threads)) {
+      if (t.replies.some((r) => r.id === localId)) threads[k] = { ...t, replies: t.replies.filter((r) => r.id !== localId) }
+    }
+    const ms = s.messages[cid]
+    return {
+      threads,
+      failReasons,
+      messages: ms ? { ...s.messages, [cid]: { ...ms, items: ms.items.filter((x) => x.id !== localId) } } : s.messages,
+    }
+  })
   const file = m.clientId ? pendingFiles.get(m.clientId) : undefined
   if (file) {
     pendingFiles.delete(m.clientId!)
     await sendFiles(cid, [file])
   } else {
-    await sendMessage(cid, m.text, { threadRootId: m.threadRootId })
+    await sendMessage(cid, m.text, { threadRootId: m.threadRootId, regularText: opts.regularText })
   }
 }
 

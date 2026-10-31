@@ -494,7 +494,23 @@ function ThreadSummary({ m }: { m: Message }) {
 }
 
 function StatusLine({ m }: { m: Message }) {
+  const realReplies = useStore((s) => !!s.serverSettings?.threadRepliesViaMessages)
+  const reason = useStore((s) => s.failReasons[m.id])
   if (m.status === 'sending') return <p className="msg-status">Sending…</p>
+  // A real reply that Messages couldn't take: nothing was sent. Retry, or send it as a regular text.
+  if (m.status === 'failed' && m.threadRootId && realReplies)
+    return (
+      <p className="msg-status is-failed">
+        <Icon name="alert" size={14} /> {reason ?? 'Not sent as a reply.'}{' '}
+        <button type="button" className="link-btn" onClick={() => retrySend(m.conversationId, m.id)}>
+          Try again
+        </button>
+        <span className="msg-status-sep">·</span>
+        <button type="button" className="link-btn" onClick={() => retrySend(m.conversationId, m.id, { regularText: true })}>
+          Send as a regular text
+        </button>
+      </p>
+    )
   if (m.status === 'failed')
     return (
       <p className="msg-status is-failed">

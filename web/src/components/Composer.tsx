@@ -408,7 +408,7 @@ function ThreadNote() {
   const ss = useStore((s) => s.serverSettings)
   if (!ss) return null
   if (ss.threadRepliesViaMessages) {
-    return <p className="composer-note">Sends as a real reply through Messages, so it threads on their phone too. Messages comes forward for a second.</p>
+    return <p className="composer-note">Sends as a real reply through Messages, so it threads on their phone too. Messages comes forward for a few seconds.</p>
   }
   return (
     <p className="composer-note">

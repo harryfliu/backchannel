@@ -365,9 +365,9 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
     parser.add_argument("--messages-tree", action="store_true",
                         help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
     parser.add_argument("--messages-ui", action="store_true",
-                        help="describe the Messages window's accessibility structure (roles, counts and menu "
-                             "titles only); opens the newest bubble's menu, Tapback picker and Reply field and "
-                             "closes them again without choosing or typing anything")
+                        help="describe what the scripts can reach in Messages (spots, label shapes and action "
+                             "names only); opens the newest bubble's menu and Tapback picker and closes them "
+                             "again without choosing anything")
     args = parser.parse_args(argv)
     if dotenv:
         load_dotenv()

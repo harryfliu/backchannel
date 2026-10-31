@@ -236,9 +236,9 @@ turned on in Settings › Messages helpers (`PATCH /api/settings`):
 
 | Setting | What Messages is asked to do | Checked in chat.db |
 |---|---|---|
-| `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: select the conversation, Conversation › Mark as Read (else the row's context menu) | 3 s later the messages that were unread are read |
-| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: select the conversation, find the bubble, its context menu › Tapback › the tapback (or the reaction right in the menu) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
-| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled): find the root bubble, context menu › Reply, put the text in the reply field, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
+| `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: find the conversation's row in Messages' list and use its "Mark as Read" action | 3 s later the messages that were unread are read |
+| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: select only that conversation, find the bubble, use its action for the tapback ("Heart", "Thumbs up"…) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
+| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): bring Messages forward, select only that conversation, find the root bubble, use its "Reply…" action, check the reply field opened, put the text in, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
 
 **Permissions.** Two macOS prompts, both for the app that runs the server
 (Backchannel.app, or your terminal): *Accessibility* (System Settings › Privacy
@@ -255,7 +255,12 @@ action got through, and the permission check alone only reports `lastResult:
 and the permission check share the queue), never blocking a request. Each
 action is one `osascript`: the script lines as `-e`, every name and text as
 argv (tagged values, see `server/messages_scripts.py`), never in the source.
-Timeouts: 8 s (mark read), 10 s (tapback), 12 s (reply). When editing the
+Timeouts: 15 s (mark read), 20 s (tapback), 30 s (reply). Each accessibility
+request costs ~0.1 s, so the scripts reach the list, the open chat and the
+entry area with one literal reference each (child-index paths found on macOS
+26.3, checked by accessibility id; a capped search by id if the layout
+differs), read labels for a whole list in one request, and never use
+`entire contents` (over a minute on a big window). When editing the
 scripts: AppleScript names are case-insensitive and System Events' terms win
 inside its tell, so every script variable is `bc`-prefixed (a list called
 `outLines` *was* its `outlines` class: -10006 on every write), each tell is one
@@ -266,14 +271,18 @@ turned off while they waited are dropped. Nothing runs in dry-run or fake-DB
 mode (see below).
 
 **Finding things in Messages.**
-- *The conversation*: labels (description, name, value) of the window's rows,
-  cells, buttons, groups and static texts (first 2,500 elements). A label line
-  that is exactly one of its names (or `Name, …`) wins, most specific name first;
-  the title, full name, nickname, company and number (`(415) 555-0134`,
-  `+1 (415) 555-0134`) may also match a label's start, the short name
-  ("Jordan") only exactly. Matches climb to their row. Only rows and cells are
-  ever selected or pressed (AXSelected, else AXPress), and for tapbacks and
-  replies the selection has to be confirmed or nothing happens.
+- *The conversation*: the descriptions of every item in the conversation list
+  (`ConversationList`), read in one request. They look like `Name, [Unread, ]preview,
+  time` (pinned: `Name, Pinned`). A label that is exactly one of its names or
+  starts `Name, ` wins, most specific name first; the title, full name,
+  nickname, company and number (`(415) 555-0134`, `+1 (415) 555-0134`) may
+  also match a label's start, the short name ("Jordan") only exactly. Only
+  chats in the list's loaded part (pinned plus the most recent ones) can be
+  found. For tapbacks and replies that item must become the *only* selected
+  one: pressing an item toggles it like ⌘-click (two selected chats show
+  neither), so the script sets the list's selection, else presses it and
+  presses any other selected item off, else clicks it; if one chat still isn't
+  the only one selected, nothing happens (`not-selected`).
 - *The bubble* (tapbacks, replies): the transcript right of the sidebar row,
   newest first (the window walked backwards). Text: the first line (60 chars);
   8+ characters must appear in a label, shorter ones must be a whole label line.
@@ -282,24 +291,31 @@ mode (see below).
   messages with the same text are counted (from chat.db) and skipped, so "ok"
   finds the right "ok". Only recent messages (the ones Messages has loaded) can
   be found.
-- *Tapbacks*: menu item "Tapback…"/"React…", then a button whose description is
-  one of: Heart/Love, Thumbs up/Like, Thumbs down/Dislike, Ha ha/Haha/Laugh,
-  Exclamation marks/Emphasize/!!, Question mark/Question/?. Choosing a tapback
-  toggles it, so chat.db is checked first: adding one you have, or removing one
-  you don't, is answered `done` without touching Messages.
-- *Replies*: menu item "Reply", then the focused text field must be empty (so a
-  draft is never overwritten). The text goes in by setting the field's value and
-  reading it back; only if that didn't take, by ⌘V with the plain-text
-  clipboard saved and restored (if the clipboard holds anything but text, it's
-  left alone and nothing is typed). Return is pressed only when the focused
-  field holds exactly the reply. Pasting and Return bring Messages to the front
-  for about a second; the app that was in front gets focus back.
+- *Tapbacks*: the bubble's own accessibility action whose title is one of:
+  Heart/Love, Thumbs up/Like, Thumbs down/Dislike, Ha ha/Haha/Laugh, Exclamation
+  mark/Emphasize/!!, Question mark/Question/? (works with Messages in the
+  background). Choosing a tapback toggles it, so chat.db is checked first:
+  adding one you have, or removing one you don't, is answered `done` without
+  touching Messages.
+- *Replies*: Messages comes to the front first (its "Reply…" action does
+  nothing in the background), then the bubble's "Reply…" action; the reply
+  field counts as open only when the entry area shows the reply preview (on
+  macOS 26.3 a group in it goes from one child to two), else Escape and
+  `no-reply-mode`. The focused text field must be empty (so a draft is never
+  overwritten). The text goes in by setting the field's value and reading it
+  back; only if that didn't take, by ⌘V with the plain-text clipboard saved and
+  restored (if the clipboard holds anything but text, it's left alone and
+  nothing is typed). Return is pressed only when the focused field holds
+  exactly the reply; the app that was in front gets focus back.
 
 **Outcomes.** Every tapback and reply ends with one `ui-action` event
 (`done` / `fallback` / `failed` + a sentence); read sync only reports failures
-(not "Messages isn't open"). A reply that couldn't be typed (no Reply item, no
-field, no bubble, no permission…) goes out the normal AppleScript way
-(`fallback`, still threaded locally). Once text may be in Messages (typed,
+(not "Messages isn't open"). A reply that couldn't be typed (chat or bubble not
+found, no reply mode, no permission…) is not sent at all: `send-status` failed
+with "Not sent as a reply: <why>", and the UI offers Try again and Send as a
+regular text (`regularText`, the normal AppleScript way, still threaded
+locally). `fallback` now only means Messages sent the typed reply without a
+thread. Once text may be in Messages (typed,
 Return pressed, timed out, unexplained errors) it is never sent again:
 `send-status` failed with "Messages didn't confirm your reply. Check Messages
 before you try again." — and if the row shows up later it's still matched to the
@@ -314,15 +330,19 @@ normal (dry-run) way. Mark read and the permission check need the real app.
 
 **`./backchannel doctor --messages-ui`** prints, with no message text or names:
 whether Accessibility is allowed and Messages is running, the window count, the
-menu bar titles and the Conversation menu's items, the front window's roles and
-child counts (depth 8, at most 400 elements), how many rows expose a
-description/name/value (counts and lengths only), and for the newest bubble of
-the selected conversation: its role and actions, its context-menu titles, the
-Tapback picker's button descriptions (it opens the picker, chooses nothing,
-presses Escape) and whether the Reply field's value can be set (it opens Reply,
-types nothing, presses Escape). Titles with digits, `@`, `+` or quotes, longer
-than 40 characters, or naming a contact are hidden. This is what to look at when
-a helper says it couldn't find something.
+menu bar titles and the Conversation menu's items, whether the list, the open
+chat and its title are where the scripts expect them (by accessibility id), the
+list items' roles, selection and label shapes (the length of each part; a few
+status words and clock times named) and the first items' action names, and for
+the newest bubble: its row, balloon and text actions, its context-menu titles
+and the Tapback picker's buttons (it opens the menu and picker, chooses
+nothing, presses Escape). `--messages-tree` maps the whole window instead (a
+bounded walk; a minute or two). `--messages-try` is a live check that runs only
+when your own chat is the one open in Messages: it presses Heart (Messages in
+the back, then in front), checks chat.db and takes it off again, and opens Reply
+both ways without typing anything. Titles with digits, `@`, `+` or quotes,
+longer than 40 characters, or naming a contact are hidden. This is what to look
+at when a helper says it couldn't find something.
 
 ## Development (no Mac needed)
 

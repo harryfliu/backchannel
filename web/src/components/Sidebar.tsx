@@ -59,7 +59,11 @@ export function Rail() {
   const rail = useStore((s) => s.rail)
   const me = useStore((s) => s.me)
   const unreadDms = useStore((s) => Object.values(s.conversations).filter((c) => !c.isAutomated && !c.prefs.muted && c.unreadCount > 0).length)
-  const newActivity = useStore((s) => s.activity.filter((a) => !s.activitySeenAt || a.at > s.activitySeenAt).length)
+  // Compare instants, not strings: the server writes local times with an offset (…-07:00), the app UTC (…Z).
+  const newActivity = useStore((s) => {
+    const seen = s.activitySeenAt ? Date.parse(s.activitySeenAt) : 0
+    return s.activity.filter((a) => Date.parse(a.at) > seen).length
+  })
   // Badge only what needs attention now: reminders that fired and aren't done.
   const laterCount = useStore((s) => s.later.filter((l) => isDue(l)).length)
   const tab = (id: RailTab, icon: 'home' | 'dms' | 'bell' | 'bookmark', label: string, badge?: number, dot?: boolean) => (

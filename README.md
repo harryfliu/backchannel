@@ -89,12 +89,15 @@ macOS Accessibility. Turn each one on in Settings (⌘,) › Messages helpers, a
 Backchannel in System Settings › Privacy & Security › Accessibility.
 - **Send tapbacks**: ❤️ 👍 👎 😂 ‼️ ❓ from the smiley on any text, or click a reaction to add yours.
 - **Send thread replies as real replies**: they thread on everyone's phone. Messages
-  comes to the front for about a second while it sends.
+  comes to the front for a few seconds while it sends. If it can't be sent as a real
+  reply, nothing is sent: the message says why, with Try again and Send as a regular
+  text.
 - **Mark texts read in Messages**: opening a conversation here marks it read there
   too, so your phone matches.
 
 Each one is checked against Messages' database afterward, and you'll see a note if
-it didn't work. They only reach recent messages, and a macOS update can break them
+it didn't work. They only reach chats and messages Messages has loaded (pinned and
+recent ones), and a macOS update can break them
 until they're adjusted. `./backchannel doctor --messages-ui` shows what Backchannel
 can see in Messages (no message text).
 

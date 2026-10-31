@@ -18,7 +18,7 @@ from fake_messages import FakeMessages, tagged, write_reply, write_tapback
 from server import fakedb
 from server.messages_ui import (DENIED_TEXT, REPLY_SCRIPT, REPLY_TIMEOUT, TAPBACK_SCRIPT, TAPBACK_TIMEOUT, TAPBACKS_OFF,
                                 Outcome)
-from server.sending import REPLY_DONE, REPLY_FALLBACK, REPLY_UNCONFIRMED
+from server.sending import REPLY_DONE, REPLY_UNCONFIRMED
 from ts_shapes import validate
 
 JORDAN = "dm:+14155550134"
@@ -249,17 +249,24 @@ def test_thread_reply_goes_through_messages(fake_rw, sends):
     assert message["threadRootId"] == root and message["clientId"] == "r-1"
 
 
-def test_reply_falls_back_when_nothing_was_typed(fake_rw, sends):
+def test_reply_that_cant_be_typed_fails_instead_of_going_out_as_a_regular_text(fake_rw, sends):
+    # Harry's Mac: two failed real replies quietly became regular texts in his wife's chat. Now nothing
+    # is sent; the reply fails with the reason, and the UI offers "Send as a regular text" (regularText).
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
     fake.answers["reply"] = Outcome(0, "no-reply-item", "")
     rw.post(send_url(SOCCER), {"text": "count me in", "clientId": "r-2", "threadRootId": root})
-    fallback = wait_for(rw, ui_action("reply", clientId="r-2"))
-    assert fallback["result"] == "fallback" and fallback["detail"] == REPLY_FALLBACK
-    assert len(sends) == 1  # exactly one normal send
+    action = wait_for(rw, ui_action("reply", clientId="r-2"))
+    assert action["result"] == "failed" and action["detail"].startswith("Not sent as a reply: ")
     status = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "r-2"])[0]
-    assert status["status"] == "sent"
-    assert rw.services.builder.by_guid(status["messageId"])["threadRootId"] == root  # still threaded locally
+    assert status["status"] == "failed" and status["error"].startswith("Not sent as a reply")
+    assert sends == []
+    # The person chooses a regular text: a new send with regularText skips Messages' Reply.
+    rw.post(send_url(SOCCER), {"text": "count me in", "clientId": "r-2b", "threadRootId": root, "regularText": True})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "r-2b"])[0]
+    assert sent["status"] == "sent" and len(sends) == 1
+    assert rw.services.builder.by_guid(sent["messageId"])["threadRootId"] == root  # still threaded locally
+    assert fake.names() == ["reply"]  # Messages' Reply was only tried the first time
 
 
 def test_typed_but_unconfirmed_reply_is_never_sent_twice(fake_rw, sends):
@@ -294,17 +301,17 @@ def test_typing_errors_count_as_maybe_sent(fake_rw, sends):
     assert sends == []
 
 
-def test_nothing_typed_answers_all_fall_back(fake_rw, sends):
+def test_nothing_typed_answers_all_fail_without_sending(fake_rw, sends):
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
     answers = ["not-running", "row-not-found", "not-selected", "bubble-not-found", "no-menu", "no-reply-field",
-               "field-busy", "clipboard-busy", "nothing-typed", "error:-1719"]
+               "no-reply-mode", "field-busy", "clipboard-busy", "nothing-typed", "error:-1719"]
     for i, answer in enumerate(answers):
         fake.answers["reply"] = Outcome(0, answer, "")
         rw.post(send_url(SOCCER), {"text": f"plain {i}", "clientId": f"p-{i}", "threadRootId": root})
         action = wait_for(rw, ui_action("reply", clientId=f"p-{i}"))
-        assert action["result"] == "fallback", answer
-    assert len(sends) == len(answers)
+        assert action["result"] == "failed", answer
+    assert sends == []
 
 
 def test_scheduled_thread_reply_goes_through_messages(fake_rw, sends):

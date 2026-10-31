@@ -685,7 +685,7 @@ class MessagesUI:
                           target_text=message.get("text") or "")
 
     def reply_job(self, conv: Conv, root_id: str, text: str, client_id: str) -> ReplyJob | None:
-        """None when the root can't be found in Messages' terms (the reply then goes out the normal way)."""
+        """None when the root can't be found in Messages' terms (the reply is then not sent: "Not sent as a reply")."""
         try:
             row, message = self.target(conv, root_id)
         except (LookupError, ValueError):

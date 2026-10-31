@@ -75,6 +75,7 @@ class SendBody(BaseModel):
     clientId: str
     threadRootId: str | None = None
     sendAt: str | None = None
+    regularText: bool = False
 
 
 class PrefsBody(BaseModel):
@@ -502,7 +503,7 @@ def create_app(
         send_at = _parse_time(body.sendAt, "sendAt")
         if send_at is not None and send_at > time.time() + 5:
             return await asyncio.to_thread(s.sending.schedule, conv, text, send_at, client_id, body.threadRootId)
-        return s.sending.queue_text(conv, text, client_id, body.threadRootId)
+        return s.sending.queue_text(conv, text, client_id, body.threadRootId, regular_text=body.regularText)
 
     @app.post("/api/conversations")
     async def start_conversation(body: NewConversationBody):

@@ -354,6 +354,12 @@ end spotTitle
 -- match the whole label or its "Name, " start; L names may also match its beginning. The earliest
 -- name wins.
 on findRow(bcList, bcStrictNames, bcLooseNames)
+    set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+    if bcAt is 0 then return missing value
+    return my atPath(bcList, {bcAt})
+end findRow
+
+on findRowIndex(bcList, bcStrictNames, bcLooseNames)
     set bcDescs to {}
     set bcRoles to {}
     try
@@ -392,26 +398,66 @@ on findRow(bcList, bcStrictNames, bcLooseNames)
         end if
     end repeat
     if bcBestAt is 0 then set bcBestAt to bcLooseAt
-    if bcBestAt is 0 then return missing value
-    return my atPath(bcList, {bcBestAt})
-end findRow
+    return bcBestAt
+end findRowIndex
 
--- Open the conversation and make sure it's the selected one, so the chat on screen is the right
--- one (pressing a list item in the background may not switch it; then try again in front).
-on openRow(bcRowEl)
-    if my isSelected(bcRowEl) then return true
+-- Make this conversation the only selected one, so its chat is the one on screen. Pressing a list
+-- item in Messages toggles it like a Command-click (two chats end up selected and neither shows),
+-- so: set the list's selection; else press it and press any other selected item off; else click it.
+on selectOnly(bcList, bcAt)
+    set bcRowEl to my atPath(bcList, {bcAt})
+    if bcRowEl is missing value then return false
+    if my onlySelected(bcList, bcAt) then return true
+    set bcPick to {bcRowEl}
     try
-        tell application "System Events" to perform action "AXPress" of bcRowEl
+        tell application "System Events" to set value of attribute "AXSelectedChildren" of bcList to bcPick
     end try
-    delay 0.8
-    if my isSelected(bcRowEl) then return true
+    delay 0.5
+    if my onlySelected(bcList, bcAt) then return true
+    if not my isSelected(bcRowEl) then
+        try
+            tell application "System Events" to perform action "AXPress" of bcRowEl
+        end try
+        delay 0.5
+    end if
+    set bcSels to my selectedFlags(bcList)
+    repeat with i from 1 to count of bcSels
+        if i is not bcAt and (item i of bcSels) is true then
+            try
+                tell application "System Events" to perform action "AXPress" of UI element i of bcList
+            end try
+        end if
+    end repeat
+    delay 0.6
+    if my onlySelected(bcList, bcAt) then return true
     my bringForward()
+    set bcFrame to my frameOf(bcRowEl)
+    if bcFrame is missing value then return false
+    set bcPoint to {(item 1 of bcFrame) + ((item 3 of bcFrame) / 2), (item 2 of bcFrame) + ((item 4 of bcFrame) / 2)}
     try
-        tell application "System Events" to perform action "AXPress" of bcRowEl
+        tell application "System Events" to click at bcPoint
     end try
-    delay 0.8
-    return my isSelected(bcRowEl)
-end openRow
+    delay 0.6
+    return my onlySelected(bcList, bcAt)
+end selectOnly
+
+on selectedFlags(bcList)
+    set bcSels to {}
+    try
+        tell application "System Events" to set bcSels to value of attribute "AXSelected" of every UI element of bcList
+    end try
+    return bcSels
+end selectedFlags
+
+on onlySelected(bcList, bcAt)
+    set bcSels to my selectedFlags(bcList)
+    if bcAt > (count of bcSels) then return false
+    set bcCount to 0
+    repeat with bcS in bcSels
+        if (contents of bcS) is true then set bcCount to bcCount + 1
+    end repeat
+    return bcCount is 1 and (item bcAt of bcSels) is true
+end onlySelected
 
 -- The message entry area at the bottom of the chat. In reply mode Messages adds a preview of the
 -- message being answered inside it, so its element count goes up.
@@ -636,12 +682,20 @@ on act(argv)
         tell application "System Events" to set bcWin to window 1 of process "Messages"
         set bcList to my spotList(bcWin)
         if bcList is missing value then return "no-list"
-        set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
-        if bcRowEl is missing value then return "row-not-found"
-        if not my openRow(bcRowEl) then return "not-selected"
+        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+        if bcAt is 0 then return "row-not-found"
+        if not my selectOnly(bcList, bcAt) then return "not-selected"
         set bcTranscript to my spotTranscript(bcWin)
+        if bcTranscript is missing value then
+            delay 0.8
+            set bcTranscript to my spotTranscript(bcWin)
+        end if
         if bcTranscript is missing value then return "no-transcript"
         set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        if bcBubble is missing value then
+            delay 0.8
+            set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        end if
         if bcBubble is missing value then return "bubble-not-found"
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
@@ -674,12 +728,20 @@ on act(argv)
         tell application "System Events" to set bcWin to window 1 of process "Messages"
         set bcList to my spotList(bcWin)
         if bcList is missing value then return "no-list"
-        set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
-        if bcRowEl is missing value then return "row-not-found"
-        if not my openRow(bcRowEl) then return "not-selected"
+        set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
+        if bcAt is 0 then return "row-not-found"
+        if not my selectOnly(bcList, bcAt) then return "not-selected"
         set bcTranscript to my spotTranscript(bcWin)
+        if bcTranscript is missing value then
+            delay 0.8
+            set bcTranscript to my spotTranscript(bcWin)
+        end if
         if bcTranscript is missing value then return "no-transcript"
         set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        if bcBubble is missing value then
+            delay 0.8
+            set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        end if
         if bcBubble is missing value then return "bubble-not-found"
         set bcEntry to my spotEntry(bcWin)
         if bcEntry is missing value then return "no-reply-field"

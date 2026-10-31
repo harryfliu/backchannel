@@ -237,11 +237,14 @@ export interface SendRequest {
   text: string
   /** Random id from the client, echoed back so the optimistic message can be swapped. */
   clientId: string
-  /** Replying from a thread. iMessage can't receive threaded replies from other apps,
-   *  so this goes out as a normal text; the server remembers the thread locally. */
+  /** Replying from a thread. With threadRepliesViaMessages on it goes out as a real reply through
+   *  Messages (or fails with the reason, never quietly as a regular text); otherwise as a regular
+   *  text. Either way the server keeps it in the thread here. */
   threadRootId?: string | null
   /** Future time = scheduled send. */
   sendAt?: string | null
+  /** A thread reply sent as a regular text on purpose, skipping Messages' Reply (after a failed real reply). */
+  regularText?: boolean
 }
 
 export interface SendResponse {
