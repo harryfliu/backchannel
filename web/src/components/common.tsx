@@ -238,7 +238,12 @@ export function useMenu() {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
   return {
     anchor,
-    open: (e: React.MouseEvent<HTMLElement>) => setAnchor((a) => (a ? null : e.currentTarget)),
+    // Read the button now: React clears currentTarget once the click is handled, and the updater may
+    // run later than that (right after a menu closed, the first click then opened nothing).
+    open: (e: React.MouseEvent<HTMLElement>) => {
+      const button = e.currentTarget
+      setAnchor((a) => (a ? null : button))
+    },
     close: () => setAnchor(null),
   }
 }

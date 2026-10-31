@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Conversation } from '../api/types'
 import { fileSize, timeShort, whenLabel } from '../lib/format'
 import { Icon } from '../lib/icons'
-import { EMOJI } from '../lib/emoji'
+import { loadEmojiData, noteEmojiUsed, searchEmoji, useEmojiData } from '../lib/emoji'
 import {
   attachmentKind,
   clearDrafts,
@@ -41,6 +41,7 @@ export function Composer({
   const ta = useRef<HTMLTextAreaElement>(null)
   const emoji = useMenu()
   const customEmoji = useStore((s) => s.customEmoji)
+  const emojiSet = useEmojiData()
   const [caret, setCaret] = useState(0)
   const [pick, setPick] = useState(0)
   const [dismissed, setDismissed] = useState<string | null>(null)
@@ -115,12 +116,18 @@ export function Composer({
           .slice(0, 5)
           .map((e) => ({ kind: 'custom' as const, name: e.name, url: e.url }))
       : []
-    const std = EMOJI.filter(([n]) => rank(n) < 2)
-      .sort((a, b) => rank(a[0]) - rank(b[0]))
-      .slice(0, 8 - mine.length)
-      .map(([name, char]) => ({ kind: 'unicode' as const, name, char }))
+    // Every emoji, by name or meaning (":tired" → 😴 🥱 😩, ":lol" → 😂 🤣).
+    const std = searchEmoji(token, 8 - mine.length, emojiSet).map((h) => ({
+      kind: 'unicode' as const,
+      name: h.name,
+      char: h.char,
+      via: h.via,
+    }))
     return [...mine, ...std]
-  }, [token, dismissed, customEmoji, canAttach])
+  }, [token, dismissed, customEmoji, canAttach, emojiSet])
+  useEffect(() => {
+    if (token) void loadEmojiData()
+  }, [token])
   useEffect(() => setPick(0), [token])
 
   const accept = (i: number) => {
@@ -130,6 +137,7 @@ export function Composer({
     const before = text.slice(0, start)
     const after = text.slice(caret)
     if (sug.kind === 'unicode') {
+      noteEmojiUsed(sug.char)
       const next = before + sug.char + ' ' + after
       update(next)
       const pos = before.length + sug.char.length + 1
@@ -216,6 +224,7 @@ export function Composer({
                 {sug.kind === 'custom' ? <img src={sug.url} alt="" /> : <span className="emoji-suggest-char">{sug.char}</span>}
                 <span>:{sug.name}:</span>
                 {sug.kind === 'custom' && <span className="emoji-suggest-note">sends as a picture</span>}
+                {sug.kind === 'unicode' && sug.via && <span className="emoji-suggest-note">{sug.via}</span>}
               </button>
             ))}
           </div>

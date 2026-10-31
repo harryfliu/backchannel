@@ -79,6 +79,9 @@ Access instead.
 - **Chief**: profile cards show what Chief knows (birthday, open loops, notes), and
   **Add to Chief loops** turns a text into a loop.
 - Photos and files: the + button, paste, or drag onto a conversation.
+- **Emoji**: every emoji, by category, with your recent ones first. Type `:` and a name
+  or what you mean (`:tired`, `:lol`, `:orange_heart`) to pick one without leaving the
+  keyboard.
 - **Custom emoji**, Slack-style: add your own (upload an image or paste a link, e.g.
   from slackmojis.com), plus the stickers and Genmoji already in your messages. Type
   `:name:` or use the smiley button. iMessage has no custom emoji, so they go out
