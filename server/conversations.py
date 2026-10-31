@@ -760,11 +760,14 @@ class ConversationService:
             mine |= {r["guid"] for r in self.db.messages_by_guid(list(unknown_roots), ("ROWID", "guid", "is_from_me"))
                      if r["is_from_me"]}
         items: list[Item] = []
+        # The user's own last few texts are read too: a time someone only repeats back ("11 pm!??"
+        # after "home at like 11 pm") isn't a plan.
+        my_recent = {r["guid"] for r in [r for r in real if r["is_from_me"] and not r["date_retracted"]][-10:]}
         for index, row in enumerate(real):
             sent = apple_to_unix(row["date"]) or 0.0
             if row["is_from_me"]:
                 if not row["date_retracted"]:
-                    items.append(Item(row["guid"], sent, True))
+                    items.append(Item(row["guid"], sent, True, text=self._text(row) if row["guid"] in my_recent else ""))
                 continue
             unread = not row["is_read"] and apple_to_ns(row["date"]) > mark
             candidate = unread or index > last_mine

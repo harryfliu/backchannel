@@ -20,8 +20,8 @@ def them(guid: str, minutes: float, text: str = "ok", *, unread: bool = True, se
     return Item(guid, ago(minutes), False, sender=sender, text=text, unread=unread, **kw)
 
 
-def mine(guid: str, minutes: float) -> Item:
-    return Item(guid, ago(minutes), True)
+def mine(guid: str, minutes: float, text: str = "") -> Item:
+    return Item(guid, ago(minutes), True, text=text)
 
 
 def run(kind: str, items, asking: str | None = None, vips=None):
@@ -187,3 +187,16 @@ def test_only_the_last_three_days_count():
     old = [them("a", 60 * 24 * 3 + 1, "call me asap")]
     assert run("dm", old).priority is None
     assert run("dm", [them("a", 60 * 24 * 3 - 1, "call me asap")]).priority is not None
+
+
+def test_a_time_they_only_repeat_back_isnt_a_plan():
+    """Harry: "home at like 11 pm some nights" → them: "11 pm!??! Dude what the heck!" (a reaction)."""
+    said = mine("m", 120, "i was coming back home at like 11 pm some nights RIP")
+    echo = them("a", 30, "11 pm!??! Dude what the heck!")
+    assert run("dm", [said, echo]).priority is None
+    assert run("dm", [said, them("b", 30, "at 11? wow")]).priority is None  # same clock face, said without pm
+    # A different time, or the same one with nothing from Harry the day before, still counts.
+    assert kinds(run("dm", [said, them("c", 30, "dinner at 7 tonight")]).importance["c"]) == ["time"]
+    long_ago = mine("old", 26 * 60, "home at 11 pm")
+    assert kinds(run("dm", [long_ago, them("d", 30, "11 pm works")]).importance["d"]) == ["time"]
+    assert kinds(run("dm", [them("e", 30, "11 pm works")]).importance["e"]) == ["time"]

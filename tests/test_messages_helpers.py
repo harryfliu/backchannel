@@ -6,6 +6,8 @@ Messages would have written; without a runner the fake-DB Simulator does the sam
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import threading
 import time
@@ -140,9 +142,12 @@ def test_tapback_is_chosen_in_messages_and_verified(fake_rw):
     assert updated
     name, script, argv, timeout = fake.calls[-1]
     assert (name, script, timeout) == ("tapback", TAPBACK_SCRIPT, TAPBACK_TIMEOUT)
+    times = [a for a in argv if a.startswith("H:")]
     assert argv == ["tapback", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan",
-                    "T:are you down to hike Saturday?", "S:Jordan Park", "S:Jordan", "K:0", "J:0",
+                    "T:are you down to hike Saturday?", "S:Jordan Park", "S:Jordan", "K:0", "J:0", *times, "Q:0",
                     "R:Heart", "R:Love", "R:Loved", "U:imessage://+14155550134"]
+    # The minute it was sent, as Messages may print it: " 2:41" and " 14:41" (12- and 24-hour clocks).
+    assert times and all(re.fullmatch(r"H: \d{1,2}:\d{2}", t) for t in times)
     source = "\n".join(script)
     assert "hike" not in source and "Jordan" not in source  # all of it came as argv
     assert rw.get("/api/health")["messagesUi"]["permission"] == "granted"
@@ -176,7 +181,7 @@ def test_tapback_failures(fake_rw):
     fake.answers["tapback"] = Outcome(0, "bubble-not-found", "")
     rw.client.post(tapback_url(JORDAN, rw.guid("j_carpool")), json={"kind": "like"})
     missing = wait_for(rw, ui_action("tapback", messageId=rw.guid("j_carpool")))
-    assert missing["detail"] == "Couldn't find that message in Messages. Tapbacks work on recent messages."
+    assert missing["detail"] == "Couldn't find that message in Messages, even after scrolling up."
     fake.answers["tapback"] = Outcome(0, "error:-25211", "")
     rw.client.post(tapback_url(JORDAN, rw.guid("j_drill")), json={"kind": "question"})
     denied = wait_for(rw, ui_action("tapback", messageId=rw.guid("j_drill")))

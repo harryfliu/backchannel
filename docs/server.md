@@ -298,10 +298,16 @@ mode (see below).
   newest first (the window walked backwards). Text: the first line (60 chars);
   8+ characters must appear in a label, shorter ones must be a whole label line.
   Attachment-only messages: their placeholder ("Photo", "Audio Message",
-  "Sticker"…). Bubbles whose label also names the sender are preferred; newer
-  messages with the same text are counted (from chat.db) and skipped, so "ok"
-  finds the right "ok". Only recent messages (the ones Messages has loaded) can
-  be found.
+  "Sticker"…). The label must also show the minute it was sent (" 1:37" or
+  " 13:37", 12- and 24-hour clocks; the leading space keeps " 1:37" from
+  matching "11:37"); newer look-alikes from the same minute are counted from
+  chat.db and skipped (a self-chat shows every message twice). When it isn't on
+  screen, the chat is scrolled up a page at a time (at most 6) until it shows
+  up, and back down after a tapback. If no label shows that minute, the older
+  rule applies on screen only: labels that also name the sender are preferred,
+  and newer messages with the same text are counted and skipped, so "ok" finds
+  the right "ok". The log line ends with what the search saw
+  (`b<items>/<text matches>/<text and minute matches>`, `t<pages up>`).
 - *Tapbacks*: the bubble's own accessibility action whose title is one of:
   Heart/Love, Thumbs up/Like, Thumbs down/Dislike, Ha ha/Haha/Laugh, Exclamation
   mark/Emphasize/!!, Question mark/Question/? (works with Messages in the
@@ -313,11 +319,13 @@ mode (see below).
   field counts as open only when the entry area shows the reply preview (on
   macOS 26.3 a group in it goes from one child to two), else Escape and
   `no-reply-mode`. The focused text field must be empty (so a draft is never
-  overwritten). The text is pasted with ⌘V, never set as the field's value
-  (that dropped the reply on macOS 26.3 and sent a regular text). The clipboard
-  is checked before anything changes (plain or formatted text only; an image
-  or a file means `clipboard-busy`), saved (all its kinds when AppleScript can
-  hold them, else its text) and restored once the field shows the reply.
+  overwritten). The text goes in the way typing does, by setting the field's
+  AXSelectedText (never its whole value: that dropped the reply on macOS 26.3
+  and sent a regular text). Only if that doesn't take is it pasted with ⌘V, and
+  only when the clipboard holds just text (plain or formatted; an image or a
+  file means `clipboard-busy`); the clipboard is saved (all its kinds when
+  AppleScript can hold them, else its text) and restored once the field shows
+  the reply.
   Return is pressed only when the focused field holds exactly the reply and the
   reply preview is still there; if it's gone, the text is taken back out
   (`reply-mode-lost`). The app that was in front gets focus back.

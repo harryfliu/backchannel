@@ -13,9 +13,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 
-from .timephrases import TimeHit, find_time
+from .timephrases import TimeHit, find_time, find_times
 
 WINDOW = timedelta(days=3)
+ECHO_WINDOW = timedelta(hours=24)  # a time the user named this long before still counts as theirs
 REPEAT_GAP = timedelta(minutes=30)
 SOON = timedelta(hours=3)
 GRACE = timedelta(hours=1)
@@ -93,6 +94,18 @@ def prioritize(kind: str, items: list[Item], asking_guid: str | None, vips: dict
     def add(item: Item, reason: dict[str, Any]) -> None:
         reasons.setdefault(item.guid, []).append(reason)
 
+    def echoes_me(m: Item, found: TimeHit) -> bool:
+        """The clock time was in one of the user's own texts from the day before: a reaction, not a plan."""
+        if found.at is None:
+            return False
+        face = (found.at.hour % 12, found.at.minute)
+        for mine in items:
+            if mine.from_me and mine.text and m.sent - ECHO_WINDOW.total_seconds() <= mine.sent <= m.sent:
+                said = find_times(mine.text, datetime.fromtimestamp(mine.sent, timezone.utc), tz)
+                if any(s.at is not None and (s.at.hour % 12, s.at.minute) == face for s in said):
+                    return True
+        return False
+
     for m in items:
         if m.from_me:
             continue
@@ -111,6 +124,8 @@ def prioritize(kind: str, items: list[Item], asking_guid: str | None, vips: dict
             add(m, {"kind": "reply"})
         if pending:
             found = find_time(m.text, datetime.fromtimestamp(m.sent, timezone.utc), now, tz) if m.text else None
+            if found is not None and echoes_me(m, found):
+                found = None
             if found is not None:
                 hits[m.guid] = found
                 add(m, {"kind": "time", "label": found.label, "at": _iso(found.at)})

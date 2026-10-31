@@ -28,6 +28,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -201,10 +202,28 @@ class Bubble:
     senders: list[str] = field(default_factory=list)
     skip_sender: int = 0  # newer bubbles from the same sender that match too
     skip_any: int = 0  # newer bubbles from anyone that match too
+    times: list[str] = field(default_factory=list)  # the minute it was sent, as Messages may show it
+    skip_minute: int = 0  # newer look-alikes sent in that same minute (self-chats show every message twice)
 
     def argv(self) -> list[str]:
         return ([f"T:{n}" for n in self.needles] + [f"W:{w}" for w in self.exacts] + [f"S:{s}" for s in self.senders]
-                + [f"K:{self.skip_sender}", f"J:{self.skip_any}"])
+                + [f"K:{self.skip_sender}", f"J:{self.skip_any}"] + [f"H:{t}" for t in self.times]
+                + ([f"Q:{self.skip_minute}"] if self.times else []))
+
+
+def minute_marks(sent_at: str | None) -> tuple[list[str], tuple[int, ...] | None]:
+    """How Messages may print the minute a message was sent in its bubble's label (" 1:37" for
+    "1:37 PM", " 13:37" for 24-hour clocks; the leading space keeps " 1:37" from matching "11:37"),
+    and that minute in local time."""
+    if not sent_at:
+        return [], None
+    try:
+        when = datetime.fromisoformat(sent_at).astimezone()
+    except ValueError:
+        return [], None
+    marks = [f" {when.hour % 12 or 12}:{when.minute:02d}", f" {when.hour:02d}:{when.minute:02d}",
+             f" {when.hour}:{when.minute:02d}"]
+    return list(dict.fromkeys(marks)), (when.year, when.month, when.day, when.hour, when.minute)
 
 
 def _first_line(text: str) -> str:
@@ -505,8 +524,7 @@ TAPBACK_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-window": ("granted", "Messages has no window open, so the tapback wasn't sent.", "nothing"),
     "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
     "not-selected": ("granted", "Couldn't open {title} in Messages.", "nothing"),
-    "bubble-not-found": ("granted", "Couldn't find that message in Messages. Tapbacks work on recent messages.",
-                         "nothing"),
+    "bubble-not-found": ("granted", "Couldn't find that message in Messages, even after scrolling up.", "nothing"),
     "no-menu": ("granted", "Messages didn't open a menu for that message.", "nothing"),
     "no-tapback-item": ("granted", "Messages didn't offer that tapback.", "nothing"),
     "no-tapback-button": ("granted", "Messages didn't offer that tapback.", "nothing"),
@@ -523,6 +541,7 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
     "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "sent-paste": ("granted", "Sent as a reply in Messages.", "done"),
+    "sent-typed": ("granted", "Sent as a reply in Messages.", "done"),
     "reply-mode-lost": ("granted", "Messages stopped replying to that message before it was sent, so nothing "
                         "was sent.", "nothing"),
     "returned-unconfirmed": ("granted", "Messages didn't confirm your reply.", "maybe"),
@@ -745,8 +764,10 @@ class MessagesUI:
         ids = [m["id"] for m in recent]
         newer = recent[ids.index(message["id"]) + 1:] if message["id"] in ids else recent
         hits = [m for m in newer if _bubble_hit(m, needles, exacts, kind)]
+        times, minute = minute_marks(message.get("sentAt"))
+        same_minute = sum(1 for m in hits if minute is not None and minute_marks(m.get("sentAt"))[1] == minute)
         return Bubble(needles, exacts, senders, skip_sender=sum(1 for m in hits if same_sender(m)),
-                      skip_any=len(hits))
+                      skip_any=len(hits), times=times, skip_minute=same_minute)
 
     def tapback_job(self, conv: Conv, message_id: str, kind: str, remove: bool) -> TapbackJob:
         if kind not in TAPBACK_KINDS:

@@ -83,12 +83,31 @@ def has_question_mark(text: str | None) -> bool:
     return bool(text) and "?" in _URL.sub("", text or "")
 
 
+# A "?" mixed with "!" ("11 pm!??!", "seriously?!") is surprise unless its sentence has one of these.
+_QUESTION_WORD = re.compile(
+    r"\b(?:who|what|when|where|why|how|which|whose|can|could|would|will|wanna|should|shall|do|does|did|are|is|"
+    r"am|was|were|have|has|had|may|might|you|u|ya|your|ur|anyone|anything)\b",
+    re.IGNORECASE,
+)
+_QUESTION_MARKS = re.compile(r"[!?]*\?[!?]*")
+
+
 def asks_something(text: str | None) -> bool:
-    """Contains a "?" (outside URLs) or a request phrase like "call me" / "lmk"."""
+    """Contains a question (a "?" outside URLs; mixed with "!" only with a question word) or a
+    request phrase like "call me" / "lmk"."""
     if not text:
         return False
     stripped = _URL.sub("", text)
-    return "?" in stripped or bool(_REQUEST.search(stripped))
+    if _REQUEST.search(stripped):
+        return True
+    start = 0
+    for match in _QUESTION_MARKS.finditer(stripped):
+        clause = re.split(r"[.!?\n]", stripped[start:match.start()])[-1]
+        start = match.end()
+        if "!" in match.group(0) and not _QUESTION_WORD.search(clause):
+            continue  # "11 pm!??!", "seriously?!": surprise, not a question
+        return True
+    return False
 
 
 def opens_with_closer(text: str | None) -> bool:

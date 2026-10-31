@@ -292,11 +292,13 @@ def test_only_the_reply_script_puts_text_into_messages():
     for name, script in SCRIPTS.items():
         source = "\n".join(script)
         writes = re.findall(r"set value of (\w+) to", source)
+        attribute_writes = re.findall(r'set value of attribute "(\w+)" of (\w+) to', source)
         clipboard = "set the clipboard to" in source
         if name == "reply":
             assert writes == ["bcBox"] and clipboard
+            assert attribute_writes == [("AXSelectedText", "bcBox")]
         else:
-            assert writes == [] and not clipboard, name
+            assert writes == [] and attribute_writes == [] and not clipboard, name
 
 
 def test_return_is_only_pressed_on_our_own_text():
@@ -621,14 +623,16 @@ def test_scripts_open_the_chat_by_title_link_or_sidebar():
     assert "openChat" not in messages_scripts.MARK_READ_ACT  # read sync never changes which chat Messages shows
 
 
-def test_reply_is_pasted_never_set_and_only_sent_while_still_replying():
+def test_reply_is_typed_or_pasted_never_set_and_only_sent_while_still_replying():
     act = messages_scripts.REPLY_ACT
     assert "set value of bcBox to bcReply" not in act  # that went out as a regular text on macOS 26.3
     assert act.count("set value of bcBox to") == 1 and 'set value of bcBox to ""' in act  # only to take it back out
-    assert act.index("my clipboardIsText()") < act.index('customAction(bcBubble, {"Reply"})')  # check before touching
+    typed = act.index('set value of attribute "AXSelectedText" of bcBox to bcReply')  # like typing, no clipboard
+    paste = act.index("key code 9 using command down")
+    assert typed < act.index("my clipboardIsText()") < paste  # paste only as a fallback, and only over text
     before_return = act[:act.index("key code 36")]
-    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > before_return.index("key code 9")
-    assert before_return.index("my clipRestore(bcSaved)") > before_return.index("key code 9")
+    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > paste > typed
+    assert before_return.index("my clipRestore(bcSaved)") > paste
 
 
 def test_open_mode_is_in_the_inspect_script():

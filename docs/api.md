@@ -118,7 +118,10 @@ tapbacks, events or unsent) that others sent after the user's last real
 message, where the newest is less than 7 days old. `awaitingReply` is true for
 non-automated conversations when:
 - in a DM: some message in the run asks something of the user — it contains
-  `?` or a request phrase (can you, could you, would you, will you, are you,
+  `?` (outside links; a `?` mixed with `!`, like "seriously?!" or "11 pm!??!",
+  is surprise and only counts when its sentence has a question word: who, what,
+  when, where, why, how, can, could, would, will, do, did, are, is, you…) or a
+  request phrase (can you, could you, would you, will you, are you,
   do you, did you, have you, lmk, let me know, call me, text me, send me,
   wanna, want to, down to, thoughts, when you get a chance) or mentions them —
   and the newest message isn't a bare closer: if it opens with ok, thanks,
@@ -179,7 +182,10 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
   followed by a unit ("at 3 people", "by 5%") never count.
   It counts while the moment (or the day's 23:59 when `at` is null) is still
   ahead and within 36 hours, and for up to 1 hour after a named time passes.
-  A message mentioning several times uses the soonest still ahead.
+  A message mentioning several times uses the soonest still ahead. A clock
+  time the user named in one of their own last 10 texts in the 24 hours before
+  doesn't count (same clock face, am/pm aside): it's a reaction ("11 pm!??"
+  after "home at like 11 pm"), not a plan.
 - `urgent`: a pending message with urgent, asap, a.s.a.p, emergency, 911,
   hospital, accident, "call asap", "pick up the phone" / "pick up your phone",
   "pick up!", "answer your phone", "need you now", or "help!", or "call me"
@@ -317,8 +323,9 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   any other selected item pressed off, then clicked with Messages in front. The
   log line ends with the steps taken (step names and item positions only).
 - Tapback (`tapbacksViaMessages`): open the chat as above, find the target
-  bubble in the transcript (match sender +
-  text, newest match first; attachments by their placeholder) and use the
+  bubble in the transcript (match its text and the minute it was sent, newest
+  first, scrolling the chat up a page at a time when it isn't on screen;
+  attachments by their placeholder) and use the
   bubble's own accessibility action for that tapback ("Heart", "Thumbs up",
   "Ha ha!"…; works with Messages in the background); to remove, use the same
   tapback again. Because
@@ -334,10 +341,11 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root
   bubble, use its "Reply…" action and check that the reply field really opened.
-  Then paste the text, as a person would (setting the field's value directly
-  dropped the reply on macOS 26.3 and sent a regular text). The clipboard is
-  saved and restored; it may hold text (plain or formatted), and with anything
-  else (an image, a file) nothing is pasted. Return is pressed only when the
+  Then put the text in the way typing does, as the field's selected text
+  (setting the field's whole value dropped the reply on macOS 26.3 and sent a
+  regular text); only if that doesn't take, paste it, when the clipboard holds
+  only text (plain or formatted; saved and put back; an image or a file means
+  nothing is pasted: `clipboard-busy`). Return is pressed only when the
   focused field holds exactly the reply and the reply preview is still there
   (if Messages let go of the message being answered, the text is taken back
   out: `reply-mode-lost`, nothing sent); then the app that was in front gets

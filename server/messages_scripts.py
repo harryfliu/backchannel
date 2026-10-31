@@ -67,6 +67,7 @@ def spot_ref(path: tuple[int, ...], base: str = "bcWin") -> str:
 
 RUN = """
 property bcTrail : ""
+property bcUp : 0
 
 on run argv
     set bcPrevApp to my frontBundle()
@@ -583,6 +584,14 @@ on traced(bcAnswer, bcTrace)
     return bcAnswer
 end traced
 
+on addTrail(bcText)
+    if bcTrail is "" then
+        set bcTrail to bcText
+    else
+        set bcTrail to bcTrail & " " & bcText
+    end if
+end addTrail
+
 on selectedFlags(bcList)
     set bcSels to {}
     try
@@ -719,6 +728,92 @@ on findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkip
     if bcAnyPick is 0 then return missing value
     return my balloonOf(my atPath(bcTranscript, {bcAnyPick}))
 end findBubble
+
+-- Which item on screen shows this text at this minute (argv H: " 1:37", " 13:37"): the
+-- (bcSkip + 1)-th from the bottom, or 0. Self-chats show each message twice in the same minute,
+-- and the server counts those copies into bcSkip like any newer look-alike.
+on timedIndex(bcTranscript, bcNeedles, bcExacts, bcTimes, bcSkip)
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
+    end try
+    set bcSeen to 0
+    repeat with i from (count of bcDescs) to 1 by -1
+        set bcLabel to my asText(item i of bcDescs)
+        if (length of bcLabel) > 5 then
+            if my matchesBubble(bcLabel, bcNeedles, bcExacts) and my mentionsAny(bcLabel, bcTimes) then
+                set bcSeen to bcSeen + 1
+                if bcSeen = bcSkip + 1 then return i
+            end if
+        end if
+    end repeat
+    return 0
+end timedIndex
+
+-- What the search saw on screen, for the log: items / text matches / text-and-minute matches.
+on bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes)
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
+    end try
+    set bcHits to 0
+    set bcTimed to 0
+    repeat with bcD in bcDescs
+        set bcLabel to my asText(contents of bcD)
+        if (length of bcLabel) > 5 then
+            if my matchesBubble(bcLabel, bcNeedles, bcExacts) then
+                set bcHits to bcHits + 1
+                if bcTimes is not {} then
+                    if my mentionsAny(bcLabel, bcTimes) then set bcTimed to bcTimed + 1
+                end if
+            end if
+        end if
+    end repeat
+    return "b" & ((count of bcDescs) as text) & "/" & (bcHits as text) & "/" & (bcTimed as text)
+end bubbleStats
+
+-- Scroll the open chat back to its newest messages (at most bcPages pages).
+on transcriptEnd(bcTranscript, bcPages)
+    set bcSeen to my listKey(bcTranscript)
+    repeat bcPages times
+        if not my pageList(bcTranscript, "AXScrollDownByPage") then exit repeat
+        delay 0.3
+        set bcNow to my listKey(bcTranscript)
+        if bcNow is bcSeen then exit repeat
+        set bcSeen to bcNow
+    end repeat
+end transcriptEnd
+
+-- The message's balloon, or missing value. With the minute it was sent (bcTimes), it's matched by
+-- text and minute, scrolling the chat up a page at a time (at most 6) until it shows up; bcUp says
+-- how far. Otherwise (or if that finds nothing) the older way: text, sender and skips, on screen.
+on locateBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+    set bcUp to 0
+    if bcTimes is not {} then
+        set bcSeen to my listKey(bcTranscript)
+        repeat 7 times
+            set bcAt to my timedIndex(bcTranscript, bcNeedles, bcExacts, bcTimes, bcSkipMinute)
+            if bcAt > 0 then
+                my addTrail("t" & (bcUp as text))
+                return my balloonOf(my atPath(bcTranscript, {bcAt}))
+            end if
+            if bcUp is 6 then exit repeat
+            if not my pageList(bcTranscript, "AXScrollUpByPage") then exit repeat
+            delay 0.4
+            set bcNow to my listKey(bcTranscript)
+            if bcNow is bcSeen then exit repeat
+            set bcSeen to bcNow
+            set bcUp to bcUp + 1
+        end repeat
+        if bcUp > 0 then
+            my transcriptEnd(bcTranscript, bcUp + 2)
+            set bcUp to 0
+        end if
+    end if
+    set bcFound to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+    if bcFound is not missing value then my addTrail("s")
+    return bcFound
+end locateBubble
 
 -- A message row's first child is its balloon (id "Sticker" on macOS 26), which carries the
 -- tapback and Reply shortcuts; fall back to the row itself.
@@ -894,17 +989,27 @@ on act(argv)
             set bcTranscript to my spotTranscript(bcWin)
         end if
         if bcTranscript is missing value then return "no-transcript"
-        set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        set bcTimes to my tagged(argv, "H")
+        set bcSkipMinute to my taggedNumber(argv, "Q")
+        repeat 4 times
+            if (my listKey(bcTranscript)) is not "0" then exit repeat
+            delay 0.5
+        end repeat
+        set bcBubble to my locateBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
         if bcBubble is missing value then
-            delay 0.8
-            set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+            my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
+            return "bubble-not-found"
         end if
-        if bcBubble is missing value then return "bubble-not-found"
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    if my customAction(bcBubble, bcSynonyms) then return "chosen-action"
-    return "no-tapback-item"
+    set bcAnswer to "no-tapback-item"
+    if my customAction(bcBubble, bcSynonyms) then set bcAnswer to "chosen-action"
+    if bcUp > 0 then
+        delay 0.3
+        my transcriptEnd(bcTranscript, bcUp + 2)
+    end if
+    return bcAnswer
 end act
 """
 
@@ -939,15 +1044,19 @@ on act(argv)
             set bcTranscript to my spotTranscript(bcWin)
         end if
         if bcTranscript is missing value then return "no-transcript"
-        set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        set bcTimes to my tagged(argv, "H")
+        set bcSkipMinute to my taggedNumber(argv, "Q")
+        repeat 4 times
+            if (my listKey(bcTranscript)) is not "0" then exit repeat
+            delay 0.5
+        end repeat
+        set bcBubble to my locateBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
         if bcBubble is missing value then
-            delay 0.8
-            set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+            my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
+            return "bubble-not-found"
         end if
-        if bcBubble is missing value then return "bubble-not-found"
         set bcEntry to my spotEntry(bcWin)
         if bcEntry is missing value then return "no-reply-field"
-        if not my clipboardIsText() then return "clipboard-busy"
         set bcShapeBefore to my replyMarks(bcEntry)
         my bringForward()
         if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
@@ -968,36 +1077,51 @@ on act(argv)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    -- Paste, as a person would. Messages keeps the reply attached to text that's typed or pasted,
-    -- but not to text set straight into the field: on macOS 26.3 that went out as a regular text.
-    set bcSaved to my clipSave()
-    my setClip(bcReply)
-    set bcPasted to true
-    try
-        tell application "System Events" to key code 9 using command down
-    on error
-        set bcPasted to false
-    end try
+    -- Put the text in the way typing does: as the field's selected text, which keeps the reply
+    -- attached (text set as the field's whole value went out as a regular text on macOS 26.3).
+    -- If that doesn't take, paste it, when the clipboard holds only text (saved and put back).
     set bcHow to ""
-    set bcFocused to missing value
-    repeat 10 times
-        delay 0.15
-        set bcFocused to my focusedTextField()
-        if bcFocused is not missing value then
-            considering case
-                if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
-            end considering
-        end if
-        if bcHow is not "" then exit repeat
-    end repeat
-    my clipRestore(bcSaved)
+    try
+        tell application "System Events" to set value of attribute "AXSelectedText" of bcBox to bcReply
+    end try
+    delay 0.2
+    set bcFocused to my focusedTextField()
+    if bcFocused is not missing value then
+        considering case
+            if (my fieldText(bcFocused)) is bcReply then set bcHow to "typed"
+        end considering
+    end if
     if bcHow is "" then
         if bcFocused is missing value then return "typed-unknown"
-        if (my fieldText(bcFocused)) is "" then
+        if (my fieldText(bcFocused)) is not "" then return "typed-unknown"
+        if not my clipboardIsText() then
             my pressEscape()
-            return "nothing-typed"
+            return "clipboard-busy"
         end if
-        return "typed-unknown"
+        set bcSaved to my clipSave()
+        my setClip(bcReply)
+        try
+            tell application "System Events" to key code 9 using command down
+        end try
+        repeat 10 times
+            delay 0.15
+            set bcFocused to my focusedTextField()
+            if bcFocused is not missing value then
+                considering case
+                    if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
+                end considering
+            end if
+            if bcHow is not "" then exit repeat
+        end repeat
+        my clipRestore(bcSaved)
+        if bcHow is "" then
+            if bcFocused is missing value then return "typed-unknown"
+            if (my fieldText(bcFocused)) is "" then
+                my pressEscape()
+                return "nothing-typed"
+            end if
+            return "typed-unknown"
+        end if
     end if
     -- Still replying? If Messages let go of the message being answered, take the text back out
     -- rather than send it as a regular text.

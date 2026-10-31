@@ -90,6 +90,10 @@ def test_not_awaiting_cases(ro):
     ("can carpool from mine", False),
     ("Ok 👍", False),
     ("check out https://example.com/?q=1", False),
+    ("11 pm!??! Dude what the heck!", False),  # surprise, not a question
+    ("seriously?!", False),
+    ("you coming tonight?!", True),  # mixed with "!", but it asks
+    ("really?", True),
 ])
 def test_asks_something(text, asks):
     assert asks_something(text) is asks
