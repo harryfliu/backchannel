@@ -9,10 +9,11 @@ What counts as a time:
 - "in 20 min", "in 2 hrs", "in an hour", "in half an hour" (also "20m", "2h"
   units) → that moment;
 - a clock time: "7pm", "7:30 pm", "7.30pm", "at 7", "at 7:30", "by 5", "@ 7",
-  "at 19:00", noon, midnight. Bare numbers count only with am/pm or after
-  at/by (or "@"). Without am/pm: the next 7:00 or 19:00 after the message, skipping
-  1–6 am (a day part in the same text — "tonight at 8", "this morning at 9" —
-  picks the half of the day);
+  "7:30" (two-digit minutes; not scores, paces or race times), "at 19:00", noon,
+  midnight. Bare hours count only with am/pm or after at/by (or "@"). Without
+  am/pm: 12 is noon; a morning word means am and "tonight"/evening/night pm; on
+  a named day ("Friday at 7", "tomorrow at 8") it's pm; otherwise the next 7:00
+  or 19:00 after the message, skipping 1–6 am;
 - this morning / this afternoon / this evening / tonight → until 12:00, 17:00,
   23:59, 23:59 (no clock time: they're vague);
 - today, eod / end of (the) day → until 23:59;
@@ -48,6 +49,11 @@ _IN = re.compile(r"\bin\s+(\d{1,3}|an?|half\s+an?)\s*(m|mins?|minutes?|h|hrs?|ho
 _CLOCK = re.compile(r"(?<![\w$#.:/°+-])(\d{1,2})(?:([:.])([0-5]\d))?(?![\d])")
 _AMPM = re.compile(r"\s*(am|pm)\b")
 _AT_BY = re.compile(r"(?:\b(?:at|by)|@)\s*$")
+# A bare "7:30" is a time, but not a score, ratio, pace or race time ("won 2:10", "2:10 pace", "1:23:45").
+_NOT_CLOCK_BEFORE = re.compile(r"\b(?:score|scored|won|lost|beat|ratio|odds|pace|split|record|time of|ran|finished)"
+                               r"(?:\s+(?:was|is|of|in|at))?\s*$")
+_NOT_CLOCK_AFTER = re.compile(r"[:/]|\s*(?:pace|per|/|min/|mile|miles|mi\b|km|split|splits|avg|ratio|odds|lead|"
+                              r"win|loss|finish|marathon|half)")
 _UNITS = re.compile(
     r"\s*(?:%|°|x\b|k\b|th\b|st\b|nd\b|rd\b|-|/|"
     r"(?:people|ppl|persons|guys|kids|points|pts|percent|pct|degrees|deg|mph|miles|mi|km|kms|kg|lbs?|pounds|"
@@ -174,16 +180,29 @@ def _half_hint(t: str) -> str | None:
     return None
 
 
-def _clock_times(t: str, sent: datetime, base: date | None, tz: tzinfo) -> list[datetime]:
+def _ambiguous_hours(hour: int, hint: str | None, named_day: bool) -> list[int]:
+    """Hours a clock time without am/pm can mean. 12 is noon ("12 am"/"midnight" say otherwise);
+    a morning word means am and an evening/night one pm; on a named day ("Friday at 7") it's pm;
+    otherwise the next 7:00 or 19:00 after the message, never 1–6 am."""
+    if hour == 12:
+        return [12]
+    if hint == "am":
+        return [hour]
+    if hint == "pm" or named_day:
+        return [hour + 12]
+    return [h for h in (hour, hour + 12) if h > 6]
+
+
+def _clock_times(t: str, sent: datetime, base: date | None, tz: tzinfo, named_day: bool = False) -> list[datetime]:
     """Clock times in the text, as moments (on the named day, else the next one after the message)."""
     out: list[datetime] = []
     hint = _half_hint(t)
     for match in _CLOCK.finditer(t):
         hour = int(match.group(1))
         sep, minute = match.group(2), int(match.group(3) or 0)
-        rest = t[match.end():]
+        before, rest = t[:match.start()], t[match.end():]
         ampm = _AMPM.match(rest)
-        anchored = bool(_AT_BY.search(t[:match.start()]))
+        anchored = bool(_AT_BY.search(before))
         if ampm:
             after = rest[ampm.end():]
             if after[:1].isalnum():
@@ -192,19 +211,17 @@ def _clock_times(t: str, sent: datetime, base: date | None, tz: tzinfo) -> list[
                 continue
             hours = [hour % 12 + (12 if ampm.group(1) == "pm" else 0)]
         else:
-            if not anchored:
-                continue  # bare numbers only with am/pm or after at/by
-            if sep == "." and not match.group(3):
-                continue
-            if _UNITS.match(rest) or (rest[:1] == "." and rest[1:2].isdigit()):
-                continue
-            if 13 <= hour <= 23 and sep:  # 24-hour clock: "at 19:00"
+            if anchored:
+                if sep == "." and not match.group(3):
+                    continue
+                if _UNITS.match(rest) or (rest[:1] == "." and rest[1:2].isdigit()):
+                    continue
+            elif sep != ":" or _NOT_CLOCK_BEFORE.search(before) or _NOT_CLOCK_AFTER.match(rest):
+                continue  # bare numbers need am/pm or at/by; a bare "7:30" is fine
+            if sep and (13 <= hour <= 23 or hour == 0):  # 24-hour clock: "at 19:00", "0:30"
                 hours = [hour]
             elif 1 <= hour <= 12:
-                hours = [h for h in (hour % 12, hour % 12 + 12) if h == 0 or h > 6]
-                if hint:
-                    halved = [h for h in hours if (h < 12) == (hint == "am")]
-                    hours = halved or hours
+                hours = _ambiguous_hours(hour, hint, named_day)
             else:
                 continue
         out.extend(_resolve(hours, minute, sent, base, tz))
@@ -262,7 +279,7 @@ def find_times(text: str, sent: datetime, tz: tzinfo | None = None) -> list[_Fou
     clock_base = base
     if clock_base is None and (_PART.search(t) or _TODAY.search(t)):
         clock_base = sent_day  # "tonight at 8", "today at 5"
-    clocks = _clock_times(t, sent, clock_base, tz)
+    clocks = _clock_times(t, sent, clock_base, tz, named_day=base is not None)
     found.extend(_Found(m, m, None) for m in clocks)
     clock_days = {m.date() for m in clocks}
 

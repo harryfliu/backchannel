@@ -22,8 +22,8 @@ GRACE = timedelta(hours=1)
 ORDER = ("urgent", "repeat", "time", "asked", "mention", "reply", "vip")
 WEIGHTS = {"urgent": 80, "repeat": 40, "time": 30, "time_soon": 80, "asked": 60, "mention": 50, "reply": 40, "vip": 25}
 URGENT = re.compile(
-    r"(?<![\w.])(urgent|asap|a\.s\.a\.p\.?|emergency|911|hospital|accident|call me|call asap|pick up|"
-    r"answer your phone|need you now)(?![\w])|(?<![\w])(help!)",
+    r"(?<![\w.])(urgent|asap|a\.s\.a\.p\.?|emergency|911|hospital|accident|call me|call asap|"
+    r"pick up (?:the|your) phone|answer your phone|need you now)(?![\w])|(?<![\w])(help!|pick up!)",
     re.IGNORECASE,
 )
 
@@ -40,6 +40,7 @@ class Item:
     unread: bool = False
     mentions_me: bool = False
     reply_to_me: bool = False  # an inline reply to one of the user's messages
+    asks: bool = False  # asks the user something (the "Waiting on you" request test)
 
 
 @dataclass
@@ -84,18 +85,20 @@ def prioritize(kind: str, items: list[Item], asking_guid: str | None, vips: dict
             continue
         counts = m.unread or m.guid in in_run
         asking = kind == "dm" and m.guid == asking_guid
+        # Time and urgent words count while unread, and in a DM also on any unanswered message that
+        # asks something: reading "call me in 20 min" doesn't resolve it. (Groups: unread only.)
+        pending = m.unread or (kind == "dm" and m.guid in in_run and (m.asks or asking))
         if asking:
             add(m, {"kind": "asked"})
         if counts and kind == "group" and m.mentions_me:
             add(m, {"kind": "mention"})
         if counts and m.reply_to_me:
             add(m, {"kind": "reply"})
-        if m.unread or asking:
+        if pending:
             found = find_time(m.text, datetime.fromtimestamp(m.sent, timezone.utc), now, tz) if m.text else None
             if found is not None:
                 hits[m.guid] = found
                 add(m, {"kind": "time", "label": found.label, "at": _iso(found.at)})
-        if m.unread:
             word = urgent_word(m.text)
             if word:
                 add(m, {"kind": "urgent", "word": word})

@@ -367,7 +367,7 @@ function UnreadCard({ c }: { c: Conversation }) {
           <span className="unread-card-count">{c.unreadCount} new</span>
         </button>
         <span className="unread-card-time">{c.lastMessage ? ageShort(c.lastMessage.sentAt) : ''}</span>
-        {c.priority && <ReasonChips reasons={c.priority.reasons} />}
+        {c.priority && <ReasonChips reasons={c.priority.reasons} skip={c.kind === 'dm' ? ['vip'] : []} />}
         <div className="unread-card-actions">
           <button type="button" className={`btn is-quiet ${replying ? 'is-on' : ''}`} aria-expanded={replying} onClick={() => setReplying((r) => !r)}>
             <Icon name="reply" size={15} /> Reply

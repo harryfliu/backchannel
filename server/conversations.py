@@ -772,10 +772,12 @@ class ConversationService:
             if not sender and conv.kind == "dm" and conv.persons:
                 sender = conv.persons[0].handle
             person = directory.persons.get(sender) if sender else None
+            mentions_me = candidate and self._mentions_me(row)
             items.append(Item(
                 row["guid"], sent, False, sender=person.key if person else sender, text=text, unread=unread,
-                mentions_me=candidate and conv.kind == "group" and self._mentions_me(row),
+                mentions_me=mentions_me and conv.kind == "group",
                 reply_to_me=bool(row["thread_originator_guid"]) and row["thread_originator_guid"] in mine,
+                asks=candidate and conv.kind == "dm" and (H.asks_something(text) or mentions_me),
             ))
         return items
 
