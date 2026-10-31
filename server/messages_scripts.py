@@ -48,6 +48,21 @@ def lines(source: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+# Where things sit in Messages' window on macOS 26.3: child indexes from the window, outermost first
+# (mapped with `doctor --messages-tree`). Each becomes one nested reference, so System Events reaches
+# the spot in a single request instead of one request per level; scripts still check the spot's id.
+SPOTS = {
+    "list": (1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1),
+    "transcript": (1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2),
+    "entry": (1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1),
+    "title": (1, 1, 1, 1, 1, 1, 3, 1, 2),
+}
+
+
+def spot_ref(path: tuple[int, ...], base: str = "bcWin") -> str:
+    return " of ".join(f"UI element {n}" for n in reversed(path)) + f" of {base}"
+
+
 # --------------------------------------------------------------------------- shared handlers
 
 RUN = """
@@ -235,6 +250,13 @@ on messagesState()
     if bcRunning is not true then return "not-running"
     set bcCount to 0
     tell application "System Events" to set bcCount to count of windows of process "Messages"
+    if bcCount is 0 then
+        try
+            tell application "Messages" to reopen
+        end try
+        delay 1.2
+        tell application "System Events" to set bcCount to count of windows of process "Messages"
+    end if
     if bcCount is 0 then return "no-window"
     return "ok"
 end messagesState
@@ -301,16 +323,31 @@ end searchId
 -- The conversation list and the open chat. On macOS 26.3 they sit at these child-index paths
 -- (checked by id); with another layout (say, the details panel open) a capped search finds them.
 on spotList(bcWin)
-    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1})
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to __SPOT_list__
+    end try
     if my attrText(bcEl, "AXIdentifier") is "ConversationList" then return bcEl
     return my searchId(bcWin, "ConversationList")
 end spotList
 
 on spotTranscript(bcWin)
-    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2})
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to __SPOT_transcript__
+    end try
     if my attrText(bcEl, "AXIdentifier") is "TranscriptCollectionView" then return bcEl
     return my searchId(bcWin, "TranscriptCollectionView")
 end spotTranscript
+
+on spotTitle(bcWin)
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to __SPOT_title__
+    end try
+    if my attrText(bcEl, "AXIdentifier") is "ConversationTitle" then return bcEl
+    return my searchId(bcWin, "ConversationTitle")
+end spotTitle
 
 -- The conversation's item in the list, by label, read for every item in one request. Labels look
 -- like "Name, [Unread, ]preview, time" (pinned: "Name, [Unread, preview, ]Pinned"). Any name may
@@ -379,79 +416,66 @@ end openRow
 -- The message entry area at the bottom of the chat. In reply mode Messages adds a preview of the
 -- message being answered inside it, so its element count goes up.
 on spotEntry(bcWin)
-    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1})
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to __SPOT_entry__
+    end try
     if my attrText(bcEl, "AXIdentifier") is "MessageEntryView" then return bcEl
     return my searchId(bcWin, "MessageEntryView")
 end spotEntry
 
-on countUnder(bcEl, bcDepth)
-    if bcEl is missing value or bcDepth > 8 then return 0
-    set bcKids to {}
+-- In reply mode Messages adds a preview of the message being answered to the entry area; on macOS
+-- 26.3 this group inside it goes from one child to two. One request.
+on replyMarks(bcEntry)
+    set bcN to 0
     try
-        tell application "System Events" to set bcKids to UI elements of bcEl
+        tell application "System Events" to set bcN to count of UI elements of UI element 1 of UI element 1 of UI element 2 of bcEntry
     end try
-    set bcN to count of bcKids
-    repeat with bcK in bcKids
-        set bcN to bcN + (my countUnder(contents of bcK, bcDepth + 1))
-    end repeat
     return bcN
-end countUnder
+end replyMarks
 
 -- An element's own accessibility shortcut by title ("Heart", "Reply", "Mark as Read"). Custom
 -- actions describe themselves by title; their names read "Name:<title>" plus a target.
 on customAction(bcEl, bcTitles)
-    set bcActs to {}
-    set bcDescs to {}
-    set bcNames to {}
+    set bcAt to my actionIndex(bcEl, bcTitles)
+    if bcAt is 0 then return false
+    set bcDone to false
     try
-        tell application "System Events" to set bcActs to actions of bcEl
+        tell application "System Events" to perform action bcAt of bcEl
+        set bcDone to true
     end try
-    try
-        tell application "System Events" to set bcDescs to description of every action of bcEl
-    end try
-    try
-        tell application "System Events" to set bcNames to name of every action of bcEl
-    end try
-    repeat with bcTitle in bcTitles
-        set bcWant to contents of bcTitle
-        repeat with i from 1 to count of bcActs
-            set bcD to ""
-            set bcN to ""
-            if i is less than or equal to (count of bcDescs) then set bcD to my asText(item i of bcDescs)
-            if i is less than or equal to (count of bcNames) then set bcN to my asText(item i of bcNames)
-            if bcD starts with bcWant or bcN starts with ("Name:" & bcWant) then
-                set bcDone to false
-                try
-                    tell application "System Events" to perform (item i of bcActs)
-                    set bcDone to true
-                end try
-                return bcDone
-            end if
-        end repeat
-    end repeat
-    return false
+    return bcDone
 end customAction
 
 on hasAction(bcEl, bcTitles)
+    return (my actionIndex(bcEl, bcTitles)) > 0
+end hasAction
+
+-- Which of the element's actions has one of these titles: by description ("Heart", "Reply…"),
+-- else by name ("Name:Heart" plus a target).
+on actionIndex(bcEl, bcTitles)
     set bcDescs to {}
-    set bcNames to {}
     try
         tell application "System Events" to set bcDescs to description of every action of bcEl
     end try
+    set bcAt to my titleIndex(bcDescs, bcTitles, "")
+    if bcAt > 0 then return bcAt
+    set bcNames to {}
     try
         tell application "System Events" to set bcNames to name of every action of bcEl
     end try
+    return my titleIndex(bcNames, bcTitles, "Name:")
+end actionIndex
+
+on titleIndex(bcList, bcTitles, bcPrefix)
     repeat with bcTitle in bcTitles
-        set bcWant to contents of bcTitle
-        repeat with bcD in bcDescs
-            if my asText(contents of bcD) starts with bcWant then return true
-        end repeat
-        repeat with bcN in bcNames
-            if my asText(contents of bcN) starts with ("Name:" & bcWant) then return true
+        set bcWant to bcPrefix & (contents of bcTitle)
+        repeat with i from 1 to count of bcList
+            if my asText(item i of bcList) starts with bcWant then return i
         end repeat
     end repeat
-    return false
-end hasAction
+    return 0
+end titleIndex
 """
 
 # Find a message bubble in the transcript (right of the sidebar), newest first: walk the window
@@ -659,11 +683,11 @@ on act(argv)
         if bcBubble is missing value then return "bubble-not-found"
         set bcEntry to my spotEntry(bcWin)
         if bcEntry is missing value then return "no-reply-field"
-        set bcShapeBefore to my countUnder(bcEntry, 0)
+        set bcShapeBefore to my replyMarks(bcEntry)
         my bringForward()
         if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
         delay 0.8
-        if my countUnder(bcEntry, 0) is not greater than bcShapeBefore then
+        if my replyMarks(bcEntry) is not greater than bcShapeBefore then
             my pressEscape()
             return "no-reply-mode"
         end if
@@ -809,13 +833,13 @@ end run
 -- poking at the wrong element.
 on probeAll(bcWin)
     set bcOut to {}
-    set bcList to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1})
+    set bcList to my spotList(bcWin)
     set bcListId to my attrText(bcList, "AXIdentifier")
     set bcOut to bcOut & {"spot" & tab & "list" & tab & bcListId}
-    set bcTranscript to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2})
+    set bcTranscript to my spotTranscript(bcWin)
     set bcTransId to my attrText(bcTranscript, "AXIdentifier")
     set bcOut to bcOut & {"spot" & tab & "transcript" & tab & bcTransId}
-    set bcTitle to my atPath(bcWin, {1, 1, 1, 1, 1, 1, 3, 1, 2})
+    set bcTitle to my spotTitle(bcWin)
     set bcTitleId to my attrText(bcTitle, "AXIdentifier")
     set bcOut to bcOut & {"spot" & tab & "title" & tab & bcTitleId}
     if bcListId is "ConversationList" then set bcOut to bcOut & my sidebarReport(bcList)
@@ -1115,9 +1139,7 @@ end walk
 -- ---- live tries (doctor --messages-try; it checks first that your own chat is the open one)
 
 on titleText(bcWin)
-    set bcTitle to my atPath(bcWin, {1, 1, 1, 1, 1, 1, 3, 1, 2})
-    if my attrText(bcTitle, "AXIdentifier") is not "ConversationTitle" then set bcTitle to my searchId(bcWin, "ConversationTitle")
-    return my attrText(bcTitle, "AXDescription")
+    return my attrText(my spotTitle(bcWin), "AXDescription")
 end titleText
 
 on newestBalloon(bcWin)
@@ -1169,7 +1191,7 @@ on tryReply(bcWin, bcFront)
     set bcPrevApp to my frontBundle()
     set bcOut to bcOut & {"focus" & tab & "before" & tab & my focusInfo()}
     set bcBudget to 30
-    set bcOut to bcOut & {"section" & tab & "entry-before", my walk(my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1}), 0, 7)}
+    set bcOut to bcOut & {"section" & tab & "entry-before", my walk(my spotEntry(bcWin), 0, 7)}
     if bcFront then my bringForward()
     set bcDid to my customAction(bcBalloon, {"Reply"})
     delay 0.9
@@ -1177,12 +1199,16 @@ on tryReply(bcWin, bcFront)
     set bcOut to bcOut & {"focus" & tab & "after" & tab & my focusInfo()}
     set bcOut to bcOut & {"top_after" & tab & my joinWith(my topRoles(), ",")}
     set bcBudget to 30
-    set bcOut to bcOut & {"section" & tab & "entry-after", my walk(my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1}), 0, 7)}
+    set bcOut to bcOut & {"section" & tab & "entry-after", my walk(my spotEntry(bcWin), 0, 7)}
     my pressEscape()
     my restoreFront(bcPrevApp)
     return bcOut
 end tryReply
 """
+
+for _name, _path in SPOTS.items():
+    SIDEBAR = SIDEBAR.replace(f"__SPOT_{_name}__", spot_ref(_path))
+assert "__SPOT_" not in SIDEBAR
 
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)

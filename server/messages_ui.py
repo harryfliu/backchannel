@@ -49,9 +49,10 @@ __all__ = [
 
 log = logging.getLogger("backchannel.messages_ui")
 
-TIMEOUT = 8.0  # mark read
-TAPBACK_TIMEOUT = 10.0
-REPLY_TIMEOUT = 12.0
+# Each step into Messages costs about a tenth of a second on a busy macOS 26 Messages window.
+TIMEOUT = 15.0  # mark read
+TAPBACK_TIMEOUT = 20.0
+REPLY_TIMEOUT = 30.0
 PROBE_TIMEOUT = 90.0
 VERIFY_SECONDS = 5.0
 CHECK_AFTER = 3.0

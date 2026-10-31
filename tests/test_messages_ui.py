@@ -334,7 +334,7 @@ def test_inspect_script_never_prints_text():
     (Outcome(0, "error-late:-1728", ""), None, False, "failed (error -1728)"),
     (Outcome(0, "error-late:unknown", ""), None, False, "failed (error None)"),
     (Outcome(1, "", "System Events got an error: Messages isn't allowed (-1719)"), "denied", False, "Accessibility"),
-    (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 8 seconds"),
+    (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 15 seconds"),
     (Outcome(0, "weird", ""), None, False, "unexpected"),
 ])
 def test_interpret(outcome, permission, ok, words):
@@ -559,3 +559,14 @@ def test_inspect_probe_lines_report_shapes_actions_and_titles_without_text():
     assert "showed up: app" in text and "Tapback item: yes" in text and "windows 2 (were 1)" in text
     assert "Heart | Thumbs Up" in text
     assert "Jordan" not in text and "4155550100" not in text and "[?,?]" in text
+
+
+def test_spots_are_reached_in_one_request():
+    # Each step into Messages costs ~0.1 s on macOS 26; walking 13 levels one request at a time made
+    # replies time out. The spot handlers use one nested reference instead.
+    from server.messages_scripts import SPOTS, spot_ref
+    assert spot_ref((1, 2, 3)) == "UI element 3 of UI element 2 of UI element 1 of bcWin"
+    source = "\n".join(REPLY_SCRIPT)
+    for name in ("list", "transcript", "entry"):
+        assert f"set bcEl to {spot_ref(SPOTS[name])}" in source, name
+    assert "atPath(bcWin, {1, 1, 1" not in source
