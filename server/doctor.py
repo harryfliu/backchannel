@@ -247,7 +247,7 @@ def check_chief(report: Report, services: Any) -> None:
             report.item("read error", str(exc))
 
 
-def check_messages_ui(report: Report, services: Any) -> None:
+def check_messages_ui(report: Report, services: Any, tree: bool = False) -> None:
     """Accessibility structure of Messages, for tuning the Messages helper scripts. No names or text.
 
     It opens the newest bubble's context menu, the Tapback picker and the Reply
@@ -269,7 +269,7 @@ def check_messages_ui(report: Report, services: Any) -> None:
             private.add(me)
     except ChatDBError:
         pass
-    for line in messages_ui.inspect(runner=messages_ui.osascript_runner, private=private):
+    for line in messages_ui.inspect(runner=messages_ui.osascript_runner, private=private, tree=tree):
         report.lines.append(line)
     report.item("inspection took", _ms(start))
 
@@ -292,6 +292,8 @@ def check_system(report: Report, services: Any) -> None:
 def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str]:
     parser = argparse.ArgumentParser(prog="backchannel doctor", description=__doc__)
     parser.add_argument("--ai", action="store_true", help="also make one tiny real Claude call")
+    parser.add_argument("--messages-tree", action="store_true",
+                        help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
     parser.add_argument("--messages-ui", action="store_true",
                         help="describe the Messages window's accessibility structure (roles, counts and menu "
                              "titles only); opens the newest bubble's menu, Tapback picker and Reply field and "
@@ -312,8 +314,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
         check_contacts(report, services)
         check_ai(report, services, live=args.ai)
         check_chief(report, services)
-        if args.messages_ui:
-            check_messages_ui(report, services)
+        if args.messages_ui or args.messages_tree:
+            check_messages_ui(report, services, tree=args.messages_tree)
     finally:
         services.close()
     report.section("Result")

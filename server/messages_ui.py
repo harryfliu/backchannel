@@ -77,8 +77,9 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "love": ("Heart", "Love", "Loved"),
     "like": ("Thumbs up", "Like", "Liked"),
     "dislike": ("Thumbs down", "Dislike", "Disliked"),
-    "laugh": ("Ha ha", "Haha", "Ha-ha", "Laugh"),
-    "emphasize": ("Exclamation marks", "Exclamation mark", "Emphasize", "!!"),
+    # macOS 26 names this one "Ha ha" with an unusual space, so plain "Ha" is the catch-all.
+    "laugh": ("Ha ha", "Haha", "Ha-ha", "Laugh", "Ha"),
+    "emphasize": ("Exclamation mark", "Exclamation marks", "Emphasize", "!!"),
     "question": ("Question mark", "Question", "?"),
 }
 ATTACHMENT_WORDS: dict[str, tuple[str, ...]] = {
@@ -407,6 +408,9 @@ def outcome_code(outcome: Outcome) -> str:
 
 
 MARK_READ_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "ok-action": ("granted", "Marked {title} read in Messages.", "done"),
+    "already-read": ("granted", "{title} was already read in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
     "ok-menu": ("granted", "Marked {title} read in Messages.", "done"),
     "ok-context": ("granted", "Marked {title} read in Messages (from its context menu).", "done"),
     "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
@@ -426,6 +430,9 @@ def interpret(outcome: Outcome, title: str) -> tuple[str | None, str, bool]:
 
 
 TAPBACK_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "chosen-action": ("granted", "Sent the tapback in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "chosen-menu": ("granted", "Sent the tapback in Messages.", "done"),
     "chosen-overlay": ("granted", "Sent the tapback in Messages.", "done"),
     "not-running": (None, "Messages isn't open, so the tapback wasn't sent.", "nothing"),
@@ -447,6 +454,8 @@ def interpret_tapback(outcome: Outcome, title: str) -> Interp:
 
 REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "sent-axvalue": ("granted", "Sent as a reply in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "sent-paste": ("granted", "Sent as a reply in Messages.", "done"),
     "returned-unconfirmed": ("granted", "Messages didn't confirm your reply.", "maybe"),
     "typed-not-sent": ("granted", "Your reply is in Messages' reply field, but it wasn't sent.", "maybe"),
@@ -980,14 +989,42 @@ def safe_titles(raw: str, private: set[str] | frozenset[str] = frozenset()) -> s
     return " | ".join(out)
 
 
-def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
-            private: set[str] | frozenset[str] = frozenset()) -> list[str]:
+_SHAPE_WORDS = {"Pinned", "Unread", "Read", "Delivered", "Sent", "Edited", "Muted", "Today", "Yesterday", "time"}
+
+
+def _shape(raw: str) -> str:
+    """A label's shape from the script: part lengths and a few known words; anything else is '?'."""
+    return ",".join(t if (t.isdigit() or t in _SHAPE_WORDS) else "?" for t in raw.split(",") if t) or "-"
+
+
+def _actions(raw: str) -> str:
+    """Accessibility action names. Custom actions arrive as "Name:Reply<newline>Target:…"; keep the name."""
+    out = []
+    for action in raw.split(","):
+        action = action.strip()
+        if re.fullmatch(r"AX[A-Za-z]+", action):
+            out.append(action)
+        elif action.startswith("Name:"):
+            name = action[5:].split("Target:")[0].strip()
+            out.append(f"custom:{name}" if re.fullmatch(r"[A-Za-z][A-Za-z &'-]{0,30}", name) else "custom:(hidden)")
+        elif action:
+            out.append("(other)")
+    return ", ".join(out) or "none"
+
+
+# Accessibility identifiers worth showing: developer names like "ConversationList". Anything with
+# digits, @, + or spaces could be a chat id, number or address, so it's hidden.
+_SAFE_IDENT = re.compile(r"[A-Za-z][A-Za-z._-]{0,59}")
+
+
+def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
+            private: set[str] | frozenset[str] = frozenset(), tree: bool = False) -> list[str]:
     """Report lines about Messages' accessibility structure: roles, counts and menu/button titles only.
 
     Everything else the script prints is dropped; titles that look like they
     carry a name, number, address or quoted text (see `private`) are hidden.
     """
-    outcome = runner(INSPECT_SCRIPT, [], timeout)
+    outcome = runner(INSPECT_SCRIPT, ["tree"] if tree else [], timeout)
     if outcome.timed_out:
         return ["- inspection: timed out"]
     if outcome.returncode == 127:
@@ -1018,6 +1055,55 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
         elif key == "tree" and len(parts) == 4 and parts[1].isdigit() and parts[3].isdigit():
             role = parts[2] if _ROLE.match(parts[2]) else "(other)"
             tree.append(f"    {'  ' * min(int(parts[1]), 12)}{role} ({parts[3]})")
+        elif key == "tree" and len(parts) == 9 and parts[1].isdigit() and parts[4].isdigit():
+            # depth, role, subrole, children, identifier, description length, value length, menu flag
+            depth, role, sub, kids, ident, dlen, vlen, menu = parts[1:]
+            role = role if _ROLE.match(role) else "(other)"
+            sub = f" ‹{sub}›" if sub and _ROLE.match(sub) else ""
+            ident = f" id={ident}" if _SAFE_IDENT.fullmatch(ident or "") else (" id=(hidden)" if ident else "")
+            text = "".join(f" {k}{n}" for k, n in (("desc:", dlen), ("value:", vlen)) if n.isdigit() and n != "0")
+            tree.append(f"    {'  ' * min(int(depth), 16)}{role}{sub} ({kids}){ident}{text}{' [menu]' if menu == 'menu' else ''}")
+        elif key == "skip" and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            tree.append(f"    {'  ' * min(int(parts[1]), 16)}… {parts[2]} more")
+        elif key == "spot" and len(parts) == 3:
+            found = _SAFE_IDENT.fullmatch(parts[2] or "")
+            lines.append(f"- {parts[1] if parts[1] in ('list', 'transcript', 'title') else '?'}: "
+                         + (f"found (id {parts[2]})" if found else ("missing" if not parts[2] else "missing (got something else)")))
+        elif key == "rows" and len(parts) == 5 and all(p.isdigit() for p in parts[1:]):
+            lines.append(f"- conversation list: {parts[1]} items; labels read {parts[2]}, AXSelected read {parts[3]},"
+                         f" selected children {parts[4]}")
+        elif key == "row" and len(parts) == 6 and parts[1].isdigit() and parts[3].isdigit():
+            role = parts[2] if _ROLE.match(parts[2]) else "(other)"
+            selected = parts[4] if parts[4] in ("true", "false") else "?"
+            lines.append(f"    item {parts[1]}: {role}, label {parts[3]} chars [{_shape(parts[5])}], selected {selected}")
+        elif key == "row_actions" and len(parts) == 3:
+            lines.append(f"- actions on a {parts[1] if parts[1] in ('short-label', 'long-label') else '?'} item: {_actions(parts[2])}")
+        elif key == "row_selected_settable" and len(parts) == 2:
+            lines.append(f"- can set AXSelected on a row: {parts[1] if parts[1] in ('true', 'false') else 'unknown'}")
+        elif key == "bubbles" and len(parts) == 2 and parts[1].isdigit():
+            lines.append(f"- messages on screen: {parts[1]}")
+        elif key == "bubble_row" and len(parts) == 4 and parts[1].isdigit() and parts[2].isdigit():
+            lines.append(f"    message {parts[1]}: label {parts[2]} chars [{_shape(parts[3])}]")
+        elif key == "bubble_actions" and len(parts) == 4:
+            ident = parts[3] if _SAFE_IDENT.fullmatch(parts[3] or "") else ("(hidden)" if parts[3] else "-")
+            lines.append(f"- newest message, {parts[1] if parts[1] in ('row', 'balloon', 'text') else '?'}: id {ident};"
+                         f" actions {_actions(parts[2])}")
+        elif key in ("top_before", "top_after") and len(parts) == 2:
+            roles = [r if _ROLE.match(r) else "(other)" for r in parts[1].split(",") if r]
+            lines.append(f"- Messages' top-level elements {'before' if key == 'top_before' else 'after'} the right-click: "
+                         + (", ".join(roles) or "none"))
+        elif key == "bubble_menu_at" and len(parts) == 2:
+            lines.append(f"- the right-click menu showed up: {parts[1] if parts[1] in ('element', 'app', 'window', 'none') else '?'}")
+        elif key == "after_tapback" and len(parts) == 4:
+            roles = [r if _ROLE.match(r) else "(other)" for r in parts[1].split(",") if r]
+            lines.append(f"- after choosing Tapback: top-level {', '.join(roles) or 'none'}; windows {parts[2]} (were {parts[3]})")
+        elif key == "window" and len(parts) == 4 and parts[1].isdigit():
+            ident = parts[2] if _SAFE_IDENT.fullmatch(parts[2] or "") else ("(hidden)" if parts[2] else "-")
+            sub = parts[3] if _ROLE.match(parts[3] or "") else "-"
+            lines.append(f"    window {parts[1]}: id {ident}, subrole {sub}")
+        elif key == "picker_buttons" and len(parts) == 3:
+            lines.append(f"- tapback picker buttons ({parts[1] if parts[1] in ('window', 'popover') else '?'}): "
+                         + (safe_titles(parts[2], private) if parts[2] else "none found"))
         elif key == "rows" and len(parts) == 8 and all(p.isdigit() for p in parts[1:]):
             count, desc, name, value, max_desc, max_name, max_value = parts[1:]
             lines.append(f"- row-like elements (AXRow/AXCell): {count}; with description {desc} (longest {max_desc}),"
@@ -1040,6 +1126,6 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
             role = parts[1] if _ROLE.match(parts[1]) else "(other)"
             lines.append(f"- reply field: {role}, AXValue settable: {'yes' if parts[2].lower() == 'true' else 'no'}")
     if tree:
-        lines.append("- front window (roles and child counts):")
-        lines.extend(tree[:400])
+        lines.append("- front window (role ‹subrole› (children) id=…, text lengths only):")
+        lines.extend(tree[:500])
     return lines or ["- inspection: no output"]

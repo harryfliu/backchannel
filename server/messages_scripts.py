@@ -244,95 +244,185 @@ end messagesState
 # exactly one of the names (or "Name, …") wins, the earliest name first; the L: names may also
 # match a label's beginning. Matches are climbed to their row; rows win over other elements.
 SIDEBAR = """
-on bestName(bcLabel, bcNames, bcStrict)
-    repeat with i from 1 to (count of bcNames)
-        set bcNeedle to (item i of bcNames) as text
-        if (length of bcNeedle) > 0 then
-            repeat with bcLine in paragraphs of bcLabel
-                set bcT to bcLine as text
-                if bcStrict then
-                    if bcT is bcNeedle or bcT starts with (bcNeedle & ",") then return i
-                else
-                    if bcT starts with bcNeedle then return i
+on attrText(bcEl, bcName)
+    set bcValue to missing value
+    try
+        tell application "System Events" to set bcValue to value of attribute bcName of bcEl
+    end try
+    return my asText(bcValue)
+end attrText
+
+on atPath(bcRoot, bcPath)
+    if bcRoot is missing value then return missing value
+    set bcEl to bcRoot
+    repeat with bcStep in bcPath
+        set bcNum to contents of bcStep
+        set bcNext to missing value
+        try
+            tell application "System Events" to set bcNext to UI element bcNum of bcEl
+        end try
+        if bcNext is missing value then return missing value
+        set bcEl to bcNext
+    end repeat
+    return bcEl
+end atPath
+
+-- Breadth-first by accessibility id, one request per element for its children's ids, with a cap.
+on searchId(bcRoot, bcWanted)
+    set bcLevel to {bcRoot}
+    set bcSpent to 0
+    repeat 18 times
+        set bcNext to {}
+        repeat with bcNode in bcLevel
+            set bcSpent to bcSpent + 1
+            if bcSpent > 90 then return missing value
+            set bcHere to contents of bcNode
+            set bcKids to {}
+            set bcIds to {}
+            try
+                tell application "System Events" to set bcKids to UI elements of bcHere
+            end try
+            try
+                tell application "System Events" to set bcIds to value of attribute "AXIdentifier" of every UI element of bcHere
+            end try
+            repeat with i from 1 to count of bcKids
+                if i is less than or equal to (count of bcIds) then
+                    if my asText(item i of bcIds) is bcWanted then return item i of bcKids
+                end if
+            end repeat
+            set bcNext to bcNext & bcKids
+        end repeat
+        if bcNext is {} then return missing value
+        set bcLevel to bcNext
+    end repeat
+    return missing value
+end searchId
+
+-- The conversation list and the open chat. On macOS 26.3 they sit at these child-index paths
+-- (checked by id); with another layout (say, the details panel open) a capped search finds them.
+on spotList(bcWin)
+    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1})
+    if my attrText(bcEl, "AXIdentifier") is "ConversationList" then return bcEl
+    return my searchId(bcWin, "ConversationList")
+end spotList
+
+on spotTranscript(bcWin)
+    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2})
+    if my attrText(bcEl, "AXIdentifier") is "TranscriptCollectionView" then return bcEl
+    return my searchId(bcWin, "TranscriptCollectionView")
+end spotTranscript
+
+-- The conversation's item in the list, by label, read for every item in one request. Labels look
+-- like "Name, [Unread, ]preview, time" (pinned: "Name, [Unread, preview, ]Pinned"). Any name may
+-- match the whole label or its "Name, " start; L names may also match its beginning. The earliest
+-- name wins.
+on findRow(bcList, bcStrictNames, bcLooseNames)
+    set bcDescs to {}
+    set bcRoles to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcList
+    end try
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of bcList
+    end try
+    set bcAllNames to bcLooseNames & bcStrictNames
+    set bcLooseCount to count of bcLooseNames
+    set bcBest to 0
+    set bcBestAt to 0
+    set bcLooseBest to 0
+    set bcLooseAt to 0
+    repeat with i from 1 to count of bcDescs
+        set bcRole to ""
+        if i is less than or equal to (count of bcRoles) then set bcRole to my asText(item i of bcRoles)
+        if bcRole is not "AXGroup" then
+            set bcLabel to my asText(item i of bcDescs)
+            repeat with k from 1 to count of bcAllNames
+                set bcName to my asText(item k of bcAllNames)
+                if bcName is not "" then
+                    if bcLabel is bcName or bcLabel starts with (bcName & ", ") then
+                        if bcBest is 0 or k < bcBest then
+                            set bcBest to k
+                            set bcBestAt to i
+                        end if
+                    else if k is less than or equal to bcLooseCount and bcLabel starts with bcName then
+                        if bcLooseBest is 0 or k < bcLooseBest then
+                            set bcLooseBest to k
+                            set bcLooseAt to i
+                        end if
+                    end if
                 end if
             end repeat
         end if
     end repeat
-    return 0
-end bestName
+    if bcBestAt is 0 then set bcBestAt to bcLooseAt
+    if bcBestAt is 0 then return missing value
+    return my atPath(bcList, {bcBestAt})
+end findRow
 
-on findConversationRow(bcWin, bcStrictNames, bcLooseNames)
-    set bcAllNames to bcLooseNames & bcStrictNames
-    set bcLooseCount to count of bcLooseNames
-    set bcBestStrict to 0
-    set bcStrictRow to missing value
-    set bcBestLoose to 0
-    set bcLooseRow to missing value
-    set bcFallback to missing value
-    set bcSeen to 0
-    set bcAll to {}
-    tell application "System Events" to set bcAll to entire contents of bcWin
-    repeat with bcItem in bcAll
-        set bcEl to contents of bcItem
-        set bcSeen to bcSeen + 1
-        if bcSeen > 2500 then exit repeat
-        if my roleOf(bcEl) is in {"AXRow", "AXCell", "AXButton", "AXGroup", "AXStaticText"} then
-            set bcLabel to my labelOf(bcEl)
-            set k to my bestName(bcLabel, bcAllNames, true)
-            if k > 0 and (bcBestStrict = 0 or k < bcBestStrict) then
-                set bcRowEl to my climbToRow(bcEl)
-                if bcRowEl is not missing value then
-                    set bcBestStrict to k
-                    set bcStrictRow to bcRowEl
-                    if k = 1 then exit repeat
-                else if bcFallback is missing value then
-                    set bcFallback to bcEl
-                end if
-            else if k = 0 and bcLooseCount > 0 then
-                set j to my bestName(bcLabel, items 1 thru bcLooseCount of bcAllNames, false)
-                if j > 0 and (bcBestLoose = 0 or j < bcBestLoose) then
-                    set bcRowEl to my climbToRow(bcEl)
-                    if bcRowEl is not missing value then
-                        set bcBestLoose to j
-                        set bcLooseRow to bcRowEl
-                    end if
-                end if
-            end if
-        end if
-    end repeat
-    if bcStrictRow is not missing value then return bcStrictRow
-    if bcLooseRow is not missing value then return bcLooseRow
-    return bcFallback
-end findConversationRow
-
-on climbToRow(bcEl)
-    if my roleOf(bcEl) is in {"AXRow", "AXCell"} then return bcEl
-    set bcUp to bcEl
-    repeat 6 times
-        set bcParent to missing value
-        try
-            tell application "System Events" to set bcParent to value of attribute "AXParent" of bcUp
-        end try
-        if bcParent is missing value then exit repeat
-        set bcUp to bcParent
-        if my roleOf(bcUp) is in {"AXRow", "AXCell"} then return bcUp
-    end repeat
-    return missing value
-end climbToRow
-
-on selectRow(bcRowEl)
-    if my roleOf(bcRowEl) is not in {"AXRow", "AXCell"} then return false
-    try
-        tell application "System Events" to set value of attribute "AXSelected" of bcRowEl to true
-    end try
-    delay 0.3
-    if my isSelected(bcRowEl) then return true
+-- Open the conversation (pressing its list item selects it), then give the chat a moment to load.
+on openRow(bcRowEl)
     try
         tell application "System Events" to perform action "AXPress" of bcRowEl
     end try
-    delay 0.3
+    delay 0.8
     return my isSelected(bcRowEl)
-end selectRow
+end openRow
+
+-- An element's own accessibility shortcut by title ("Heart", "Reply", "Mark as Read"). Custom
+-- actions describe themselves by title; their names read "Name:<title>" plus a target.
+on customAction(bcEl, bcTitles)
+    set bcActs to {}
+    set bcDescs to {}
+    set bcNames to {}
+    try
+        tell application "System Events" to set bcActs to actions of bcEl
+    end try
+    try
+        tell application "System Events" to set bcDescs to description of every action of bcEl
+    end try
+    try
+        tell application "System Events" to set bcNames to name of every action of bcEl
+    end try
+    repeat with bcTitle in bcTitles
+        set bcWant to contents of bcTitle
+        repeat with i from 1 to count of bcActs
+            set bcD to ""
+            set bcN to ""
+            if i is less than or equal to (count of bcDescs) then set bcD to my asText(item i of bcDescs)
+            if i is less than or equal to (count of bcNames) then set bcN to my asText(item i of bcNames)
+            if bcD starts with bcWant or bcN starts with ("Name:" & bcWant) then
+                set bcDone to false
+                try
+                    tell application "System Events" to perform (item i of bcActs)
+                    set bcDone to true
+                end try
+                return bcDone
+            end if
+        end repeat
+    end repeat
+    return false
+end customAction
+
+on hasAction(bcEl, bcTitles)
+    set bcDescs to {}
+    set bcNames to {}
+    try
+        tell application "System Events" to set bcDescs to description of every action of bcEl
+    end try
+    try
+        tell application "System Events" to set bcNames to name of every action of bcEl
+    end try
+    repeat with bcTitle in bcTitles
+        set bcWant to contents of bcTitle
+        repeat with bcD in bcDescs
+            if my asText(contents of bcD) starts with bcWant then return true
+        end repeat
+        repeat with bcN in bcNames
+            if my asText(contents of bcN) starts with ("Name:" & bcWant) then return true
+        end repeat
+    end repeat
+    return false
+end hasAction
 """
 
 # Find a message bubble in the transcript (right of the sidebar), newest first: walk the window
@@ -343,12 +433,9 @@ on matchesBubble(bcLabel, bcNeedles, bcExacts)
         if bcLabel contains (bcN as text) then return true
     end repeat
     if (count of bcExacts) > 0 then
-        repeat with bcLine in paragraphs of bcLabel
-            set bcS to bcLine as text
-            repeat with bcX in bcExacts
-                set bcW to bcX as text
-                if bcS is bcW or bcS starts with (bcW & ",") or bcS starts with (bcW & " ") or bcS contains (", " & bcW & ",") then return true
-            end repeat
+        repeat with bcX in bcExacts
+            set bcW to bcX as text
+            if bcLabel is bcW or bcLabel starts with (bcW & ",") or bcLabel contains (", " & bcW & ",") or bcLabel ends with (", " & bcW) then return true
         end repeat
     end if
     return false
@@ -361,159 +448,50 @@ on mentionsAny(bcLabel, bcSenders)
     return false
 end mentionsAny
 
-on findBubble(bcWin, bcMinX, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
-    set bcAll to {}
-    tell application "System Events" to set bcAll to entire contents of bcWin
+-- The message in the open chat, newest first, by the labels of everything on screen (one request).
+-- A label has to contain the text (or an attachment word); with senders, one naming the sender
+-- wins. K and J skip that many newer look-alikes. Returns the message's balloon.
+on findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
+    end try
     set bcSenderHits to 0
     set bcAnyHits to 0
-    set bcAnyPick to missing value
-    set bcPickedAt to 0
-    set bcLastFrame to missing value
-    set bcLastSenderFrame to missing value
-    set bcExamined to 0
-    repeat with i from (count of bcAll) to 1 by -1
-        set bcExamined to bcExamined + 1
-        if bcExamined > 3000 then exit repeat
-        if bcAnyPick is not missing value and bcExamined - bcPickedAt > 400 then exit repeat
-        set bcEl to item i of bcAll
-        if my roleOf(bcEl) is in {"AXGroup", "AXStaticText", "AXTextArea", "AXTextField", "AXCell", "AXImage", "AXButton"} then
-            set bcLabel to my labelOf(bcEl)
+    set bcAnyPick to 0
+    repeat with i from (count of bcDescs) to 1 by -1
+        set bcLabel to my asText(item i of bcDescs)
+        if (length of bcLabel) > 5 then
             if my matchesBubble(bcLabel, bcNeedles, bcExacts) then
-                set bcFrame to my frameOf(bcEl)
-                if bcFrame is not missing value then
-                    if (item 1 of bcFrame) >= bcMinX then
-                        if not my sameBubble(bcFrame, bcLastFrame) then
-                            set bcLastFrame to bcFrame
-                            set bcAnyHits to bcAnyHits + 1
-                            if bcAnyHits = bcSkipAny + 1 then
-                                set bcAnyPick to bcEl
-                                set bcPickedAt to bcExamined
-                                if (count of bcSenders) = 0 then return bcEl
-                            end if
-                        end if
-                        if (count of bcSenders) > 0 then
-                            if my mentionsAny(bcLabel, bcSenders) then
-                                if not my sameBubble(bcFrame, bcLastSenderFrame) then
-                                    set bcLastSenderFrame to bcFrame
-                                    set bcSenderHits to bcSenderHits + 1
-                                    if bcSenderHits = bcSkipSender + 1 then return bcEl
-                                end if
-                            end if
-                        end if
+                set bcAnyHits to bcAnyHits + 1
+                if bcAnyHits = bcSkipAny + 1 then set bcAnyPick to i
+                if (count of bcSenders) = 0 and bcAnyPick > 0 then exit repeat
+                if (count of bcSenders) > 0 then
+                    if my mentionsAny(bcLabel, bcSenders) then
+                        set bcSenderHits to bcSenderHits + 1
+                        if bcSenderHits = bcSkipSender + 1 then return my balloonOf(my atPath(bcTranscript, {i}))
                     end if
                 end if
             end if
         end if
     end repeat
-    return bcAnyPick
+    if bcAnyPick is 0 then return missing value
+    return my balloonOf(my atPath(bcTranscript, {bcAnyPick}))
 end findBubble
+
+-- A message row's first child is its balloon (id "Sticker" on macOS 26), which carries the
+-- tapback and Reply shortcuts; fall back to the row itself.
+on balloonOf(bcRow)
+    if bcRow is missing value then return missing value
+    set bcInner to my atPath(bcRow, {1})
+    if bcInner is missing value then return bcRow
+    return bcInner
+end balloonOf
 """
 
-MENUS = """
-on openMenu(bcEl, bcWin)
-    set bcHost to bcEl
-    set bcShown to false
-    repeat 4 times
-        try
-            tell application "System Events" to perform action "AXShowMenu" of bcHost
-            set bcShown to true
-        end try
-        if bcShown then exit repeat
-        set bcParent to missing value
-        try
-            tell application "System Events" to set bcParent to value of attribute "AXParent" of bcHost
-        end try
-        if bcParent is missing value then exit repeat
-        set bcHost to bcParent
-    end repeat
-    if not bcShown then return missing value
-    delay 0.4
-    set bcMenu to missing value
-    try
-        tell application "System Events" to set bcMenu to menu 1 of bcHost
-    end try
-    if bcMenu is missing value then
-        try
-            tell application "System Events" to set bcMenu to menu 1 of bcWin
-        end try
-    end if
-    return bcMenu
-end openMenu
 
-on closeMenu(bcMenu)
-    set bcCancelled to false
-    try
-        tell application "System Events" to perform action "AXCancel" of bcMenu
-        set bcCancelled to true
-    end try
-    if not bcCancelled then my pressEscape()
-end closeMenu
 
-on menuItemStarting(bcMenu, bcPrefixes)
-    set bcEntries to {}
-    try
-        tell application "System Events" to set bcEntries to menu items of bcMenu
-    end try
-    repeat with bcEntry in bcEntries
-        set bcMi to contents of bcEntry
-        set bcTitle to missing value
-        try
-            tell application "System Events" to set bcTitle to name of bcMi
-        end try
-        set bcT to my asText(bcTitle)
-        repeat with bcP in bcPrefixes
-            if bcT starts with (bcP as text) then return bcMi
-        end repeat
-    end repeat
-    return missing value
-end menuItemStarting
 
-on menuItemMatching(bcMenu, bcSynonyms)
-    set bcAll to {}
-    try
-        tell application "System Events" to set bcAll to entire contents of bcMenu
-    end try
-    repeat with bcItem in bcAll
-        set bcEl to contents of bcItem
-        if my roleOf(bcEl) is in {"AXMenuItem", "AXButton", "AXRadioButton", "AXCheckBox"} then
-            set bcLabel to my labelOf(bcEl)
-            repeat with bcS in bcSynonyms
-                if my lineMatches(bcLabel, bcS as text) then return bcEl
-            end repeat
-        end if
-    end repeat
-    return missing value
-end menuItemMatching
-"""
-
-TAPBACK_BUTTONS = """
-on findReactionButton(bcSynonyms)
-    set bcWins to {}
-    try
-        tell application "System Events" to set bcWins to windows of process "Messages"
-    end try
-    repeat with bcW in bcWins
-        set bcWinRef to contents of bcW
-        set bcAll to {}
-        try
-            tell application "System Events" to set bcAll to entire contents of bcWinRef
-        end try
-        set bcExamined to 0
-        repeat with i from (count of bcAll) to 1 by -1
-            set bcExamined to bcExamined + 1
-            if bcExamined > 1500 then exit repeat
-            set bcEl to item i of bcAll
-            if my roleOf(bcEl) is in {"AXButton", "AXRadioButton", "AXCheckBox"} then
-                set bcLabel to my labelOf(bcEl)
-                repeat with bcS in bcSynonyms
-                    if my lineMatches(bcLabel, bcS as text) then return bcEl
-                end repeat
-            end if
-        end repeat
-    end repeat
-    return missing value
-end findReactionButton
-"""
 
 TEXT_FIELDS = """
 on focusedTextField()
@@ -576,29 +554,13 @@ on act(argv)
     set bcState to my messagesState()
     if bcState is not "ok" then return bcState
     tell application "System Events" to set bcWin to window 1 of process "Messages"
-    set bcRowEl to my findConversationRow(bcWin, bcStrictNames, bcLooseNames)
+    set bcList to my spotList(bcWin)
+    if bcList is missing value then return "no-list"
+    set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
     if bcRowEl is missing value then return "row-not-found"
-    if my selectRow(bcRowEl) then
-        set bcMark to missing value
-        set bcEnabled to false
-        try
-            tell application "System Events" to set bcMark to menu item "Mark as Read" of menu 1 of menu bar item "Conversation" of menu bar 1 of process "Messages"
-            tell application "System Events" to set bcEnabled to enabled of bcMark
-        end try
-        if bcEnabled is true then
-            tell application "System Events" to click bcMark
-            return "ok-menu"
-        end if
-    end if
-    set bcMenu to my openMenu(bcRowEl, bcWin)
-    if bcMenu is missing value then return "no-mark-item"
-    set bcMark to my menuItemStarting(bcMenu, {"Mark as Read"})
-    if bcMark is missing value then
-        my closeMenu(bcMenu)
-        return "no-mark-item"
-    end if
-    tell application "System Events" to click bcMark
-    return "ok-context"
+    if my customAction(bcRowEl, {"Mark as Read"}) then return "ok-action"
+    if my hasAction(bcRowEl, {"Mark as Unread"}) then return "already-read"
+    return "no-mark-item"
 end act
 """
 
@@ -619,36 +581,20 @@ on act(argv)
         set bcState to my messagesState()
         if bcState is not "ok" then return bcState
         tell application "System Events" to set bcWin to window 1 of process "Messages"
-        set bcRowEl to my findConversationRow(bcWin, bcStrictNames, bcLooseNames)
+        set bcList to my spotList(bcWin)
+        if bcList is missing value then return "no-list"
+        set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
         if bcRowEl is missing value then return "row-not-found"
-        if not my selectRow(bcRowEl) then return "not-selected"
-        delay 0.8
-        set bcBubble to my findBubble(bcWin, my rightEdge(bcRowEl), bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        my openRow(bcRowEl)
+        set bcTranscript to my spotTranscript(bcWin)
+        if bcTranscript is missing value then return "no-transcript"
+        set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
         if bcBubble is missing value then return "bubble-not-found"
-        set bcMenu to my openMenu(bcBubble, bcWin)
-        if bcMenu is missing value then return "no-menu"
-        set bcTapItem to my menuItemStarting(bcMenu, {"Tapback", "React"})
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    if bcTapItem is missing value then
-        set bcReact to my menuItemMatching(bcMenu, bcSynonyms)
-        if bcReact is missing value then
-            my closeMenu(bcMenu)
-            return "no-tapback-item"
-        end if
-        tell application "System Events" to click bcReact
-        return "chosen-menu"
-    end if
-    tell application "System Events" to click bcTapItem
-    delay 0.6
-    set bcButton to my findReactionButton(bcSynonyms)
-    if bcButton is missing value then
-        my pressEscape()
-        return "no-tapback-button"
-    end if
-    tell application "System Events" to perform action "AXPress" of bcButton
-    return "chosen-overlay"
+    if my customAction(bcBubble, bcSynonyms) then return "chosen-action"
+    return "no-tapback-item"
 end act
 """
 
@@ -673,20 +619,16 @@ on act(argv)
         set bcState to my messagesState()
         if bcState is not "ok" then return bcState
         tell application "System Events" to set bcWin to window 1 of process "Messages"
-        set bcRowEl to my findConversationRow(bcWin, bcStrictNames, bcLooseNames)
+        set bcList to my spotList(bcWin)
+        if bcList is missing value then return "no-list"
+        set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
         if bcRowEl is missing value then return "row-not-found"
-        if not my selectRow(bcRowEl) then return "not-selected"
-        delay 0.8
-        set bcBubble to my findBubble(bcWin, my rightEdge(bcRowEl), bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+        my openRow(bcRowEl)
+        set bcTranscript to my spotTranscript(bcWin)
+        if bcTranscript is missing value then return "no-transcript"
+        set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
         if bcBubble is missing value then return "bubble-not-found"
-        set bcMenu to my openMenu(bcBubble, bcWin)
-        if bcMenu is missing value then return "no-menu"
-        set bcReplyItem to my menuItemStarting(bcMenu, {"Reply"})
-        if bcReplyItem is missing value then
-            my closeMenu(bcMenu)
-            return "no-reply-item"
-        end if
-        tell application "System Events" to click bcReplyItem
+        if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
         delay 0.7
         set bcBox to my focusedTextField()
         if bcBox is missing value then return "no-reply-field"
@@ -768,7 +710,7 @@ end run
 # closed again with Escape.
 
 INSPECT_RUN = """
-property bcBudget : 400
+property bcBudget : 320
 
 on run argv
     set bcAccessErr to 0
@@ -798,210 +740,352 @@ on run argv
     if bcConvNames is not missing value then set bcReport to bcReport & {"conversation_menu" & tab & my joinWith(my cleanNames(bcConvNames), " | ")}
     if bcWinCount > 0 then
         tell application "System Events" to set bcWin to window 1 of process "Messages"
-        set bcReport to bcReport & {my walk(bcWin, 0, 8)}
-        set bcReport to bcReport & {my rowStats(bcWin)}
-        set bcReport to bcReport & {my inspectBubble(bcWin)}
+        set bcWantTree to false
+        if (count of argv) > 0 then
+            if item 1 of argv is "tree" then set bcWantTree to true
+        end if
+        if bcWantTree then
+            set bcReport to bcReport & {my walk(bcWin, 0, 16)}
+        else
+            set bcReport to bcReport & my probeAll(bcWin)
+        end if
     end if
     return my joinWith(bcReport, linefeed)
 end run
 
-on rowStats(bcWin)
-    set bcRowCount to 0
-    set bcWithDesc to 0
-    set bcWithName to 0
-    set bcWithValue to 0
-    set bcMaxDesc to 0
-    set bcMaxName to 0
-    set bcMaxValue to 0
-    set bcAll to {}
-    tell application "System Events" to set bcAll to entire contents of bcWin
-    repeat with bcItem in bcAll
-        set bcEl to contents of bcItem
-        if my roleOf(bcEl) is in {"AXRow", "AXCell"} then
-            set bcRowCount to bcRowCount + 1
-            set n to my textLength(bcEl, "description")
-            if n > 0 then set bcWithDesc to bcWithDesc + 1
-            if n > bcMaxDesc then set bcMaxDesc to n
-            set n to my textLength(bcEl, "name")
-            if n > 0 then set bcWithName to bcWithName + 1
-            if n > bcMaxName then set bcMaxName to n
-            set n to my textLength(bcEl, "value")
-            if n > 0 then set bcWithValue to bcWithValue + 1
-            if n > bcMaxValue then set bcMaxValue to n
+-- The spots found by the tree walk on macOS 26.3, as child-index paths from the window. Each is
+-- checked by its accessibility id before use, so a different layout reports "missing" instead of
+-- poking at the wrong element.
+on probeAll(bcWin)
+    set bcOut to {}
+    set bcList to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 1, 1, 1})
+    set bcListId to my attrText(bcList, "AXIdentifier")
+    set bcOut to bcOut & {"spot" & tab & "list" & tab & bcListId}
+    set bcTranscript to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2})
+    set bcTransId to my attrText(bcTranscript, "AXIdentifier")
+    set bcOut to bcOut & {"spot" & tab & "transcript" & tab & bcTransId}
+    set bcTitle to my atPath(bcWin, {1, 1, 1, 1, 1, 1, 3, 1, 2})
+    set bcTitleId to my attrText(bcTitle, "AXIdentifier")
+    set bcOut to bcOut & {"spot" & tab & "title" & tab & bcTitleId}
+    if bcListId is "ConversationList" then set bcOut to bcOut & my sidebarReport(bcList)
+    if bcTransId is "TranscriptCollectionView" then set bcOut to bcOut & my bubbleReport(bcTranscript, bcWin)
+    return bcOut
+end probeAll
+
+on atPath(bcRoot, bcPath)
+    if bcRoot is missing value then return missing value
+    set bcEl to bcRoot
+    repeat with bcStep in bcPath
+        set bcNum to contents of bcStep
+        set bcNext to missing value
+        try
+            tell application "System Events" to set bcNext to UI element bcNum of bcEl
+        end try
+        if bcNext is missing value then return missing value
+        set bcEl to bcNext
+    end repeat
+    return bcEl
+end atPath
+
+-- A label's shape without its words: the length of each ", "-separated part, with a few
+-- status words and clock times named.
+on descShape(bcDesc)
+    if bcDesc is "" then return ""
+    set bcSaved to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to ", "
+    set bcParts to text items of bcDesc
+    set AppleScript's text item delimiters to bcSaved
+    set bcTags to {}
+    repeat with bcP in bcParts
+        set bcPart to contents of bcP
+        set bcTag to (length of bcPart) as text
+        if bcPart is in {"Pinned", "Unread", "Read", "Delivered", "Sent", "Edited", "Muted", "Today", "Yesterday"} then set bcTag to bcPart
+        if bcPart contains ":" and (bcPart ends with "AM" or bcPart ends with "PM") and (length of bcPart) < 12 then set bcTag to "time"
+        set bcTags to bcTags & {bcTag}
+    end repeat
+    return my joinWith(bcTags, ",")
+end descShape
+
+on windowCount()
+    set bcN to 0
+    try
+        tell application "System Events" to set bcN to count of windows of process "Messages"
+    end try
+    return bcN
+end windowCount
+
+on topRoles()
+    set bcRoles to {}
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of process "Messages"
+    end try
+    return my cleanNames(bcRoles)
+end topRoles
+
+on sidebarReport(bcList)
+    set bcOut to {}
+    set bcRoles to {}
+    set bcDescs to {}
+    set bcSels to {}
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of bcList
+    end try
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcList
+    end try
+    try
+        tell application "System Events" to set bcSels to value of attribute "AXSelected" of every UI element of bcList
+    end try
+    set bcSelKids to {}
+    try
+        tell application "System Events" to set bcSelKids to value of attribute "AXSelectedChildren" of bcList
+    end try
+    set bcCount to count of bcRoles
+    set bcOut to bcOut & {"rows" & tab & (bcCount as text) & tab & ((count of bcDescs) as text) & tab & ((count of bcSels) as text) & tab & ((count of bcSelKids) as text)}
+    set bcFewAt to 0
+    set bcManyAt to 0
+    repeat with i from 1 to bcCount
+        set bcRole to my asText(item i of bcRoles)
+        set bcDesc to ""
+        if i is less than or equal to (count of bcDescs) then set bcDesc to my asText(item i of bcDescs)
+        set bcSel to ""
+        if i is less than or equal to (count of bcSels) then set bcSel to my asText(item i of bcSels)
+        set bcShape to my descShape(bcDesc)
+        set bcOut to bcOut & {"row" & tab & (i as text) & tab & bcRole & tab & ((length of bcDesc) as text) & tab & bcSel & tab & bcShape}
+        if bcRole is "AXGenericElement" and bcDesc is not "" then
+            set bcPartCount to count of my splitOn(bcShape, ",")
+            if bcPartCount is less than 3 and bcFewAt is 0 then set bcFewAt to i
+            if bcPartCount is greater than 2 and bcManyAt is 0 then set bcManyAt to i
         end if
     end repeat
-    return "rows" & tab & bcRowCount & tab & bcWithDesc & tab & bcWithName & tab & bcWithValue & tab & bcMaxDesc & tab & bcMaxName & tab & bcMaxValue
-end rowStats
+    if bcFewAt > 0 then set bcOut to bcOut & {"row_actions" & tab & "short-label" & tab & my joinWith(my actionsOf(my atPath(bcList, {bcFewAt})), ",")}
+    if bcManyAt > 0 then
+        set bcRowEl to my atPath(bcList, {bcManyAt})
+        set bcOut to bcOut & {"row_actions" & tab & "long-label" & tab & my joinWith(my actionsOf(bcRowEl), ",")}
+        set bcSettable to missing value
+        try
+            tell application "System Events" to set bcSettable to settable of attribute "AXSelected" of bcRowEl
+        end try
+        set bcOut to bcOut & {"row_selected_settable" & tab & my asText(bcSettable)}
+    end if
+    return bcOut
+end sidebarReport
 
-on textLength(bcEl, bcWhich)
+on splitOn(bcText, bcSep)
+    set bcSaved to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to bcSep
+    set bcItems to text items of bcText
+    set AppleScript's text item delimiters to bcSaved
+    return bcItems
+end splitOn
+
+on findMenu(bcEl, bcWin)
+    set bcMenu to missing value
+    try
+        tell application "System Events" to set bcMenu to menu 1 of bcEl
+    end try
+    if bcMenu is not missing value then return {bcMenu, "element"}
+    try
+        tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
+    end try
+    if bcMenu is not missing value then return {bcMenu, "app"}
+    try
+        tell application "System Events" to set bcMenu to menu 1 of bcWin
+    end try
+    if bcMenu is not missing value then return {bcMenu, "window"}
+    return {missing value, "none"}
+end findMenu
+
+-- Button labels under an element, a few levels deep (the tapback picker's buttons).
+on collectButtons(bcRoot, bcDepth)
+    set bcFound to {}
+    if bcDepth > 7 or bcBudget is less than or equal to 0 then return bcFound
+    set bcBudget to bcBudget - 1
+    set bcKids to {}
+    set bcRoles to {}
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcKids to UI elements of bcRoot
+    end try
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of bcRoot
+    end try
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcRoot
+    end try
+    repeat with i from 1 to count of bcKids
+        set bcRole to ""
+        if i is less than or equal to (count of bcRoles) then set bcRole to my asText(item i of bcRoles)
+        if bcRole is in {"AXButton", "AXRadioButton", "AXCheckBox", "AXMenuItem"} then
+            if i is less than or equal to (count of bcDescs) then set bcFound to bcFound & {my asText(item i of bcDescs)}
+        else
+            set bcFound to bcFound & my collectButtons(item i of bcKids, bcDepth + 1)
+        end if
+    end repeat
+    return bcFound
+end collectButtons
+
+on pickerReport(bcWin, bcWinsBefore)
+    set bcOut to {}
+    set bcWins to {}
+    try
+        tell application "System Events" to set bcWins to windows of process "Messages"
+    end try
+    repeat with i from 1 to count of bcWins
+        set bcThisWin to item i of bcWins
+        set bcId to my attrText(bcThisWin, "AXIdentifier")
+        set bcSub to my attrText(bcThisWin, "AXSubrole")
+        set bcOut to bcOut & {"window" & tab & (i as text) & tab & bcId & tab & bcSub}
+        if bcId is not "SceneWindow" then
+            set bcBudget to 80
+            set bcOut to bcOut & {"picker_buttons" & tab & "window" & tab & my joinWith(my collectButtons(bcThisWin, 0), " | ")}
+        end if
+    end repeat
+    set bcPop to missing value
+    try
+        tell application "System Events" to set bcPop to first UI element of bcWin whose role is "AXPopover"
+    end try
+    if bcPop is not missing value then
+        set bcBudget to 80
+        set bcOut to bcOut & {"picker_buttons" & tab & "popover" & tab & my joinWith(my collectButtons(bcPop, 0), " | ")}
+    end if
+    return bcOut
+end pickerReport
+
+-- The newest message: its actions, its right-click menu, and the tapback picker if the menu has
+-- one. Nothing is chosen except the menu's own Tapback entry; Escape closes everything.
+on bubbleReport(bcTranscript, bcWin)
+    set bcOut to {}
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
+    end try
+    set bcCount to count of bcDescs
+    set bcOut to bcOut & {"bubbles" & tab & (bcCount as text)}
+    set bcNewest to 0
+    repeat with i from 1 to bcCount
+        set bcDesc to my asText(item i of bcDescs)
+        set bcOut to bcOut & {"bubble_row" & tab & (i as text) & tab & ((length of bcDesc) as text) & tab & my descShape(bcDesc)}
+        if (length of bcDesc) > 20 then set bcNewest to i
+    end repeat
+    if bcNewest is 0 then return bcOut & {"bubble" & tab & "none"}
+    set bcRow to my atPath(bcTranscript, {bcNewest})
+    set bcBalloon to my atPath(bcRow, {1})
+    set bcTextEl to my atPath(bcBalloon, {1})
+    set bcOut to bcOut & {"bubble_actions" & tab & "row" & tab & my joinWith(my actionsOf(bcRow), ",") & tab & my attrText(bcRow, "AXIdentifier")}
+    set bcOut to bcOut & {"bubble_actions" & tab & "balloon" & tab & my joinWith(my actionsOf(bcBalloon), ",") & tab & my attrText(bcBalloon, "AXIdentifier")}
+    set bcOut to bcOut & {"bubble_actions" & tab & "text" & tab & my joinWith(my actionsOf(bcTextEl), ",") & tab & my attrText(bcTextEl, "AXIdentifier")}
+    set bcPrevApp to my frontBundle()
+    set bcOut to bcOut & {"top_before" & tab & my joinWith(my topRoles(), ",")}
+    try
+        tell application "System Events" to perform action "AXShowMenu" of bcBalloon
+    end try
+    delay 0.7
+    set bcOut to bcOut & {"top_after" & tab & my joinWith(my topRoles(), ",")}
+    set bcFound to my findMenu(bcBalloon, bcWin)
+    set bcMenu to item 1 of bcFound
+    set bcOut to bcOut & {"bubble_menu_at" & tab & (item 2 of bcFound)}
+    if bcMenu is missing value then
+        my pressEscape()
+        my restoreFront(bcPrevApp)
+        return bcOut & {"bubble_menu" & tab & "(none)"}
+    end if
+    set bcTitles to {}
+    try
+        tell application "System Events" to set bcTitles to name of every menu item of bcMenu
+    end try
+    set bcOut to bcOut & {"bubble_menu" & tab & my joinWith(my cleanNames(bcTitles), " | ")}
+    set bcTapAt to 0
+    repeat with i from 1 to count of bcTitles
+        set bcT to my asText(item i of bcTitles)
+        if bcTapAt is 0 and (bcT starts with "Tapback" or bcT starts with "React") then set bcTapAt to i
+    end repeat
+    if bcTapAt is 0 then
+        my pressEscape()
+        my restoreFront(bcPrevApp)
+        return bcOut & {"tapback_item" & tab & "no"}
+    end if
+    set bcOut to bcOut & {"tapback_item" & tab & "yes"}
+    set bcWinsBefore to my windowCount()
+    try
+        tell application "System Events" to click menu item bcTapAt of bcMenu
+    end try
+    delay 0.8
+    set bcOut to bcOut & {"after_tapback" & tab & my joinWith(my topRoles(), ",") & tab & ((my windowCount()) as text) & tab & (bcWinsBefore as text)}
+    set bcOut to bcOut & my pickerReport(bcWin, bcWinsBefore)
+    my pressEscape()
+    my restoreFront(bcPrevApp)
+    return bcOut
+end bubbleReport
+
+on attrText(bcEl, bcName)
     set bcValue to missing value
     try
-        if bcWhich is "description" then
-            tell application "System Events" to set bcValue to description of bcEl
-        else if bcWhich is "name" then
-            tell application "System Events" to set bcValue to name of bcEl
-        else
-            tell application "System Events" to set bcValue to value of bcEl
-        end if
+        tell application "System Events" to set bcValue to value of attribute bcName of bcEl
     end try
-    return length of (my asText(bcValue))
-end textLength
-
-on selectedRowEdge(bcWin)
-    set bcAll to {}
-    tell application "System Events" to set bcAll to entire contents of bcWin
-    set bcSeen to 0
-    repeat with bcItem in bcAll
-        set bcEl to contents of bcItem
-        set bcSeen to bcSeen + 1
-        if bcSeen > 2500 then exit repeat
-        if my roleOf(bcEl) is in {"AXRow", "AXCell"} then
-            if my isSelected(bcEl) then return my rightEdge(bcEl)
-        end if
-    end repeat
-    set bcFrame to my frameOf(bcWin)
-    if bcFrame is missing value then return 0
-    return (item 1 of bcFrame) + ((item 3 of bcFrame) * 0.3)
-end selectedRowEdge
+    return my asText(bcValue)
+end attrText
 
 on actionsOf(bcEl)
     set bcActs to {}
     try
         tell application "System Events" to set bcActs to name of every action of bcEl
     end try
-    return my cleanNames(bcActs)
+    set bcClean to {}
+    repeat with bcA in my cleanNames(bcActs)
+        set bcClean to bcClean & {my oneLine(contents of bcA)}
+    end repeat
+    return bcClean
 end actionsOf
 
-on newestBubble(bcWin, bcMinX)
-    set bcAll to {}
-    tell application "System Events" to set bcAll to entire contents of bcWin
-    set bcExamined to 0
-    repeat with i from (count of bcAll) to 1 by -1
-        set bcExamined to bcExamined + 1
-        if bcExamined > 1500 then exit repeat
-        set bcEl to item i of bcAll
-        if my roleOf(bcEl) is in {"AXGroup", "AXStaticText", "AXCell", "AXImage"} then
-            set bcFrame to my frameOf(bcEl)
-            if bcFrame is not missing value then
-                if (item 1 of bcFrame) >= bcMinX then
-                    if (my actionsOf(bcEl)) contains "AXShowMenu" then return bcEl
-                end if
-            end if
-        end if
-    end repeat
-    return missing value
-end newestBubble
+-- Custom actions are named like "Name:Reply<newline>Target:...": keep each on one line, no commas.
+on oneLine(bcText)
+    set bcSaved to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to {linefeed, return, tab, ","}
+    set bcBits to text items of bcText
+    set AppleScript's text item delimiters to " "
+    set bcFlat to bcBits as text
+    set AppleScript's text item delimiters to bcSaved
+    return bcFlat
+end oneLine
 
-on buttonLabels()
-    set bcOut to {}
-    set bcWins to {}
-    try
-        tell application "System Events" to set bcWins to windows of process "Messages"
-    end try
-    repeat with bcW in bcWins
-        set bcWinRef to contents of bcW
-        set bcAll to {}
-        try
-            tell application "System Events" to set bcAll to entire contents of bcWinRef
-        end try
-        set bcSeen to 0
-        repeat with bcItem in bcAll
-            set bcEl to contents of bcItem
-            set bcSeen to bcSeen + 1
-            if bcSeen > 3000 then exit repeat
-            if my roleOf(bcEl) is in {"AXButton", "AXRadioButton", "AXCheckBox"} then
-                set bcDesc to missing value
-                try
-                    tell application "System Events" to set bcDesc to description of bcEl
-                end try
-                set bcDescText to my asText(bcDesc)
-                if bcDescText is not "" then set bcOut to bcOut & {bcDescText}
-            end if
-        end repeat
-    end repeat
-    return bcOut
-end buttonLabels
-
-on inspectBubble(bcWin)
-    set bcPrevApp to my frontBundle()
-    set bcBubble to my newestBubble(bcWin, my selectedRowEdge(bcWin))
-    if bcBubble is missing value then return "bubble" & tab & "none"
-    set bcReport to {"bubble" & tab & my roleOf(bcBubble) & tab & my joinWith(my actionsOf(bcBubble), ",")}
-    set bcMenu to my openMenu(bcBubble, bcWin)
-    if bcMenu is missing value then return my joinWith(bcReport & {"bubble_menu" & tab & "(none)"}, linefeed)
-    set bcTitles to {}
-    try
-        tell application "System Events" to set bcTitles to name of every menu item of bcMenu
-    end try
-    set bcReport to bcReport & {"bubble_menu" & tab & my joinWith(my cleanNames(bcTitles), " | ")}
-    set bcTapItem to my menuItemStarting(bcMenu, {"Tapback", "React"})
-    if bcTapItem is missing value then
-        set bcReport to bcReport & {"tapback_item" & tab & "no"}
-        my closeMenu(bcMenu)
-    else
-        set bcReport to bcReport & {"tapback_item" & tab & "yes"}
-        set bcBefore to my buttonLabels()
-        tell application "System Events" to click bcTapItem
-        delay 0.6
-        set bcAfter to my buttonLabels()
-        set bcFresh to {}
-        repeat with bcX in bcAfter
-            set bcDescText to contents of bcX
-            if bcDescText is not in bcBefore then set bcFresh to bcFresh & {bcDescText}
-        end repeat
-        set bcReport to bcReport & {"tapback_buttons" & tab & my joinWith(bcFresh, " | ")}
-        my pressEscape()
-    end if
-    set bcMenu to my openMenu(bcBubble, bcWin)
-    if bcMenu is not missing value then
-        set bcReplyItem to my menuItemStarting(bcMenu, {"Reply"})
-        if bcReplyItem is missing value then
-            set bcReport to bcReport & {"reply_item" & tab & "no"}
-            my closeMenu(bcMenu)
-        else
-            set bcReport to bcReport & {"reply_item" & tab & "yes"}
-            tell application "System Events" to click bcReplyItem
-            delay 0.7
-            set bcField to my focusedTextField()
-            if bcField is missing value then
-                set bcReport to bcReport & {"reply_field" & tab & "none"}
-            else
-                set bcSettable to false
-                try
-                    tell application "System Events" to set bcSettable to settable of attribute "AXValue" of bcField
-                end try
-                set bcReport to bcReport & {"reply_field" & tab & my roleOf(bcField) & tab & (bcSettable as text)}
-            end if
-            my pressEscape()
-        end if
-    end if
-    my restoreFront(bcPrevApp)
-    return my joinWith(bcReport, linefeed)
-end inspectBubble
-
+-- A bounded walk, one level at a time (never "entire contents", which takes over a minute on a
+-- big Messages window). Each level shows its first 5 and last 3 children, so both ends of long
+-- lists (the oldest and newest messages) appear. Text is reported as lengths only.
 on walk(bcEl, bcDepth, bcMaxDepth)
     if bcBudget is less than or equal to 0 then return ""
     set bcBudget to bcBudget - 1
     set bcRole to my roleOf(bcEl)
     if bcRole is "" then set bcRole to "?"
+    set bcSub to my attrText(bcEl, "AXSubrole")
+    set bcIdent to my attrText(bcEl, "AXIdentifier")
+    set bcDescLen to length of (my attrText(bcEl, "AXDescription"))
+    set bcValueLen to length of (my attrText(bcEl, "AXValue"))
     set bcKids to {}
     try
         tell application "System Events" to set bcKids to UI elements of bcEl
     end try
-    set bcReport to {"tree" & tab & (bcDepth as text) & tab & bcRole & tab & ((count of bcKids) as text)}
-    if bcDepth < bcMaxDepth then
-        set i to 0
-        repeat with bcKid in bcKids
-            set i to i + 1
-            if i > 12 or bcBudget is less than or equal to 0 then exit repeat
-            set bcReport to bcReport & {my walk(contents of bcKid, bcDepth + 1, bcMaxDepth)}
+    set bcCount to count of bcKids
+    set bcMenuFlag to "-"
+    if bcCount is less than 3 then
+        if (my actionsOf(bcEl)) contains "AXShowMenu" then set bcMenuFlag to "menu"
+    end if
+    set bcReport to {"tree" & tab & (bcDepth as text) & tab & bcRole & tab & bcSub & tab & (bcCount as text) & tab & bcIdent & tab & (bcDescLen as text) & tab & (bcValueLen as text) & tab & bcMenuFlag}
+    if bcDepth is less than bcMaxDepth and bcCount is greater than 0 then
+        repeat with i from 1 to bcCount
+            if bcBudget is less than or equal to 0 then exit repeat
+            if i is greater than 5 and i is less than or equal to (bcCount - 3) then
+                if i is 6 then set bcReport to bcReport & {"skip" & tab & ((bcDepth + 1) as text) & tab & ((bcCount - 8) as text)}
+            else
+                set bcReport to bcReport & {my walk(item i of bcKids, bcDepth + 1, bcMaxDepth)}
+            end if
         end repeat
     end if
     return my joinWith(bcReport, linefeed)
 end walk
 """
 
-MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MENUS + MARK_READ_ACT)
-TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + MENUS + TAPBACK_BUTTONS + TAPBACK_ACT)
-REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + MENUS + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
-INSPECT_SCRIPT = lines(INSPECT_RUN + ELEMENTS + MENUS + TEXT_FIELDS)
+MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
+TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
+REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
+INSPECT_SCRIPT = lines(INSPECT_RUN + ELEMENTS)

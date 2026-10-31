@@ -309,7 +309,7 @@ def test_inspect_script_never_prints_text():
     printed = [line for line in INSPECT_SCRIPT
                if re.search(r"set (bcReport|bcOut) to (bcReport & |bcOut & )?\{", line) or line.startswith('return "')
                or re.search(r"joinWith\(bcReport", line)]
-    assert len(printed) > 20
+    assert len(printed) >= 10  # sanity: we really found the report lines
     for line in printed:
         assert not re.search(r"\b(description|value) of\b", line), line  # lengths only (textLength)
         assert "name of" not in line or "menu" in line, line  # menu titles only
@@ -501,3 +501,61 @@ def test_turning_it_off_drops_queued_jobs(make_rw):
     fake.gate.set()
     assert rw.services.messages_ui.wait_idle(10)
     assert [argv[1] for _, _, argv, _ in fake.calls] == ["L:Jordan Park"]
+
+
+def test_inspect_walks_without_entire_contents():
+    # "entire contents" of a big Messages window took over a minute on macOS 26 (Harry's Mac).
+    assert not any("entire contents" in line for line in INSPECT_SCRIPT if not line.lstrip().startswith("--"))
+
+
+def test_inspect_tree_lines_hide_text_and_ids_that_could_be_personal():
+    from server.messages_ui import inspect
+    out = "\n".join([
+        "accessibility\tallowed",
+        "messages_running\tyes",
+        "windows\t1",
+        "tree\t0\tAXWindow\tAXStandardWindow\t2\t\t0\t0\t-",
+        "tree\t1\tAXGroup\t\t3\tConversationList\t12\t0\t-",
+        "tree\t2\tAXCell\t\t1\tiMessage;-;+15105550100\t31\t0\tmenu",
+        "skip\t2\t40",
+        "tree\t2\tAXStaticText\t\t0\tjordan@example.com\t0\t57\t-",
+    ])
+    lines = inspect(runner=lambda script, argv, timeout: Outcome(0, out, ""))
+    text = "\n".join(lines)
+    assert "AXWindow ‹AXStandardWindow› (2)" in text
+    assert "id=ConversationList desc:12" in text
+    assert "AXCell (1) id=(hidden) desc:31 [menu]" in text
+    assert "… 40 more" in text
+    assert "value:57" in text
+    assert "+1510" not in text and "jordan@" not in text and "iMessage;" not in text
+
+
+
+def test_inspect_probe_lines_report_shapes_actions_and_titles_without_text():
+    from server.messages_ui import inspect
+    out = "\n".join([
+        "accessibility\tallowed", "messages_running\tyes", "windows\t1",
+        "spot\tlist\tConversationList", "spot\ttranscript\tTranscriptCollectionView", "spot\ttitle\t",
+        "rows\t25\t25\t0\t1",
+        "row\t1\tAXGenericElement\t20\t\t12,Pinned",
+        "row\t7\tAXGenericElement\t115\tfalse\t15,88,time",
+        "row\t8\tAXGenericElement\t40\tfalse\tJordan Park,Hi",
+        "row_actions\tlong-label\tAXPress,AXShowMenu,Name:Pin Target:0x0 Selector:(null)",
+        "row_selected_settable\ttrue",
+        "bubbles\t9", "bubble_row\t9\t343\t9,322,time",
+        "bubble_actions\tballoon\tAXShowMenu,Name:Reply Target:0x1,Name:+14155550100\tSticker",
+        "top_before\tAXWindow,AXMenuBar", "top_after\tAXWindow,AXMenuBar,AXMenu",
+        "bubble_menu_at\tapp", "bubble_menu\tReply | Tapback… | Copy | Jordan Park",
+        "tapback_item\tyes", "after_tapback\tAXWindow,AXMenuBar\t2\t1",
+        "window\t2\t\tAXSystemDialog",
+        "picker_buttons\twindow\tHeart | Thumbs Up | +14155550100",
+    ])
+    text = "\n".join(inspect(runner=lambda script, argv, timeout: Outcome(0, out, ""), private={"jordan park"}))
+    assert "list: found (id ConversationList)" in text and "title: missing" in text
+    assert "item 1: AXGenericElement, label 20 chars [12,Pinned]" in text
+    assert "[15,88,time]" in text and "[?,?]" in text  # words that aren't known shapes never print
+    assert "custom:Pin" in text and "custom:Reply" in text and "custom:(hidden)" in text
+    assert "can set AXSelected on a row: true" in text
+    assert "showed up: app" in text and "Tapback item: yes" in text and "windows 2 (were 1)" in text
+    assert "Heart | Thumbs Up" in text
+    assert "Jordan" not in text and "4155550100" not in text and "[?,?]" in text
