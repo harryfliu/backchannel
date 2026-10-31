@@ -68,6 +68,9 @@ Access instead.
 **Beyond Slack**
 - **Unreads** (⌘⇧A): every conversation with something new on one page, with
   reply and mark-read right there. Nothing is marked read until you say so.
+- **Mark as unread**: right-click a conversation in the sidebar, use the ⋮ menu at the
+  top of a conversation, or ⌥-click a message (or its ⋮ › Mark unread from here). It
+  stays unread until you open it again.
 - **Catch up**: what needs you, with replies drafted in your voice.
 - **Waiting on you**: people who asked you something you haven't answered.
 - **Draft reply**: three suggestions in any conversation.
@@ -93,7 +96,7 @@ Backchannel in System Settings › Privacy & Security › Accessibility.
   reply, nothing is sent: the message says why, with Try again and Send as a regular
   text.
 - **Mark texts read in Messages**: opening a conversation here marks it read there
-  too, so your phone matches.
+  too, so your phone matches. Mark as unread here marks it unread there as well.
 
 Each one is checked against Messages' database afterward, and you'll see a note if
 it didn't work. They only reach chats and messages Messages has loaded (pinned and

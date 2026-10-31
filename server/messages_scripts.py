@@ -2,7 +2,7 @@
 
 Every script is passed to `osascript` one line per `-e`, and everything that
 comes from the user (names, message text, the reply) arrives as *argv*, never
-in the source. argv[1] names the action ("mark-read", "tapback", "reply", …)
+in the source. argv[1] names the action ("mark-read", "mark-unread", "tapback", "reply", …)
 so osascript never mistakes a value for an option; the rest are tagged values:
 
     L:<name>   a conversation name that may match the start of a sidebar label
@@ -663,6 +663,26 @@ on act(argv)
 end act
 """
 
+# --------------------------------------------------------------------------- mark unread
+# The row's own "Mark as Unread" action, like Mark read (works with Messages in the background).
+
+MARK_UNREAD_ACT = """
+on act(argv)
+    set bcLooseNames to my tagged(argv, "L")
+    set bcStrictNames to my tagged(argv, "N")
+    set bcState to my messagesState()
+    if bcState is not "ok" then return bcState
+    tell application "System Events" to set bcWin to window 1 of process "Messages"
+    set bcList to my spotList(bcWin)
+    if bcList is missing value then return "no-list"
+    set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
+    if bcRowEl is missing value then return "row-not-found"
+    if my customAction(bcRowEl, {"Mark as Unread"}) then return "ok-action"
+    if my hasAction(bcRowEl, {"Mark as Read"}) then return "already-unread"
+    return "no-mark-item"
+end act
+"""
+
 # --------------------------------------------------------------------------- tapback
 
 TAPBACK_ACT = """
@@ -1273,6 +1293,7 @@ for _name, _path in SPOTS.items():
 assert "__SPOT_" not in SIDEBAR
 
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
+MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
 REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
 INSPECT_SCRIPT = lines(INSPECT_RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES)

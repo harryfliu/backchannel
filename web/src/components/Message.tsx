@@ -7,6 +7,7 @@ import {
   chiefAvailable,
   displayName,
   getState,
+  markUnread,
   openChiefDraft,
   openProfile,
   openThread,
@@ -60,6 +61,7 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
       ref={ref}
       className={`msg ${head ? 'is-head' : 'is-cont'} ${m.status === 'sending' ? 'is-sending' : ''} ${reasons.length ? 'is-important' : ''} ${urgent ? 'is-urgent' : ''}`}
       data-mid={m.id}
+      onClick={(e) => altClickMarksUnread(e, m)}
     >
       <div className="msg-gutter">
         {head ? (
@@ -106,6 +108,14 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
     </div>
   )
 })
+
+/** Slack's shortcut: ⌥-click a message to mark the conversation unread from there. */
+function altClickMarksUnread(e: React.MouseEvent, m: Message) {
+  if (!e.altKey || m.id.startsWith('local:') || m.status === 'sending') return
+  if ((e.target as HTMLElement).closest('a, button, input, textarea, select, video, audio, [contenteditable="true"]')) return
+  e.preventDefault()
+  void markUnread(m.conversationId, m.id)
+}
 
 function excerpt(t: string, n: number) {
   return t.length > n ? t.slice(0, n - 1) + '…' : t
@@ -624,6 +634,8 @@ function HoverBar({ m, inThread }: { m: Message; inThread: boolean }) {
           align="right"
           onClose={more.close}
           items={[
+            { label: 'Mark unread from here', icon: 'dot' as const, hint: '⌥ click', onSelect: () => void markUnread(m.conversationId, m.id) },
+            { divider: true, label: '' },
             ...(chiefAvailable()
               ? [{ label: 'Add to Chief loops', icon: 'listChecks' as const, note: 'Track it as an open loop in Chief', onSelect: () => openChiefDraft(m) }]
               : []),

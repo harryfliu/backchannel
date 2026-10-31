@@ -346,6 +346,7 @@ export function createMockApi(): Api {
         service: 'iMessage',
         lastMessage: null,
         unreadCount: 0,
+        markedUnread: false,
         mentionCount: 0,
         isAutomated: false,
         awaitingReply: false,
@@ -365,9 +366,22 @@ export function createMockApi(): Api {
     async markRead(cid) {
       const c = convo(cid)
       c.unreadCount = 0
+      c.markedUnread = false
       c.mentionCount = 0
       const list = db.messages.get(cid) ?? []
       prioritize(c, list, c.awaitingSince, db.vips)
+      return clone(c)
+    },
+    async markUnread(cid, messageId) {
+      const c = convo(cid)
+      const list = db.messages.get(cid) ?? []
+      const from = messageId ? list.findIndex((m) => m.id === messageId) : -1
+      if (messageId && from === -1) throw new Error("That message isn't in this conversation.")
+      // Like the server: incoming messages from that one on (default: just the newest), at least 1.
+      const counted = messageId ? list.slice(from).filter((m) => !m.fromMe && !m.event && !m.unsent).length : 1
+      c.unreadCount = Math.max(1, counted)
+      c.markedUnread = true
+      emit({ type: 'conversation', conversation: c })
       return clone(c)
     },
     async setPrefs(cid, prefs) {

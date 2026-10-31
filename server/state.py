@@ -1,8 +1,9 @@
 """Backchannel's own SQLite database (never chat.db).
 
 Holds things Messages.app doesn't know about: stars/mutes/snoozes, local
-"last seen" marks, saved-for-later items, scheduled sends, sends in flight,
-and which sent messages belong to which thread.
+"last seen" marks, conversations marked unread, saved-for-later items,
+scheduled sends, sends in flight, and which sent messages belong to which
+thread.
 """
 
 from __future__ import annotations
@@ -28,6 +29,11 @@ CREATE TABLE IF NOT EXISTS marks (
     conversation_id TEXT PRIMARY KEY,
     last_seen_date INTEGER NOT NULL,   -- chat.db date (ns since 2001) of the newest message seen
     updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS unread_marks (
+    conversation_id TEXT PRIMARY KEY,
+    since_date INTEGER NOT NULL,       -- chat.db date (ns since 2001): incoming messages from here on are unread
+    marked_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS later (
     message_id TEXT PRIMARY KEY,
@@ -225,6 +231,40 @@ class State:
                 (conversation_id, int(last_seen_date), time.time()),
             )
             self.version += 1
+
+    # ------------------------------------------------------------------ marked unread
+
+    def get_unread_mark(self, conversation_id: str, aliases: Sequence[str] = ()) -> int | None:
+        """When "Mark as unread" counts from (chat.db ns), or None. Over aliases, the earliest wins."""
+        best: int | None = None
+        for key in (conversation_id, *aliases):
+            row = self._one("SELECT since_date FROM unread_marks WHERE conversation_id = ?", (key,))
+            if row and (best is None or row[0] < best):
+                best = row[0]
+        return best
+
+    def set_unread_mark(self, conversation_id: str, since_date: int, aliases: Sequence[str] = ()) -> None:
+        with self._lock:
+            for key in aliases:
+                self._conn.execute("DELETE FROM unread_marks WHERE conversation_id = ?", (key,))
+            self._conn.execute(
+                """INSERT INTO unread_marks (conversation_id, since_date, marked_at) VALUES (?, ?, ?)
+                   ON CONFLICT(conversation_id) DO UPDATE SET
+                     since_date = excluded.since_date, marked_at = excluded.marked_at""",
+                (conversation_id, int(since_date), time.time()),
+            )
+            self.version += 1
+
+    def clear_unread_mark(self, conversation_id: str, aliases: Sequence[str] = ()) -> bool:
+        """Forget "Mark as unread"; True if there was one."""
+        keys = (conversation_id, *aliases)
+        with self._lock:
+            removed = 0
+            for key in keys:
+                removed += self._conn.execute("DELETE FROM unread_marks WHERE conversation_id = ?", (key,)).rowcount
+            if removed:
+                self.version += 1
+        return removed > 0
 
     # ------------------------------------------------------------------ later
 

@@ -6,6 +6,8 @@ import {
   goBack,
   loadMedia,
   loadOlder,
+  markConversationRead,
+  markUnread,
   openDetails,
   openProfile,
   openSearch,
@@ -199,6 +201,10 @@ function ConversationHeader({ c, tab, setTab }: { c: Conversation; tab: string; 
           align="right"
           onClose={more.close}
           items={[
+            c.unreadCount > 0
+              ? { label: 'Mark as read', icon: 'check', onSelect: () => void markConversationRead(c.id) }
+              : { label: 'Mark as unread', icon: 'dot', onSelect: () => void markUnread(c.id) },
+            { divider: true, label: '' },
             { label: c.prefs.starred ? 'Unstar' : 'Star', icon: 'star', onSelect: () => toggleStar(c.id) },
             { label: c.prefs.muted ? 'Unmute' : 'Mute', icon: 'bellOff', onSelect: () => toggleMute(c.id) },
             { divider: true, label: '' },

@@ -14,9 +14,9 @@ import pytest
 
 from fake_messages import FakeMessages, clear_unread
 from server import messages_scripts, messages_ui, sender
-from server.messages_ui import (AUTOMATION_TEXT, DENIED_TEXT, INSPECT_SCRIPT, MARK_READ_SCRIPT, PROBE_SCRIPT,
-                                REPLY_SCRIPT, TAPBACK_SCRIPT, TIMEOUT, Job, Outcome, candidate_names, interpret,
-                                outcome_code)
+from server.messages_ui import (AUTOMATION_TEXT, DENIED_TEXT, INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT,
+                                PROBE_SCRIPT, REPLY_SCRIPT, TAPBACK_SCRIPT, TIMEOUT, Job, Outcome, candidate_names,
+                                interpret, outcome_code)
 from server.state import State
 from ts_shapes import validate
 
@@ -161,8 +161,9 @@ def test_candidate_names():
 # --------------------------------------------------------------------------- the scripts
 
 SCRIPTS = {"mark-read": MARK_READ_SCRIPT, "tapback": TAPBACK_SCRIPT, "reply": REPLY_SCRIPT, "inspect": INSPECT_SCRIPT,
-           "probe": PROBE_SCRIPT}
+           "probe": PROBE_SCRIPT, "mark-unread": MARK_UNREAD_SCRIPT}
 KEYS = {"mark-read": {"key code 53"}, "tapback": {"key code 53"}, "inspect": {"key code 53"}, "probe": set(),
+        "mark-unread": {"key code 53"},
         "reply": {"key code 53", "key code 36", "key code 9 using command down"}}
 
 

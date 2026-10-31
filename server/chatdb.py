@@ -324,6 +324,28 @@ class ChatDB:
                 out.append(row)
         return out
 
+    def incoming_since(self, chat_ids: Sequence[int], since_ns: int, limit: int = 1000) -> list[sqlite3.Row]:
+        """Incoming non-event, non-reaction rows at or after `since_ns`, oldest first, at most `limit`
+        ("Mark as unread" counts these, read or not)."""
+        if not chat_ids:
+            return []
+        marks = ",".join("?" * len(chat_ids))
+        rows = self.query(
+            f"""SELECT {self.message_select(fields=self.WINDOW_FIELDS)}, cmj.chat_id AS chat_id
+                FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id
+                WHERE cmj.chat_id IN ({marks}) AND cmj.message_date >= ?
+                  AND m.is_from_me = 0 AND m.item_type = 0 AND {NOT_REACTION_SQL}
+                ORDER BY cmj.message_date, m.ROWID LIMIT ?""",
+            (*chat_ids, since_ns, limit),
+        )
+        seen: set[int] = set()
+        out = []
+        for row in rows:
+            if row["ROWID"] not in seen:
+                seen.add(row["ROWID"])
+                out.append(row)
+        return out
+
     def reaction_rows(self, assoc_guids: Sequence[str]) -> list[sqlite3.Row]:
         fields = (
             "ROWID", "guid", "associated_message_guid", "associated_message_type",

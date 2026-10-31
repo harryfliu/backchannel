@@ -49,6 +49,7 @@ not be able to drive it.
 | POST | `/api/conversations/{id}/files` | multipart `file`, `clientId` → `SendResponse` |
 | POST | `/api/conversations` | body `{ handle, text, clientId }` → `{ conversationId }` — start a conversation with a phone number or email |
 | POST | `/api/conversations/{id}/read` | `Conversation` |
+| POST | `/api/conversations/{id}/unread` | body `{ messageId? }` → `Conversation` — mark as unread from that message on (default: the newest incoming one); `POST /read` clears it |
 | PATCH | `/api/conversations/{id}/prefs` | body `Partial<ConversationPrefs>` → `Conversation` |
 | GET | `/api/later` | `{ items: LaterItem[] }` |
 | PUT | `/api/later/{messageId}` | body `{ conversationId, remindAt, ifNoReply?, done? }` → `LaterItem` |
@@ -102,6 +103,15 @@ never returned as messages; they are folded into the target's `reactions`.
 tapback or event), `is_read = 0` in chat.db, and newer than the conversation's
 local "last seen" mark. `POST /read` sets that mark to the newest message.
 (Backchannel can't mark messages read in Messages.app or send read receipts.)
+
+**Mark as unread.** chat.db is Messages' own, so "Mark as unread" is kept in
+state.db: the conversation and the moment it counts from (the given message's
+date, or the newest incoming real message's). While it's set, `markedUnread` is
+true and `unreadCount` is the incoming real messages from that moment on, read
+in chat.db or not, plus chat.db-unread ones between the "last seen" mark and
+that moment, at least 1 (mentions and "Needs you" still go by chat.db alone).
+New messages keep counting. `POST /read` clears it. A `messageId` from another
+conversation is a 404. The change goes out as a `conversation` event.
 
 **Waiting on you.** Look at the *unanswered run*: the real messages (not
 tapbacks, events or unsent) that others sent after the user's last real
@@ -284,6 +294,12 @@ into Messages and never sends anything. Results go to the log and to
 "not allowed assistive access"). `./backchannel doctor --messages-ui` reports
 what the scripts can reach in Messages (the list, the open chat, label shapes and
 action names; no message text) so they can be tuned to the user's macOS version.
+The same setting syncs "Mark as unread": `POST /unread` asks Messages to use the
+row's "Mark as Unread" action (answers `ok-action`, `already-unread`,
+`row-not-found`, `no-mark-item`), and `POST /read` on a conversation that was
+marked unread asks Messages to mark it read even when chat.db shows nothing
+unread (Messages' own unread dot may not show there). Mark read and mark unread
+for one conversation share a queue slot: a newer one replaces one still waiting.
 
 **Tapbacks and threaded replies via Messages (experimental, opt-in).** The same
 Accessibility automation as read sync, for the two things AppleScript can't do.
@@ -324,8 +340,8 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   but nothing was verified (including timeouts), never send a second copy:
   emit `failed` and a `send-status` failed whose error says to check Messages
   before retrying (the row is still reconciled if it shows up later).
-- Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes
-  don't, and neither does "Messages isn't open / has no window" (it would come
+- Read sync failures also emit `ui-action` (`mark-read` or `mark-unread`,
+  `failed`); successes don't, and neither does "Messages isn't open / has no window" (it would come
   with every conversation you open).
 - Turning any helper on (false → true in `PATCH /api/settings`) queues a
   harmless System Events call (~90 s timeout, never touches Messages) so macOS

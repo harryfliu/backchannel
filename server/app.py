@@ -108,6 +108,11 @@ class SettingsBody(BaseModel):
     threadRepliesViaMessages: bool | None = None
 
 
+class UnreadBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    messageId: str | None = None  # mark unread from this message on; default: the newest incoming one
+
+
 class TapbackBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     kind: Literal["love", "like", "dislike", "laugh", "emphasize", "question"]
@@ -380,10 +385,22 @@ def create_app(
     @app.post("/api/conversations/{conv_id}/read")
     def mark_read(conv_id: str):
         conv = s.convs.get(conv_id)
+        was_marked = s.convs.is_marked_unread(conv)
         summary = s.convs.mark_read(conv)
         s.watcher.note_state_change(summary["id"])
         if s.messages_ui.mark_read_on:  # experimental: also mark it read in Messages, in the background
-            s.messages_ui.request(s.messages_ui.mark_read_job(conv, summary["title"]))
+            # Marked unread before: Messages' own unread dot may not show in chat.db, so ask anyway.
+            s.messages_ui.request(s.messages_ui.mark_read_job(conv, summary["title"], force=was_marked))
+        return summary
+
+    @app.post("/api/conversations/{conv_id}/unread")
+    def mark_unread(conv_id: str, body: UnreadBody | None = None):
+        """Mark as unread (kept by Backchannel; reading the conversation clears it)."""
+        conv = s.convs.get(conv_id)
+        summary = s.convs.mark_unread(conv, body.messageId if body else None)  # 404: not this conversation's
+        s.watcher.note_state_change(summary["id"])
+        if s.messages_ui.mark_read_on:  # experimental: Messages' "Mark as Unread" too, in the background
+            s.messages_ui.request(s.messages_ui.mark_unread_job(conv, summary["title"]))
         return summary
 
     @app.post("/api/conversations/{conv_id}/messages/{message_id}/tapback", status_code=202)

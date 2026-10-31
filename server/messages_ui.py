@@ -36,12 +36,14 @@ from . import heuristics as H
 from .chatdb import ChatDB, ChatDBError, NOT_REACTION_SQL
 from .conversations import Conv, NotFound, conv_title, message_text
 from .handles import format_handle
-from .messages_scripts import INSPECT_SCRIPT, MARK_READ_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT, TAPBACK_SCRIPT
+from .messages_scripts import (INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT,
+                               TAPBACK_SCRIPT)
 from .state import State
 from .timeutil import iso
 
 __all__ = [
-    "INSPECT_SCRIPT", "MARK_READ_SCRIPT", "PROBE_SCRIPT", "REPLY_SCRIPT", "TAPBACK_SCRIPT", "Bubble", "Job",
+    "INSPECT_SCRIPT", "MARK_READ_SCRIPT", "MARK_UNREAD_SCRIPT", "PROBE_SCRIPT", "REPLY_SCRIPT", "TAPBACK_SCRIPT",
+    "Bubble", "Job", "UnreadJob",
     "MessagesUI", "Outcome", "ProbeJob", "ReplyJob", "ReplyResult", "Simulator", "TapbackJob", "candidate_names",
     "inspect", "interpret", "interpret_probe", "interpret_reply", "interpret_tapback", "osascript_runner",
     "outcome_code", "safe_titles",
@@ -58,6 +60,7 @@ VERIFY_SECONDS = 5.0
 CHECK_AFTER = 3.0
 STATUS_KEY = "messages_ui_status"
 HELPER_SETTINGS = ("markReadInMessages", "tapbacksViaMessages", "threadRepliesViaMessages")
+READ_STATE = ("mark-read", "mark-unread")  # one queue slot per conversation: the newest of the two wins
 
 DENIED = re.compile(r"-1719|-25211|assistive access", re.IGNORECASE)
 DENIED_TEXT = ("macOS hasn't let Backchannel control Messages. Allow Backchannel in System Settings › Privacy & "
@@ -253,13 +256,32 @@ class Job:
     candidates: list[str]  # names to look for in Messages' sidebar, most specific first
     chat_ids: list[int] = field(default_factory=list)
     loose: int | None = None  # how many of `candidates` may match a label's beginning (default: all)
+    force: bool = False  # run even when chat.db shows nothing unread (it was marked unread)
     action = "mark-read"
 
     def key(self) -> tuple | None:
-        return ("mark-read", self.conversation_id)
+        return ("read-state", self.conversation_id)  # shared with UnreadJob: the newest wish wins
 
     def argv(self) -> list[str]:
         return ["mark-read", *names_argv(self.candidates, self.loose)]
+
+
+@dataclass
+class UnreadJob:
+    """Mark a conversation unread in Messages (its row's "Mark as Unread")."""
+
+    conversation_id: str
+    title: str
+    candidates: list[str]
+    chat_ids: list[int] = field(default_factory=list)
+    loose: int | None = None
+    action = "mark-unread"
+
+    def key(self) -> tuple | None:
+        return ("read-state", self.conversation_id)
+
+    def argv(self) -> list[str]:
+        return ["mark-unread", *names_argv(self.candidates, self.loose)]
 
 
 @dataclass
@@ -421,6 +443,17 @@ MARK_READ_ANSWERS: dict[str, tuple[str | None, str, str]] = {
 }
 
 
+MARK_UNREAD_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "ok-action": ("granted", "Marked {title} unread in Messages.", "done"),
+    "already-unread": ("granted", "{title} was already unread in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar, so it's unread only here.", "nothing"),
+    "no-mark-item": ("granted", "Messages didn't offer “Mark as Unread” for {title}.", "nothing"),
+    "no-window": ("granted", "Messages has no window open, so nothing was marked unread there.", "nothing"),
+    "not-running": (None, "Messages isn't open, so nothing was marked unread there.", "nothing"),
+}
+
+
 def interpret(outcome: Outcome, title: str) -> tuple[str | None, str, bool]:
     """Mark read: (permission or None for unchanged, lastResult sentence, succeeded)."""
     base = _common(outcome, TIMEOUT)
@@ -547,6 +580,7 @@ class MessagesUI:
         self.verify_seconds = VERIFY_SECONDS
         self._jobs: queue.Queue[Any] = queue.Queue()
         self._queued: set[tuple] = set()
+        self._latest: dict[tuple, Any] = {}  # read-state key → the newest mark-read/unread asked for
         self._lock = threading.Lock()
         self._busy = 0
         self._thread: threading.Thread | None = None
@@ -628,11 +662,15 @@ class MessagesUI:
             names, loose = candidate_names(title)
         return title, names, loose
 
-    def mark_read_job(self, conv: Conv, title: str | None = None) -> Job:
+    def mark_read_job(self, conv: Conv, title: str | None = None, *, force: bool = False) -> Job:
         conv_name, names, loose = self._names(conv)
         if title and title != conv_name:
             names, loose = [title, *[n for n in names if n != title]], loose + 1
-        return Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose)
+        return Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose, force)
+
+    def mark_unread_job(self, conv: Conv, title: str | None = None) -> UnreadJob:
+        job = self.mark_read_job(conv, title)
+        return UnreadJob(job.conversation_id, job.title, job.candidates, job.chat_ids, job.loose)
 
     def target(self, conv: Conv, message_id: str) -> tuple[Any, dict[str, Any]]:
         """The chat.db row and Message for a tapback target or reply root; NotFound / ValueError otherwise."""
@@ -698,13 +736,14 @@ class MessagesUI:
     # ------------------------------------------------------------------ queueing
 
     def request(self, job: Any) -> bool:
-        """Queue a job (never blocks). Repeats of a queued mark-read (or probe) are dropped.
+        """Queue a job (never blocks). Repeats of a queued mark-read (or probe) are dropped; a
+        mark-unread replaces a waiting mark-read for the same conversation and vice versa.
 
-        Mark read and the permission probe need a runner (never the simulator);
+        Mark read/unread and the permission probe need a runner (never the simulator);
         a tapback that can't run at all is answered right away with a failed
         `ui-action`.
         """
-        if job.action == "mark-read":
+        if job.action in READ_STATE:
             if self.runner is None or not self.mark_read_on:
                 return False
         elif job.action == "probe":
@@ -720,8 +759,18 @@ class MessagesUI:
         with self._lock:
             if key is not None:
                 if key in self._queued:
-                    return False
+                    if job.action not in READ_STATE:
+                        return False
+                    # Mark read/unread is waiting for this conversation: the newest wish replaces it
+                    # (a repeat of the same wish is dropped, unless it has to run regardless).
+                    waiting = self._latest.get(key)
+                    if waiting is not None and waiting.action == job.action and not getattr(job, "force", False):
+                        return False
+                    self._latest[key] = job
+                    return True
                 self._queued.add(key)
+                if job.action in READ_STATE:
+                    self._latest[key] = job
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._work, name="messages-helpers", daemon=True)
                 self._thread.start()
@@ -752,6 +801,7 @@ class MessagesUI:
                 key = job.key()
                 if key is not None:
                     self._queued.discard(key)
+                    job = self._latest.pop(key, job)  # read/unread: whichever was asked for last
                 cancelled = getattr(job, "state", None) == "cancelled"
                 if isinstance(job, ReplyJob) and not cancelled:
                     job.state = "running"
@@ -775,6 +825,8 @@ class MessagesUI:
     def _dispatch(self, job: Any) -> None:
         if job.action == "mark-read":
             self._run_mark_read(job)
+        elif job.action == "mark-unread":
+            self._run_mark_unread(job)
         elif job.action == "tapback":
             self._run_tapback(job)
         elif job.action == "reply":
@@ -816,7 +868,7 @@ class MessagesUI:
             newest = self.newest_unread(job.chat_ids)
         except ChatDBError:
             return
-        if newest is None:
+        if newest is None and not job.force:
             return  # Messages already agrees: nothing to do
         assert self.runner is not None
         outcome = self.runner(MARK_READ_SCRIPT, job.argv(), TIMEOUT)
@@ -824,7 +876,7 @@ class MessagesUI:
         interp = base or _specific(outcome, MARK_READ_ANSWERS, job.title, "nothing")
         result = interp.sentence
         succeeded = interp.state == "done" and base is None
-        if succeeded:
+        if succeeded and newest is not None:
             time.sleep(self.check_after)
             try:  # only the messages that were unread when we started (new ones may have arrived since)
                 if self.newest_unread(job.chat_ids, upto=newest) is not None:
@@ -837,6 +889,18 @@ class MessagesUI:
         # Successes stay quiet, and so does "Messages isn't open" (nothing to tell on every open).
         if not succeeded and interp.code not in ("not-running", "no-window"):
             self._ui_action("mark-read", job.conversation_id, "failed", result)
+
+    def _run_mark_unread(self, job: UnreadJob) -> None:
+        if not self.mark_read_on:
+            return  # turned off while this was queued
+        assert self.runner is not None
+        outcome = self.runner(MARK_UNREAD_SCRIPT, job.argv(), TIMEOUT)
+        base = _common(outcome, TIMEOUT)
+        interp = base or _specific(outcome, MARK_UNREAD_ANSWERS, job.title, "nothing")
+        succeeded = interp.state == "done" and base is None
+        self._record(interp, interp.sentence, "Mark unread")
+        if not succeeded and interp.code not in ("not-running", "no-window"):
+            self._ui_action("mark-unread", job.conversation_id, "failed", interp.sentence)
 
     # ------------------------------------------------------------------ tapbacks
 

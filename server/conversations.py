@@ -500,7 +500,10 @@ class ConversationService:
             prefs = self.state.get_prefs(conv.id, conv.aliases)
             awaiting = self._awaiting(conv, facts)
             snoozed = prefs.get("snoozed_until")
-            result = self._priority_result(conv, facts, awaiting, prefs, mark, unread)
+            result = self._priority_result(conv, facts, awaiting, prefs, mark, unread)  # chat.db's unread only
+            marked_since = self.state.get_unread_mark(conv.id, conv.aliases)
+            if marked_since is not None:
+                unread = self._marked_count(conv, mark, marked_since)
             data = {
                 "id": conv.id,
                 "kind": conv.kind,
@@ -511,6 +514,7 @@ class ConversationService:
                 "lastMessage": facts.preview,
                 "unreadCount": unread,
                 "mentionCount": mentions,
+                "markedUnread": marked_since is not None,
                 "isAutomated": facts.automated,
                 "awaitingReply": awaiting,
                 "awaitingSince": iso_apple(facts.awaiting_since) if awaiting else None,
@@ -827,6 +831,60 @@ class ConversationService:
             out.setdefault(conv.id, []).append((apple_to_ns(row["date"]), self._mentions_me(row)))
         return out
 
+    # ------------------------------------------------------------------ marked unread
+
+    MARKED_MAX = 999
+
+    def _counts_as_unread(self, row: Any) -> bool:
+        """An incoming text, photo, file… (not a tapback, event, unsent or empty row)."""
+        if row["is_from_me"] or (row["item_type"] or 0) != 0 or H.is_reaction_type(row["associated_message_type"]):
+            return False
+        if row["date_retracted"]:
+            return False
+        return bool(row["cache_has_attachments"] or row["balloon_bundle_id"] or self._text(row))
+
+    def _marked_count(self, conv: Conv, mark: int, since: int) -> int:
+        """The unread count of a conversation marked unread: incoming messages from `since` on (read
+        or not), plus chat.db-unread ones between the read mark and `since`. At least 1."""
+        if self._unread is None:
+            self._unread = self._load_unread()
+        before = 0
+        for cid in (conv.id, *conv.aliases):
+            before += sum(1 for d, _ in self._unread.get(cid, []) if mark < d < since)
+        try:
+            rows = self.db.incoming_since(conv.chat_ids, since, self.MARKED_MAX)
+        except ChatDBError:
+            rows = []
+        count = sum(1 for row in rows if self._counts_as_unread(row))
+        return max(1, min(self.MARKED_MAX, before + count))
+
+    def _newest_incoming_date(self, conv: Conv) -> int:
+        """The newest incoming message's date (ns), else the newest message's, else now."""
+        rows = self._recent_rows(conv, 40)  # newest first
+        for row in rows:
+            if self._counts_as_unread(row):
+                return apple_to_ns(row["date"])
+        return apple_to_ns(rows[0]["date"]) if rows else now_apple_ns()
+
+    def is_marked_unread(self, conv: Conv) -> bool:
+        return self.state.get_unread_mark(conv.id, conv.aliases) is not None
+
+    def mark_unread(self, conv: Conv, message_id: str | None = None) -> dict[str, Any]:
+        """Mark as unread from `message_id` (a message in this conversation), else from the newest
+        incoming message. Kept in state.db (chat.db is Messages' own); reading it clears this."""
+        with self._lock:
+            self.refresh()
+            if message_id:
+                rows = [r for r in self.db.messages_by_guid([message_id]) if r["chat_id"] in conv.chat_ids]
+                if not rows:
+                    raise NotFound("That message isn't in this conversation.")
+                since = apple_to_ns(rows[0]["date"])
+            else:
+                since = self._newest_incoming_date(conv)
+            self.state.set_unread_mark(conv.id, since, conv.aliases)
+            self._list_cache = None
+        return self.public_summary(conv)
+
     # ------------------------------------------------------------------ actions
 
     def mark_read(self, conv: Conv) -> dict[str, Any]:
@@ -834,6 +892,7 @@ class ConversationService:
         ids = self.db.page_ids(conv.chat_ids, None, 1, reactions=True)
         newest = apple_to_ns(ids[0][0]) if ids else now_apple_ns()
         self.state.set_mark(conv.id, max(newest, 1))
+        self.state.clear_unread_mark(conv.id, conv.aliases)
         with self._lock:
             self._list_cache = None
         return self.public_summary(conv)
