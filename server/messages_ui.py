@@ -77,8 +77,9 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "love": ("Heart", "Love", "Loved"),
     "like": ("Thumbs up", "Like", "Liked"),
     "dislike": ("Thumbs down", "Dislike", "Disliked"),
-    "laugh": ("Ha ha", "Haha", "Ha-ha", "Laugh"),
-    "emphasize": ("Exclamation marks", "Exclamation mark", "Emphasize", "!!"),
+    # macOS 26 names this one "Ha ha" with an unusual space, so plain "Ha" is the catch-all.
+    "laugh": ("Ha ha", "Haha", "Ha-ha", "Laugh", "Ha"),
+    "emphasize": ("Exclamation mark", "Exclamation marks", "Emphasize", "!!"),
     "question": ("Question mark", "Question", "?"),
 }
 ATTACHMENT_WORDS: dict[str, tuple[str, ...]] = {
@@ -407,6 +408,9 @@ def outcome_code(outcome: Outcome) -> str:
 
 
 MARK_READ_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "ok-action": ("granted", "Marked {title} read in Messages.", "done"),
+    "already-read": ("granted", "{title} was already read in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
     "ok-menu": ("granted", "Marked {title} read in Messages.", "done"),
     "ok-context": ("granted", "Marked {title} read in Messages (from its context menu).", "done"),
     "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
@@ -426,6 +430,9 @@ def interpret(outcome: Outcome, title: str) -> tuple[str | None, str, bool]:
 
 
 TAPBACK_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "chosen-action": ("granted", "Sent the tapback in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "chosen-menu": ("granted", "Sent the tapback in Messages.", "done"),
     "chosen-overlay": ("granted", "Sent the tapback in Messages.", "done"),
     "not-running": (None, "Messages isn't open, so the tapback wasn't sent.", "nothing"),
@@ -447,6 +454,8 @@ def interpret_tapback(outcome: Outcome, title: str) -> Interp:
 
 REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "sent-axvalue": ("granted", "Sent as a reply in Messages.", "done"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "sent-paste": ("granted", "Sent as a reply in Messages.", "done"),
     "returned-unconfirmed": ("granted", "Messages didn't confirm your reply.", "maybe"),
     "typed-not-sent": ("granted", "Your reply is in Messages' reply field, but it wasn't sent.", "maybe"),
