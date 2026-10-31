@@ -466,6 +466,29 @@ class Media:
                         return out, "image/jpeg"
         return None
 
+    def png_file(self, src: Path, key: str) -> Path | None:
+        """A PNG copy made with sips (keeps transparency), cached; None without sips or on failure."""
+        if not self.sips:
+            return None
+        out = self._cache_path(key, "-transparent.png")
+        if self._fresh(out, src) and sniff_file(out) == "png":
+            return out
+        if self._run([self.sips, "-s", "format", "png", str(src), "--out", "{out}"], out) and sniff_file(out) == "png":
+            return out
+        return None
+
+    def png_bytes(self, data: bytes, key: str) -> bytes | None:
+        """PNG bytes for in-memory image data (e.g. an uploaded HEIC), via sips."""
+        if not self.sips:
+            return None
+        src = self._cache_path("convert-src-" + key, ".img")
+        src.write_bytes(data)
+        try:
+            out = self.png_file(src, "convert-" + key)
+            return out.read_bytes() if out else None
+        finally:
+            src.unlink(missing_ok=True)
+
     def resize_avatar(self, data: bytes, key: str) -> tuple[bytes, str] | None:
         """Shrink a full-size contact photo to 256px (macOS only)."""
         if not self.sips:

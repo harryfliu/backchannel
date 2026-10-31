@@ -136,7 +136,7 @@ def test_paging_covers_everything_once(ro):
     small = ro.all_messages(FAMILY, limit=4)
     big = ro.get(f"/api/conversations/{quote(FAMILY, safe='')}/messages", params={"limit": 200})["messages"]
     assert [m["id"] for m in small] == [m["id"] for m in big]
-    assert len(big) == 18
+    assert len(big) == 19
 
 
 def test_media_page(ro):

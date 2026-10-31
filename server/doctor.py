@@ -245,6 +245,20 @@ def check_chief(report: Report, services: Any) -> None:
             report.item("read error", str(exc))
 
 
+def check_messages_ui(report: Report, services: Any) -> None:
+    """Accessibility structure of Messages, for tuning the mark-read script. No names or text."""
+    from . import messages_ui
+
+    report.section("Messages UI (Accessibility)")
+    health = services.messages_ui.health()
+    report.item("markReadInMessages setting", "on" if health["enabled"] else "off")
+    report.item("last result", "(none)" if not health["lastAt"] else f"at {health['lastAt']}, permission {health['permission']}")
+    start = time.perf_counter()
+    for line in messages_ui.inspect(runner=messages_ui.osascript_runner):
+        report.lines.append(line)
+    report.item("inspection took", _ms(start))
+
+
 def check_system(report: Report, services: Any) -> None:
     settings = services.settings
     report.section("Backchannel")
@@ -263,6 +277,8 @@ def check_system(report: Report, services: Any) -> None:
 def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str]:
     parser = argparse.ArgumentParser(prog="backchannel doctor", description=__doc__)
     parser.add_argument("--ai", action="store_true", help="also make one tiny real Claude call")
+    parser.add_argument("--messages-ui", action="store_true",
+                        help="describe the Messages window's accessibility structure (roles and counts only)")
     args = parser.parse_args(argv)
     if dotenv:
         load_dotenv()
@@ -279,6 +295,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
         check_contacts(report, services)
         check_ai(report, services, live=args.ai)
         check_chief(report, services)
+        if args.messages_ui:
+            check_messages_ui(report, services)
     finally:
         services.close()
     report.section("Result")

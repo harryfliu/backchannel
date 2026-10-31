@@ -395,6 +395,10 @@ class ChatDB:
         select = self.select_list("attachment", "a", ATTACHMENT_FIELDS)
         out: list[sqlite3.Row] = []
         retracted = "COALESCE(m.date_retracted, 0) = 0" if "date_retracted" in self.columns("message") else "1"
+        # Stickers and Genmoji aren't media (they have their own library, /api/stickers).
+        not_sticker = "COALESCE(a.is_sticker, 0) = 0"
+        if "emoji_image_content_identifier" in self.columns("attachment"):
+            not_sticker += " AND a.emoji_image_content_identifier IS NULL"
         for chat_id in chat_ids:
             out.extend(
                 self.query(
@@ -405,7 +409,7 @@ class ChatDB:
                         JOIN message_attachment_join maj ON maj.message_id = m.ROWID
                         JOIN attachment a ON a.ROWID = maj.attachment_id
                         WHERE cmj.chat_id = ? AND cmj.message_date <= ? AND {NOT_REACTION_SQL} AND {retracted}
-                          AND COALESCE(a.hide_attachment, 0) = 0
+                          AND COALESCE(a.hide_attachment, 0) = 0 AND {not_sticker}
                           AND NOT (cmj.message_date = ? AND (m.ROWID > ? OR (m.ROWID = ? AND a.ROWID >= ?)))
                         ORDER BY cmj.message_date DESC, m.ROWID DESC, a.ROWID DESC LIMIT ?""",
                     (chat_id, max_date, max_date, max_mid, max_mid, max_aid, limit),

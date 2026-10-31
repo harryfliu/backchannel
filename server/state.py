@@ -74,6 +74,24 @@ CREATE TABLE IF NOT EXISTS sent_threads (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sent_threads_root ON sent_threads(thread_root_id);
+CREATE TABLE IF NOT EXISTS custom_emoji (
+    name TEXT PRIMARY KEY,
+    file TEXT NOT NULL,                -- file name inside <state_dir>/emoji/
+    mime_type TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    animated INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,              -- upload | link | imessage
+    source_ref TEXT,                   -- the link, or the sticker's attachment guid
+    sha256 TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS file_hashes (
+    guid TEXT PRIMARY KEY,             -- chat.db attachment guid
+    mtime REAL NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -396,6 +414,53 @@ class State:
 
     def recent_local_threads(self, since: float) -> list[sqlite3.Row]:
         return self._all("SELECT * FROM sent_threads WHERE created_at >= ?", (since,))
+
+    # ------------------------------------------------------------------ custom emoji
+
+    def list_emoji(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM custom_emoji ORDER BY name")
+
+    def get_emoji(self, name: str) -> sqlite3.Row | None:
+        return self._one("SELECT * FROM custom_emoji WHERE name = ?", (name,))
+
+    def add_emoji(self, row: dict[str, Any]) -> bool:
+        """Insert; False when the name is taken."""
+        cols = ", ".join(row)
+        marks = ", ".join("?" * len(row))
+        try:
+            self._exec(f"INSERT INTO custom_emoji ({cols}) VALUES ({marks})", tuple(row.values()))
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def delete_emoji(self, name: str) -> sqlite3.Row | None:
+        with self._lock:
+            row = self.get_emoji(name)
+            if row is not None:
+                self._conn.execute("DELETE FROM custom_emoji WHERE name = ?", (name,))
+            return row
+
+    # ------------------------------------------------------------------ attachment file hashes
+
+    def cached_hash(self, guid: str, mtime: float, size: int) -> str | None:
+        row = self._one("SELECT sha256 FROM file_hashes WHERE guid = ? AND mtime = ? AND size = ?", (guid, mtime, size))
+        return row[0] if row else None
+
+    def store_hash(self, guid: str, mtime: float, size: int, digest: str) -> None:
+        self._exec("INSERT OR REPLACE INTO file_hashes (guid, mtime, size, sha256) VALUES (?, ?, ?, ?)",
+                   (guid, mtime, size, digest))
+
+    # ------------------------------------------------------------------ server settings
+
+    def get_settings(self) -> dict[str, Any]:
+        return {"markReadInMessages": False, **(self.get_kv("server_settings") or {})}
+
+    def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            settings = self.get_settings()
+            settings.update(patch)
+            self.set_kv("server_settings", settings)
+            return settings
 
     # ------------------------------------------------------------------ key/value
 

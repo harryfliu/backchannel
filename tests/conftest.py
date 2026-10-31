@@ -52,10 +52,12 @@ def settings_for(fx: Path, state: Path, **extra: str) -> Settings:
 class Harness:
     """A TestClient bound to an app over one fixture folder."""
 
-    def __init__(self, fx: Path, state: Path, *, ai_client_factory: Callable[[], Any] | None = None, **env: str):
+    def __init__(self, fx: Path, state: Path, *, ai_client_factory: Callable[[], Any] | None = None,
+                 messages_ui_runner: Callable[..., Any] | None = None, **env: str):
         self.fx = fx
         self.settings = settings_for(fx, state, **env)
-        self.app = create_app(self.settings, start_background=False, ai_client_factory=ai_client_factory)
+        self.app = create_app(self.settings, start_background=False, ai_client_factory=ai_client_factory,
+                              messages_ui_runner=messages_ui_runner)
         self.services = self.app.state.services
         self.client = TestClient(self.app, base_url=BASE)
         self.manifest = json.loads((fx / "manifest.json").read_text())

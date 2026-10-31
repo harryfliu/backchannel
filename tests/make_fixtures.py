@@ -401,6 +401,9 @@ def build_story(b: ChatBuilder) -> None:
     JPEG, HEIC, MOV = "image/jpeg", "image/heic", "video/quicktime"
     photo = lambda seed, w=96, h=72: media_gen.jpeg(w, h, lambda bx, by: ((seed * 40 + bx * 20) % 256, (by * 30 + 60) % 256, (seed * 70 + 90) % 256))  # noqa: E731
     sticker_png = media_gen.png(48, 48, lambda x, y: (255, 200, 40) if (x - 24) ** 2 + (y - 24) ** 2 < 400 else (255, 255, 255))
+    party_sticker = media_gen.png(40, 40, lambda x, y: (200, 60, 200) if (x + y) % 8 < 4 else (250, 250, 250))
+    ramen_sticker = media_gen.png(44, 44, lambda x, y: (240, 180, 90) if y > 20 else (250, 250, 250))
+    genmoji_copy = media_gen.png(64, 64, lambda x, y: (240, 200, 61) if (x - 32) ** 2 + (y - 32) ** 2 < 700 else (255, 255, 255))
     preview_png = media_gen.png(120, 63, lambda x, y: (200 - y, 80 + x // 2, 60))
 
     # -- chats --------------------------------------------------------------------------
@@ -448,6 +451,10 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("jordan", "me", None, unsent_at, label="j_unsent", attributedBody=None, date_edited=unix_to_apple_ns(unsent_at + 30),
           date_retracted=unix_to_apple_ns(unsent_at + 30), message_summary_info=retraction_info(15))
     b.msg("jordan", "me", "congrats!! it looks amazing", b.day(2, 12, 16))
+    b.msg("jordan", "me", None, b.day(2, 12, 17), label="j_my_sticker",
+          attachments=[("party.png", party_sticker, "image/png", "public.png", {"sticker": True})])
+    b.msg("jordan", "jordan", None, b.day(10, 9, 0), label="j_gone_sticker",
+          attachments=[("old-sticker.heic", None, "image/heic", "public.heic", {"sticker": True})])
     b.msg("jordan", "jordan", "are you down to hike Saturday?", b.ago(hours=2), label="j_hike", unread=True)
     b.msg("jordan", "jordan", "can carpool from mine", b.ago(hours=1, minutes=54), label="j_carpool", unread=True)
 
@@ -559,6 +566,8 @@ def build_story(b: ChatBuilder) -> None:
     b.tapback("family", "dad", "f_job", 2000, b.day(4, 12, 2))
     b.tapback("family", "me", "f_job", 2000, b.day(4, 12, 3))
     b.msg("family", "mom", "So proud of you sweetie!! ❤️", b.day(4, 12, 4))
+    b.msg("family", "me", None, b.day(4, 12, 5), label="f_my_sticker",  # the same party sticker again
+          attachments=[("party copy.png", party_sticker, "image/png", "public.png", {"sticker": True})])
     b.msg("family", "dad", "Does anyone know where the Costco card is?", b.ago(hours=26))
     b.msg("family", "mom", "In the kitchen drawer", b.ago(hours=25, minutes=30))
     chairs = "Harry can you bring your folding chairs too?"
@@ -600,6 +609,8 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("dinner", "sam", "nvm wrong chat lol", b.day(2, 20, 5))
     sake = "Harry are you bringing the sake again? 🍶"
     b.msg("dinner", "ellie", sake, b.ago(hours=1), label="d_sake", unread=True, mentions=[(0, 5, ME_PHONE)])
+    b.msg("dinner", "ellie", None, b.day(8, 12, 0), label="d_ellie_sticker",
+          attachments=[("ramen-sticker.png", ramen_sticker, "image/png", "public.png", {"sticker": True})])
 
     # -- An unnamed group ---------------------------------------------------------------------------------
     b.msg("trio", "sam", "surprise party for priya — sat the 14th?", b.day(16, 19, 0))
@@ -608,6 +619,10 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("trio", "me", "I'll get her a gift from all of us", b.day(16, 19, 20))
     b.msg("trio", "sam", "perfect", b.day(16, 19, 22))
     b.msg("trio", "jordan", "reminder: don't tell priya 🤫", b.day(3, 11, 0))
+    b.msg("trio", "me", None, b.day(3, 11, 5), label="t_my_genmoji",  # the same Genmoji Ellie sent, new file
+          attachments=[("Genmoji.png", genmoji_copy, "image/png", "public.png",
+                        {"emoji_image_content_identifier": "genmoji:" + det_uuid("genmoji-dog"),
+                         "emoji_image_short_description": "dog wearing sunglasses"})])
 
 
 def write_chief(out: Path) -> None:

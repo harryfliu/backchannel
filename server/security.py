@@ -20,6 +20,7 @@ COOKIE_NAME = "bc_session"
 STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 COOKIE_EXEMPT = {"/api/session"}
 MULTIPART_PATHS_SUFFIX = "/files"
+MULTIPART_PATHS = {"/api/emoji"}  # emoji uploads
 
 ASGIApp = Callable[[dict, Callable[[], Awaitable[dict]], Callable[[dict], Awaitable[None]]], Awaitable[None]]
 
@@ -103,7 +104,7 @@ class SecurityMiddleware:
             if method in ("POST", "PUT", "PATCH"):
                 has_body = headers.get("content-length", "0") not in ("", "0") or "transfer-encoding" in headers
                 ctype = headers.get("content-type", "").split(";")[0].strip().lower()
-                if path.endswith(MULTIPART_PATHS_SUFFIX):
+                if path.endswith(MULTIPART_PATHS_SUFFIX) or path in MULTIPART_PATHS:
                     if ctype != "multipart/form-data":
                         await self._reject(send, 415, "File uploads must be sent as multipart/form-data.")
                         return
