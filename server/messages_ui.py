@@ -38,6 +38,10 @@ STATUS_KEY = "messages_ui_status"
 DENIED = re.compile(r"-1719|-25211|assistive access", re.IGNORECASE)
 DENIED_TEXT = ("macOS hasn't let Backchannel control Messages. Allow Backchannel in System Settings › Privacy & "
                "Security › Accessibility, then try again.")
+# -1743: the other prompt, "Backchannel wants to control System Events" (Automation), was declined.
+AUTOMATION_DENIED = re.compile(r"-1743|not authori[sz]ed to send apple events", re.IGNORECASE)
+AUTOMATION_TEXT = ("macOS hasn't let Backchannel control System Events. Allow it in System Settings › Privacy & "
+                   "Security › Automation, then try again.")
 
 # argv: "names", how many of the names may match a label's beginning, then the names, most specific first.
 # A name first has to match a whole label line (or "Name, preview, time"); only the first N (full names,
@@ -58,7 +62,10 @@ MARK_READ_SCRIPT = (
     "set win to window 1",
     "set rowEls to {}",
     "set rowLabels to {}",
+    "set seen to 0",
     "repeat with el in (entire contents of win)",
+    "set seen to seen + 1",
+    "if seen > 2500 then exit repeat",
     "try",
     "set r to role of el",
     'if r is in {"AXRow", "AXCell", "AXButton", "AXGroup", "AXStaticText"} then',
@@ -378,7 +385,11 @@ def outcome_code(outcome: Outcome) -> str:
     if outcome.timed_out:
         return "timed out"
     if outcome.returncode != 0:
-        return "not allowed (Accessibility)" if DENIED.search(outcome.stderr) else f"failed (exit {outcome.returncode})"
+        if DENIED.search(outcome.stderr):
+            return "not allowed (Accessibility)"
+        if AUTOMATION_DENIED.search(outcome.stderr):
+            return "not allowed (Automation)"
+        return f"failed (exit {outcome.returncode})"
     answer = outcome.stdout.strip()
     return answer if re.fullmatch(r"[a-z-]{1,20}", answer) else "unexpected answer"
 
@@ -390,6 +401,8 @@ def interpret(outcome: Outcome, title: str) -> tuple[str | None, str, bool]:
     if outcome.returncode != 0:
         if DENIED.search(outcome.stderr):
             return "denied", DENIED_TEXT, False
+        if AUTOMATION_DENIED.search(outcome.stderr):
+            return "denied", AUTOMATION_TEXT, False
         detail = outcome.stderr.splitlines()[-1][:160] if outcome.stderr else f"exit {outcome.returncode}"
         return None, f"The Messages script failed: {detail}", False
     answers = {
@@ -492,6 +505,8 @@ class MessagesUI:
                 self._jobs.task_done()
 
     def _run(self, job: Job) -> None:
+        if not self.enabled:
+            return  # turned off while this was queued
         try:
             newest = self.newest_unread(job.chat_ids)
         except ChatDBError:
@@ -529,15 +544,27 @@ class MessagesUI:
 _ROLE = re.compile(r"^(AX[A-Za-z]+|\?)$")
 _ERROR_NUMBER = re.compile(r"\((-?\d{1,6})\)\s*$")
 _LOOKS_PRIVATE = re.compile(r"[0-9@+]")
+# Titles this module looks for itself: never hidden, even with a contact named Mark.
+KNOWN_TITLES = frozenset({"mark as read", "mark as unread", "mark all as read", "conversation"})
+
+
+def _mentions(lowered: str, name: str) -> bool:
+    if " " in name:
+        return name in lowered
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", lowered) is not None
 
 
 def safe_titles(raw: str, private: set[str] | frozenset[str] = frozenset()) -> str:
-    """Menu titles, each hidden if it has digits, "@" or "+", or contains a contact's name."""
+    """Menu titles, each hidden if it has digits, "@" or "+", or mentions one of the `private` names."""
     out = []
     for title in raw.split(" | ")[:60]:
         title = title.strip()[:60]
+        if title in ("missing value", "-"):
+            out.append("---")  # a separator
+            continue
         lowered = title.lower()
-        if _LOOKS_PRIVATE.search(title) or any(len(name) >= 3 and name in lowered for name in private):
+        if lowered not in KNOWN_TITLES and (
+                _LOOKS_PRIVATE.search(title) or any(len(name) >= 3 and _mentions(lowered, name) for name in private)):
             title = "(hidden)"
         out.append(title or "-")
     return " | ".join(out)
@@ -558,6 +585,8 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 30.0,
     if outcome.returncode != 0:
         if DENIED.search(outcome.stderr):
             return ["- Accessibility: NOT allowed for this app (System Settings › Privacy & Security › Accessibility)"]
+        if AUTOMATION_DENIED.search(outcome.stderr):
+            return ["- Automation: NOT allowed to control System Events (System Settings › Privacy & Security › Automation)"]
         last = (outcome.stderr.splitlines() or [""])[-1]
         number = _ERROR_NUMBER.search(last)  # the error number only: AppleScript errors can quote UI text
         return [f"- inspection: failed (exit {outcome.returncode}" + (f", error {number.group(1)})" if number else ")")]

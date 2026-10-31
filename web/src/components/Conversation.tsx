@@ -237,6 +237,7 @@ function MessageList({ c }: { c: Conversation }) {
   const items = ms?.items ?? []
   const groups = useMemo(() => buildGroups(items, mode, marker, c.kind === 'group'), [items, mode, marker, c.kind])
   const scroller = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const prevCount = useRef(0)
   const prepend = useRef<{ height: number; top: number } | null>(null)
@@ -278,6 +279,22 @@ function MessageList({ c }: { c: Conversation }) {
     }
   }, [items, loaded])
 
+  // Content that grows in place (a new reaction, a photo finishing loading): stay at the bottom.
+  useEffect(() => {
+    const el = scroller.current
+    const inner = content.current
+    if (!el || !inner || !loaded || typeof ResizeObserver === 'undefined') return
+    let last = inner.offsetHeight
+    const ro = new ResizeObserver(() => {
+      const h = inner.offsetHeight
+      const grew = h > last
+      last = h
+      if (grew && atBottom.current && !prepend.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(inner)
+    return () => ro.disconnect()
+  }, [c.id, loaded])
+
   const onScroll = () => {
     const el = scroller.current
     if (!el) return
@@ -307,29 +324,31 @@ function MessageList({ c }: { c: Conversation }) {
   return (
     <div className="msg-list-wrap">
       <div className="msg-list" ref={scroller} onScroll={onScroll}>
-        {ms.loadingOlder && (
-          <div className="older-loading">
-            <Spinner label="Loading older messages" />
-          </div>
-        )}
-        {!ms.nextCursor && <ConversationIntro c={c} />}
-        {groups.map((g) => (
-          <section key={g.key} className="day-group" aria-label={g.label}>
-            <div className="day-divider" role="separator">
-              <span>{g.label}</span>
+        <div ref={content}>
+          {ms.loadingOlder && (
+            <div className="older-loading">
+              <Spinner label="Loading older messages" />
             </div>
-            {g.rows.map((r) =>
-              r.type === 'new' ? (
-                <div key={r.key} className="new-divider" role="separator">
-                  <span>New</span>
-                </div>
-              ) : (
-                <MessageRow key={r.key} m={r.m} opts={r.opts} />
-              ),
-            )}
-          </section>
-        ))}
-        <div className="msg-list-end" />
+          )}
+          {!ms.nextCursor && <ConversationIntro c={c} />}
+          {groups.map((g) => (
+            <section key={g.key} className="day-group" aria-label={g.label}>
+              <div className="day-divider" role="separator">
+                <span>{g.label}</span>
+              </div>
+              {g.rows.map((r) =>
+                r.type === 'new' ? (
+                  <div key={r.key} className="new-divider" role="separator">
+                    <span>New</span>
+                  </div>
+                ) : (
+                  <MessageRow key={r.key} m={r.m} opts={r.opts} />
+                ),
+              )}
+            </section>
+          ))}
+          <div className="msg-list-end" />
+        </div>
       </div>
       {jump > 0 && (
         <button

@@ -3,7 +3,20 @@ import type { Conversation } from '../api/types'
 import { fileSize, timeShort, whenLabel } from '../lib/format'
 import { Icon } from '../lib/icons'
 import { EMOJI } from '../lib/emoji'
-import { attachmentKind, clearDrafts, draftKey, requestDrafts, sendFiles, sendMessage, setDraft, stageImageForSend, useStore } from '../state/store'
+import {
+  attachmentKind,
+  clearDrafts,
+  draftKey,
+  getState,
+  requestDrafts,
+  sendFiles,
+  sendMessage,
+  setDraft,
+  setServerSetting,
+  stageImageForSend,
+  toast,
+  useStore,
+} from '../state/store'
 import { EmojiPicker } from './EmojiPicker'
 import { Menu, Modal, useMenu } from './common'
 
@@ -310,7 +323,7 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
           </div>
         </div>
       </div>
-      {threadRootId && <p className="composer-note">Sends as a regular text; it stays threaded here.</p>}
+      {threadRootId && <ThreadNote />}
       {emoji.anchor && <EmojiPicker anchor={emoji.anchor} cid={c.id} onUnicode={insert} onClose={emoji.close} allowImages={canAttach} />}
       {schedule.anchor && (
         <Menu
@@ -375,5 +388,29 @@ function CustomSchedule({ onClose, onPick }: { onClose: () => void; onPick: (iso
         </div>
       </form>
     </Modal>
+  )
+}
+
+/** Under the thread composer: whether the reply threads on everyone's phone or only here. */
+function ThreadNote() {
+  const ss = useStore((s) => s.serverSettings)
+  if (!ss) return null
+  if (ss.threadRepliesViaMessages) {
+    return <p className="composer-note">Sends as a real reply through Messages, so it threads on their phone too. Messages comes forward for a second.</p>
+  }
+  return (
+    <p className="composer-note">
+      Goes out as a regular text, threaded only here.{' '}
+      <button
+        type="button"
+        className="link-btn"
+        onClick={async () => {
+          await setServerSetting({ threadRepliesViaMessages: true })
+          if (getState().serverSettings?.threadRepliesViaMessages) toast('Thread replies now go out as real replies through Messages.')
+        }}
+      >
+        Send real replies
+      </button>
+    </p>
   )
 }

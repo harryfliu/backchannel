@@ -6,6 +6,7 @@ import type {
   ActivityItem,
   CatchUp,
   ChiefCard,
+  ClassicTapback,
   CustomEmoji,
   ServerSettings,
   StickerItem,
@@ -22,6 +23,7 @@ import type {
   ServerEvent,
 } from '../api/types'
 import { uid, whenLabel } from '../lib/format'
+import { applyTapback, myTapback, tapbackEmoji } from '../lib/tapbacks'
 
 export type View =
   | { kind: 'conversation'; id: string }
@@ -118,6 +120,14 @@ export interface State {
   emojiDialog: { sticker?: StickerItem } | null
   /** Preferences that change what the Mac does (null until loaded). */
   serverSettings: ServerSettings | null
+  /** Tapbacks you just sent, shown right away until Messages confirms them. Keyed by message id. */
+  pendingTapbacks: Record<string, PendingTapback>
+}
+
+export interface PendingTapback {
+  kind: ClassicTapback
+  remove: boolean
+  at: number
 }
 
 // ------------------------------------------------------------------ storage
@@ -192,6 +202,7 @@ let state: State = {
   stickers: null,
   emojiDialog: null,
   serverSettings: null,
+  pendingTapbacks: {},
 }
 
 const listeners = new Set<() => void>()
@@ -356,6 +367,8 @@ function onEvent(e: ServerEvent) {
     }
     case 'message-updated': {
       const m = e.message
+      const p = state.pendingTapbacks[m.id]
+      if (p && tapbackLanded(m, p)) clearPendingTapback(m.id)
       setState((s) => {
         const ms = s.messages[m.conversationId]
         const out: Partial<State> = {}
@@ -389,6 +402,9 @@ function onEvent(e: ServerEvent) {
         return { scheduled: [...others, e.scheduled].sort((a, b) => a.sendAt.localeCompare(b.sendAt)) }
       })
       break
+    case 'ui-action':
+      onUiAction(e)
+      break
     case 'later': {
       const item = e.item
       const before = state.later.find((l) => l.messageId === item.messageId)
@@ -405,6 +421,43 @@ function onEvent(e: ServerEvent) {
       break
     }
   }
+}
+
+let markReadWarned = false
+
+/** How a Messages-app action went. Successes are quiet; the result shows up as normal message updates. */
+function onUiAction(e: Extract<ServerEvent, { type: 'ui-action' }>) {
+  if (state.settingsOpen) void refreshHealth()
+  if (e.action === 'tapback' && e.messageId) {
+    const mid = e.messageId
+    const p = state.pendingTapbacks[mid]
+    if (e.result !== 'done') {
+      clearPendingTapback(mid)
+      toast(e.detail || "Messages didn't take that tapback.", 'error')
+    } else if (p) {
+      // The reaction arrives as its own message update; give it a moment so the pill doesn't flicker.
+      const m = findMessage(e.conversationId, mid)
+      if (m && tapbackLanded(m, p)) clearPendingTapback(mid)
+      else setTimeout(() => state.pendingTapbacks[mid]?.at === p.at && clearPendingTapback(mid), 4000)
+    }
+  } else if (e.action === 'reply') {
+    if (e.result === 'fallback') toast(e.detail || 'Messages couldn’t make it a reply, so it went out as a regular text.')
+    else if (e.result === 'failed') toast(e.detail || 'Messages didn’t confirm your reply. Check Messages before you try again.', 'error')
+  } else if (e.action === 'mark-read' && e.result === 'failed' && !markReadWarned) {
+    markReadWarned = true
+    toast(e.detail || 'Couldn’t mark that conversation read in Messages.')
+  }
+}
+
+function findMessage(cid: string, mid: string): Message | undefined {
+  const found = state.messages[cid]?.items.find((m) => m.id === mid)
+  if (found) return found
+  for (const t of Object.values(state.threads)) {
+    if (t.root?.id === mid) return t.root
+    const r = t.replies.find((x) => x.id === mid)
+    if (r) return r
+  }
+  return undefined
 }
 
 function previewOf(m: Message) {
@@ -1133,8 +1186,8 @@ export async function refreshHealth() {
 }
 
 export async function setServerSetting(patch: Partial<ServerSettings>) {
-  // In the Mac app, turning on "mark read in Messages" asks macOS for Accessibility right away.
-  if (patch.markReadInMessages && isNative) {
+  // In the Mac app, turning on any of the Messages helpers asks macOS for Accessibility right away.
+  if ((patch.markReadInMessages || patch.tapbacksViaMessages || patch.threadRepliesViaMessages) && isNative) {
     window.__bcAccessibility = (trusted) => {
       if (!trusted) toast('Turn on Backchannel in System Settings › Privacy & Security › Accessibility, then try again.')
     }
@@ -1149,4 +1202,57 @@ export async function setServerSetting(patch: Partial<ServerSettings>) {
     setState({ serverSettings: before })
     toast(err instanceof Error ? err.message : "Couldn't save that setting.", 'error')
   }
+}
+
+// ------------------------------------------------------------------ tapbacks (through the Messages app)
+
+function tapbackLanded(m: Message, p: PendingTapback) {
+  const mine = myTapback(m.reactions)
+  return p.remove ? mine !== p.kind : mine === p.kind
+}
+
+function clearPendingTapback(mid: string) {
+  if (!state.pendingTapbacks[mid]) return
+  setState((s) => {
+    const pendingTapbacks = { ...s.pendingTapbacks }
+    delete pendingTapbacks[mid]
+    return { pendingTapbacks }
+  })
+}
+
+/** What to draw: the message's reactions with your just-sent tapback applied. */
+export function shownReactions(m: Message, p: PendingTapback | undefined) {
+  return p ? applyTapback(m.reactions, p.kind, p.remove) : m.reactions
+}
+
+export const tapbacksOn = () => !!state.serverSettings?.tapbacksViaMessages
+
+/** Add a tapback, or remove it if it's already yours. Messages allows one per person, so a new one replaces yours. */
+export async function sendTapback(m: Message, kind: ClassicTapback) {
+  if (!tapbacksOn()) {
+    toast('Turn on tapbacks in Settings › Messages helpers first.')
+    return
+  }
+  if (m.id.startsWith('local:') || m.status === 'sending' || m.status === 'failed') {
+    toast('You can react once it’s sent.')
+    return
+  }
+  if (m.event || m.unsent) return
+  const remove = myTapback(shownReactions(m, state.pendingTapbacks[m.id])) === kind
+  const p: PendingTapback = { kind, remove, at: Date.now() }
+  setState((s) => ({ pendingTapbacks: { ...s.pendingTapbacks, [m.id]: p } }))
+  try {
+    await api.sendTapback(m.conversationId, m.id, kind, remove)
+  } catch (err) {
+    if (state.pendingTapbacks[m.id]?.at === p.at) clearPendingTapback(m.id)
+    toast(err instanceof Error ? err.message : `Couldn't send ${tapbackEmoji(kind)}.`, 'error')
+    return
+  }
+  // If the result never arrives (say the connection dropped), stop showing it as pending.
+  setTimeout(() => {
+    if (state.pendingTapbacks[m.id]?.at !== p.at) return
+    clearPendingTapback(m.id)
+    const now = findMessage(m.conversationId, m.id)
+    if (!now || !tapbackLanded(now, p)) toast('Messages didn’t confirm that tapback. It may not have gone through.')
+  }, 25000)
 }

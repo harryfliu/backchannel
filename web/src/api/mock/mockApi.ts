@@ -32,6 +32,7 @@ import {
   timedArrivals,
 } from './data'
 import { emojiArt, stickerArt } from './art'
+import { applyTapback, tapbackEmoji } from '../../lib/tapbacks'
 
 const wait = (ms: number) => new Promise((res) => setTimeout(res, ms))
 const clone = <T,>(v: T): T => (typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v)))
@@ -45,7 +46,7 @@ export function createMockApi(): Api {
   const listeners = new Set<(e: ServerEvent) => void>()
   let started = false
   let nextId = 1000
-  let serverSettings = { markReadInMessages: false }
+  let serverSettings = { markReadInMessages: false, tapbacksViaMessages: false, threadRepliesViaMessages: false }
   const seededAt = new Date(Date.now() - 20 * 86400000).toISOString()
   const emojiItem = (name: string, url: string, mimeType = 'image/svg+xml'): CustomEmoji => ({
     name,
@@ -184,6 +185,9 @@ export function createMockApi(): Api {
     }
     addMessage(m)
     emit({ type: 'send-status', clientId: req.clientId, conversationId: cid, status: 'sent', messageId: m.id })
+    if (req.threadRootId && serverSettings.threadRepliesViaMessages) {
+      emit({ type: 'ui-action', action: 'reply', conversationId: cid, messageId: req.threadRootId, clientId: req.clientId, result: 'done', detail: 'Sent as a reply in Messages' })
+    }
     refreshSummary(cid)
     await wait(900)
     if (c.service !== 'SMS') updateMessage(cid, m.id, { status: 'delivered' })
@@ -212,7 +216,12 @@ export function createMockApi(): Api {
         send: { mode: 'dry-run' },
         ai: { enabled: true, model: 'haiku', backend: 'claude-cli' },
         chief: { available: true },
-        messagesUi: { enabled: serverSettings.markReadInMessages, permission: 'unknown', lastResult: null, lastAt: null },
+        messagesUi: {
+          enabled: serverSettings.markReadInMessages || serverSettings.tapbacksViaMessages || serverSettings.threadRepliesViaMessages,
+          permission: 'unknown',
+          lastResult: null,
+          lastAt: null,
+        },
       }
     },
     async me() {
@@ -422,6 +431,17 @@ export function createMockApi(): Api {
     },
     async addChiefLoop(_cid, _mid, title) {
       return { id: nextLoop++, title }
+    },
+    async sendTapback(cid, mid, kind, remove) {
+      if (!serverSettings.tapbacksViaMessages) throw new Error('Sending tapbacks is off. Turn it on in Settings.')
+      const m = (db.messages.get(cid) ?? []).find((x) => x.id === mid)
+      if (!m) throw new Error('That message is gone.')
+      setTimeout(() => {
+        updateMessage(cid, mid, { reactions: applyTapback(m.reactions, kind, remove) })
+        const detail = remove ? 'Removed your tapback in Messages' : `Sent ${tapbackEmoji(kind)} in Messages`
+        emit({ type: 'ui-action', action: 'tapback', conversationId: cid, messageId: mid, clientId: null, result: 'done', detail })
+      }, 700)
+      return { status: 'queued' as const }
     },
     async serverSettings() {
       return { ...serverSettings }

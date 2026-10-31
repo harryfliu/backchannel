@@ -281,7 +281,14 @@ export interface Health {
 export interface ServerSettings {
   /** When you open a conversation here that Messages still shows as unread, mark it read in Messages too. */
   markReadInMessages: boolean
+  /** Send tapbacks by driving the Messages app (right-click the message › Tapback). Experimental. */
+  tapbacksViaMessages: boolean
+  /** Send thread replies as real inline replies by driving the Messages app (right-click › Reply). Experimental. */
+  threadRepliesViaMessages: boolean
 }
+
+/** The six classic tapbacks, the ones the Messages app can send from a right-click. */
+export type ClassicTapback = 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question'
 
 /** An emoji you added (Slack-style custom emoji). Sent through iMessage as an image. */
 export interface CustomEmoji {
@@ -368,6 +375,22 @@ export type ServerEvent =
   | { type: 'scheduled'; scheduled: ScheduledMessage }
   /** A saved item changed: its reminder fired (firedAt set), or a reply resolved it. */
   | { type: 'later'; item: LaterItem }
+  /** How a Messages-app action went (tapback, thread reply, mark read). Tapbacks and replies
+   *  themselves arrive as normal message updates once they're in chat.db. */
+  | {
+      type: 'ui-action'
+      action: 'tapback' | 'reply' | 'mark-read'
+      conversationId: string
+      /** The tapback's target, or the thread root for a reply. */
+      messageId: string | null
+      /** The send's clientId, for replies. */
+      clientId: string | null
+      /** done: it worked. fallback: the reply couldn't be made a real reply, so it went out as a
+       *  regular text. failed: nothing was done, or Messages didn't confirm it. */
+      result: 'done' | 'fallback' | 'failed'
+      /** A sentence for a toast, e.g. "Couldn't find that message in Messages; it may be too old." */
+      detail: string
+    }
 
 export interface Api {
   health(): Promise<Health>
@@ -400,6 +423,8 @@ export interface Api {
   chiefCard(handle: string): Promise<ChiefCard | null>
   /** Track a message as an open loop in Chief. */
   addChiefLoop(conversationId: string, messageId: string, title: string): Promise<{ id: number; title: string }>
+  /** Add or remove one of your tapbacks by driving the Messages app (needs tapbacksViaMessages). */
+  sendTapback(conversationId: string, messageId: string, kind: ClassicTapback, remove: boolean): Promise<{ status: 'queued' }>
   serverSettings(): Promise<ServerSettings>
   setServerSettings(patch: Partial<ServerSettings>): Promise<ServerSettings>
   customEmoji(): Promise<CustomEmoji[]>

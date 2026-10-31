@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { isMock } from '../api/client'
 import { isNative } from '../native'
 import { EMOJI_NAME_RE, suggestEmojiName } from '../lib/emoji'
-import type { StickerItem } from '../api/types'
-import type { Conversation, SearchResult } from '../api/types'
+import type { Conversation, SearchResult, ServerSettings, StickerItem } from '../api/types'
 import { ageShort, formatHandle, timeShort } from '../lib/format'
 import { Icon } from '../lib/icons'
 import {
@@ -345,12 +344,10 @@ export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen)
   const settings = useStore((s) => s.settings)
   const health = useStore((s) => s.health)
-  const serverSettings = useStore((s) => s.serverSettings)
   useEffect(() => {
     if (open) void refreshHealth()
   }, [open])
   if (!open) return null
-  const ui = health?.messagesUi
   const close = () => setState({ settingsOpen: false })
   return (
     <Modal onClose={close} label="Settings" className="settings-modal">
@@ -431,35 +428,7 @@ export function SettingsModal() {
             </label>
           </fieldset>
         )}
-        <fieldset className="setting">
-          <legend>Read status in Messages</legend>
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              id="mark-read-messages"
-              checked={!!serverSettings?.markReadInMessages}
-              disabled={!serverSettings}
-              onChange={(e) => setServerSetting({ markReadInMessages: e.target.checked })}
-            />
-            <span>
-              Also mark texts read in Messages <span className="beta-tag">Experimental</span>
-              <span className="field-help">
-                When you open a conversation here that Messages still shows as unread, Backchannel tells Messages to mark it read, which syncs to
-                your phone. It works through macOS Accessibility: allow Backchannel in System Settings › Privacy & Security › Accessibility.
-                Messages may switch to that conversation in the background.
-              </span>
-            </span>
-          </label>
-          {ui && (ui.enabled || ui.lastResult) && (
-            <p className={`field-help ui-status ${ui.permission === 'denied' ? 'is-bad' : ''}`}>
-              {ui.permission === 'denied'
-                ? 'macOS is blocking Accessibility for Backchannel. Turn it on in System Settings › Privacy & Security › Accessibility.'
-                : ui.lastResult
-                  ? `Last try: ${ui.lastResult}`
-                  : 'Nothing to mark yet. It runs the next time you open an unread conversation.'}
-            </p>
-          )}
-        </fieldset>
+        <MessagesHelpers />
         <CustomEmojiSettings />
         <fieldset className="setting">
           <legend>Density</legend>
@@ -577,6 +546,14 @@ const TOUR: { title: string; body: string; go: () => void }[] = [
     title: 'Threads',
     body: 'When someone swipes to reply on their phone, it shows up here as a Slack thread instead of cluttering the group.',
     go: () => openView('threads'),
+  },
+  {
+    title: 'Tapbacks and real replies',
+    body: 'Hover a text and click the smiley to send ❤️ 👍 😂 and friends, or click a reaction to add yours. Turn it on in Settings › Messages helpers; on your Mac it works by operating Messages for you.',
+    go: () => {
+      setRail('home')
+      openConversation('dm-jordan')
+    },
   },
   {
     title: 'Apps & alerts',
@@ -859,5 +836,67 @@ function AddEmojiInner({ sticker }: { sticker: StickerItem | null }) {
         </div>
       </form>
     </Modal>
+  )
+}
+
+/** The things iMessage only accepts from the Messages app, done by operating it (macOS Accessibility). */
+function MessagesHelpers() {
+  const serverSettings = useStore((s) => s.serverSettings)
+  const ui = useStore((s) => s.health?.messagesUi)
+  const anyOn = !!serverSettings && (serverSettings.markReadInMessages || serverSettings.tapbacksViaMessages || serverSettings.threadRepliesViaMessages)
+  const toggles: { key: keyof ServerSettings; id: string; label: string; help: string }[] = [
+    {
+      key: 'tapbacksViaMessages',
+      id: 'tapbacks-messages',
+      label: 'Send tapbacks',
+      help: '❤️ 👍 👎 😂 ‼️ ❓ go out as real tapbacks. Backchannel right-clicks the message in Messages and picks the tapback.',
+    },
+    {
+      key: 'threadRepliesViaMessages',
+      id: 'replies-messages',
+      label: 'Send thread replies as real replies',
+      help: 'Your replies thread on everyone’s phone, not just here. Messages comes to the front for about a second while it sends.',
+    },
+    {
+      key: 'markReadInMessages',
+      id: 'mark-read-messages',
+      label: 'Mark texts read in Messages',
+      help: 'When you open a conversation here that Messages still shows as unread, it gets marked read there too, which syncs to your phone.',
+    },
+  ]
+  return (
+    <fieldset className="setting">
+      <legend>
+        Messages helpers <span className="beta-tag">Experimental</span>
+      </legend>
+      <p className="field-help setting-intro">
+        iMessage only accepts these from the Messages app, so Backchannel operates Messages for you through macOS Accessibility. Allow
+        Backchannel in System Settings › Privacy & Security › Accessibility. They work on recent messages and may need fixing after a macOS update.
+      </p>
+      {toggles.map((t) => (
+        <label key={t.key} className="toggle-row">
+          <input
+            type="checkbox"
+            id={t.id}
+            checked={!!serverSettings?.[t.key]}
+            disabled={!serverSettings}
+            onChange={(e) => setServerSetting({ [t.key]: e.target.checked })}
+          />
+          <span>
+            {t.label}
+            <span className="field-help">{t.help}</span>
+          </span>
+        </label>
+      ))}
+      {ui && (anyOn || ui.lastResult) && (
+        <p className={`field-help ui-status ${ui.permission === 'denied' ? 'is-bad' : ''}`}>
+          {ui.permission === 'denied'
+            ? 'macOS is blocking Accessibility for Backchannel. Turn it on in System Settings › Privacy & Security › Accessibility.'
+            : ui.lastResult
+              ? `Last try: ${ui.lastResult}`
+              : 'Nothing tried yet.'}
+        </p>
+      )}
+    </fieldset>
   )
 }

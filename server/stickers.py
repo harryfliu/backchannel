@@ -60,14 +60,8 @@ class StickerLibrary:
             params,
         )
 
-    def _hash(self, guid: str, path: Path) -> str | None:
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        cached = self.state.cached_hash(guid, stat.st_mtime, stat.st_size)
-        if cached:
-            return cached
+    @staticmethod
+    def _sha256(path: Path) -> str | None:
         digest = hashlib.sha256()
         try:
             with path.open("rb") as f:
@@ -75,9 +69,28 @@ class StickerLibrary:
                     digest.update(block)
         except OSError:
             return None
-        value = digest.hexdigest()
-        self.state.store_hash(guid, stat.st_mtime, stat.st_size, value)
-        return value
+        return digest.hexdigest()
+
+    def _hashes(self, files: dict[str, Path]) -> dict[str, str]:
+        """guid -> SHA-256 of its file; cached in state.db by guid + mtime + size, new ones written in one go."""
+        cached = self.state.cached_hashes(list(files))
+        out: dict[str, str] = {}
+        fresh: list[tuple[str, float, int, str]] = []
+        for guid, path in files.items():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            known = cached.get(guid)
+            if known and known[0] == stat.st_mtime and known[1] == stat.st_size:
+                out[guid] = known[2]
+                continue
+            value = self._sha256(path)
+            if value is not None:
+                out[guid] = value
+                fresh.append((guid, stat.st_mtime, stat.st_size, value))
+        self.state.store_hashes(fresh)
+        return out
 
     # ------------------------------------------------------------------ the list
 
@@ -86,23 +99,28 @@ class StickerLibrary:
         with self._lock:
             if self._cache and self._cache[0] == generation and time.monotonic() - self._cache[1] < CACHE_SECONDS:
                 return self._cache[2][:limit]
-        groups: dict[str, dict[str, Any]] = {}
-        paths: dict[str, Path | None] = {}
-        for row in self._rows():
+        rows = self._rows()
+        paths: dict[str, Path] = {}
+        for row in rows:  # files that exist and that an <img> can draw (as is, or converted)
             guid = row["guid"]
             if guid not in paths:
                 resolved = self.media.resolve(row["filename"])
-                paths[guid] = resolved if resolved is not None and resolved.is_file() else None
-            path = paths[guid]
-            if path is None or not self.media.drawable(path):
+                if resolved is not None and resolved.is_file() and self.media.drawable(resolved):
+                    paths[guid] = resolved
+        hashes = self._hashes({row["guid"]: paths[row["guid"]] for row in rows
+                               if row["guid"] in paths and not row["emoji_image_content_identifier"]})
+        groups: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            guid = row["guid"]
+            if guid not in paths:
                 continue
             identifier = row["emoji_image_content_identifier"]
-            key = f"g:{identifier}" if identifier else None
-            if key is None:
-                digest = self._hash(guid, path)
-                if digest is None:
-                    continue
-                key = f"h:{digest}"
+            if identifier:
+                key = f"g:{identifier}"
+            elif guid in hashes:
+                key = f"h:{hashes[guid]}"
+            else:
+                continue
             when = apple_to_ns(row["mdate"])
             group = groups.setdefault(key, {
                 "kind": "genmoji" if identifier else "sticker", "uses": 0, "last": 0, "guid": guid,

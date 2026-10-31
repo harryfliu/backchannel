@@ -134,6 +134,8 @@ def test_heic_upload_becomes_png_with_sips(rw, tmp_path):
     response = upload(rw, "photo", media_gen.heic_iphone(64, 64), "photo.heic")
     assert response.status_code == 200, response.text
     assert response.json()["mimeType"] == "image/png" and response.json()["width"] == 32
+    leftovers = [p.name for p in rw.settings.cache_dir.rglob("*convert*")]
+    assert leftovers == []  # the one-off conversion leaves nothing in the cache
 
 
 # --------------------------------------------------------------------------- links
@@ -257,3 +259,24 @@ def test_emoji_files_live_in_the_state_dir(rw):
     upload(rw, "dot", PNG)
     files = list(Path(rw.settings.state_dir, "emoji").iterdir())
     assert len(files) == 1 and files[0].suffix == ".png" and files[0].read_bytes() == PNG
+
+
+def test_emoji_writes_are_protected(rw):
+    cross = rw.client.post("/api/emoji", data={"name": "evil"}, files={"file": ("x.png", PNG, "image/png")},
+                           headers={"sec-fetch-site": "cross-site"})
+    assert cross.status_code == 403
+    form = rw.client.post("/api/emoji/link", data={"name": "evil", "url": "https://example.com/x.png"},
+                          files={"file": ("x.png", PNG, "image/png")})
+    assert form.status_code == 415  # multipart is for /api/emoji (and /files) only
+    assert rw.client.delete("/api/emoji/ok", headers={"sec-fetch-site": "cross-site"}).status_code == 403
+    assert rw.get("/api/emoji")["items"] == []
+
+
+def test_fetch_tries_each_checked_address(web):
+    port = int(web.rsplit(":", 1)[1])
+    loopbacks = ("::1", "127.0.0.1")
+    data = fetch_image(f"http://emoji.example:{port}/party.gif", resolver=lambda host, p: list(loopbacks),
+                       allowed=lambda ip: ip in loopbacks)  # nothing listens on [::1]: falls back to IPv4
+    assert data == gif(2, 8, 8)
+    with pytest.raises(EmojiError, match="private or local"):  # every address has to pass, not just one
+        fetch_image("http://mixed.example/x.png", resolver=lambda host, p: ["8.8.8.8", "10.0.0.1"])

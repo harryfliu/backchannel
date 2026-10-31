@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ts_shapes import validate  # noqa: E402
 
 EXTRAS = {"stickerUrl"}
+# In types.ts already, built in a later round: reported, not counted as problems.
+NOT_BUILT = {"ServerSettings.tapbacksViaMessages: missing", "ServerSettings.threadRepliesViaMessages: missing"}
 
 
 def main() -> int:
@@ -46,6 +48,10 @@ def main() -> int:
             values = data[key] if key else data
             for value in (values if each else [values]):
                 errors = validate(value, type_name, allow_extra=EXTRAS)
+                pending = [e for e in errors if e in NOT_BUILT]
+                if pending:
+                    print(f"note {path}: not built yet: {', '.join(sorted(pending))}")
+                    errors = [e for e in errors if e not in NOT_BUILT]
                 checked += 1
                 if errors:
                     problems += 1
@@ -83,6 +89,16 @@ def main() -> int:
         check("/api/later", "LaterItem", key="items", each=True)
         check("/api/scheduled", "ScheduledMessage", key="items", each=True)
         check("/api/search", "SearchResult", key="results", each=True, params={"q": "in"})
+        check("/api/settings", "ServerSettings")
+        emoji = check("/api/emoji", "CustomEmoji", key="items", each=True) or {"items": []}
+        stickers = check("/api/stickers", "StickerItem", key="items", each=True) or {"items": []}
+        images = [e["url"] for e in emoji["items"]] + [s["url"] for s in stickers["items"]]
+        for url in images:
+            response = client.get(url)
+            if response.status_code != 200 or not response.headers.get("content-type", "").startswith("image/"):
+                print(f"FAIL {url}: HTTP {response.status_code} {response.headers.get('content-type')}")
+                problems += 1
+        print(f"{len(emoji['items'])} custom emoji, {len(stickers['items'])} stickers; {len(images)} images fetched")
         catchup = client.get("/api/ai/catchup") if args.ai else None
         if catchup is None:
             print("skip /api/ai/catchup (pass --ai to include it)")

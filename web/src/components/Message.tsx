@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { Attachment, LinkPreview, Message, Reaction } from '../api/types'
+import type { Attachment, LinkPreview, Message } from '../api/types'
 import { ageLong, fileSize, fullTimestamp, isEmojiOnly, segmentText, timeShort } from '../lib/format'
 import { Icon } from '../lib/icons'
+import { isClassic } from '../lib/tapbacks'
 import {
   chiefAvailable,
   displayName,
@@ -13,11 +14,14 @@ import {
   remindIfNoReply,
   retrySend,
   saveForLater,
+  sendTapback,
+  shownReactions,
   toast,
   useStore,
 } from '../state/store'
 import { Avatar, Menu, myNames, remindPresets, useMenu } from './common'
 import { Lightbox } from './Lightbox'
+import { TapbackPicker } from './TapbackPicker'
 
 export interface RowOptions {
   /** First message of a run from the same sender: show avatar + name. */
@@ -85,7 +89,7 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
           </div>
         )}
         <MessageContent m={m} />
-        {m.reactions.length > 0 && <Reactions reactions={m.reactions} />}
+        <Reactions m={m} />
         {!opts.inThread && m.thread && <ThreadSummary m={m} />}
         {opts.showStatus && m.fromMe && <StatusLine m={m} />}
       </div>
@@ -403,24 +407,59 @@ const TAPBACK_VERB: Record<string, string> = {
   sticker: 'stickered',
 }
 
-function Reactions({ reactions }: { reactions: Reaction[] }) {
+/** Reaction pills. Click one of the six tapbacks to add or remove yours (when tapbacks are on). */
+function Reactions({ m }: { m: Message }) {
+  const pending = useStore((s) => s.pendingTapbacks[m.id])
+  const on = useStore((s) => !!s.serverSettings?.tapbacksViaMessages)
+  const [picker, setPicker] = useState<HTMLElement | null>(null)
+  const reactions = shownReactions(m, pending)
+  if (!reactions.length) return null
+  const canReact = !m.event && !m.unsent && !m.id.startsWith('local:')
   return (
     <div className="reactions">
       {reactions.map((r, i) => {
         const mine = r.from.includes('me')
         const who = reactorNames(r.from)
         const label = `${who.charAt(0).toUpperCase() + who.slice(1)} ${TAPBACK_VERB[r.kind] ?? 'reacted'}${r.kind === 'emoji' ? ` with ${r.emoji}` : ' this'}`
+        const isPending = !!pending && mine && r.kind === pending.kind && !pending.remove
+        const face =
+          r.kind === 'sticker' && r.stickerUrl ? (
+            <img className="reaction-sticker" src={r.stickerUrl} alt="" />
+          ) : (
+            <span className="reaction-emoji">{r.emoji}</span>
+          )
+        const count = <span className="reaction-count">{r.from.length}</span>
+        const kind = r.kind
+        if (!canReact || !isClassic(kind)) {
+          return (
+            <span key={i} className={`reaction ${mine ? 'is-mine' : ''}`} title={label} aria-label={label}>
+              {face}
+              {count}
+            </span>
+          )
+        }
+        const action = !on ? 'Turn on tapbacks to react' : mine ? 'Click to remove yours' : 'Click to react too'
         return (
-          <span key={i} className={`reaction ${mine ? 'is-mine' : ''}`} title={label} aria-label={label}>
-            {r.kind === 'sticker' && r.stickerUrl ? (
-              <img className="reaction-sticker" src={r.stickerUrl} alt="" />
-            ) : (
-              <span className="reaction-emoji">{r.emoji}</span>
-            )}
-            <span className="reaction-count">{r.from.length}</span>
-          </span>
+          <button
+            key={i}
+            type="button"
+            className={`reaction is-button ${mine ? 'is-mine' : ''} ${isPending ? 'is-pending' : ''}`}
+            title={`${label}. ${action}`}
+            aria-label={`${label}. ${action}`}
+            aria-pressed={mine}
+            onClick={(e) => (on ? void sendTapback(m, kind) : setPicker(e.currentTarget))}
+          >
+            {face}
+            {count}
+          </button>
         )
       })}
+      {canReact && (
+        <button type="button" className="reaction is-button is-add" title="Add a tapback" aria-label="Add a tapback" onClick={(e) => setPicker(picker ? null : e.currentTarget)}>
+          <Icon name="smilePlus" size={15} />
+        </button>
+      )}
+      {picker && <TapbackPicker m={m} anchor={picker} onClose={() => setPicker(null)} />}
     </div>
   )
 }
@@ -481,18 +520,22 @@ function HoverBar({ m, inThread }: { m: Message; inThread: boolean }) {
   const remind = useMenu()
   const more = useMenu()
   const noReply = useMenu()
-  const open = !!remind.anchor || !!more.anchor || !!noReply.anchor
+  const react = useMenu()
+  const tapbacks = useStore((s) => !!s.serverSettings?.tapbacksViaMessages)
+  const open = !!remind.anchor || !!more.anchor || !!noReply.anchor || !!react.anchor
   return (
     <div className={`hover-bar ${open ? 'is-open' : ''}`} role="toolbar" aria-label="Message actions">
       <button
         type="button"
-        className="icon-btn"
-        title="Add reaction"
-        aria-label="Add reaction"
-        onClick={() => toast('Tapbacks can’t be sent from Backchannel yet. iMessage only accepts them from Messages.app.')}
+        className={`icon-btn ${react.anchor ? 'is-active' : ''}`}
+        title={tapbacks ? 'Tapback' : 'Tapback (needs turning on)'}
+        aria-label="Tapback"
+        aria-expanded={!!react.anchor}
+        onClick={react.open}
       >
         <Icon name="smilePlus" size={18} />
       </button>
+      {react.anchor && <TapbackPicker m={m} anchor={react.anchor} onClose={react.close} />}
       {!inThread && (
         <button type="button" className="icon-btn" title="Reply in thread" aria-label="Reply in thread" onClick={() => openThread(m.conversationId, m.threadRootId ?? m.id)}>
           <Icon name="thread" size={18} />

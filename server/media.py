@@ -483,11 +483,14 @@ class Media:
             return None
         src = self._cache_path("convert-src-" + key, ".img")
         src.write_bytes(data)
+        out = None
         try:
             out = self.png_file(src, "convert-" + key)
             return out.read_bytes() if out else None
-        finally:
+        finally:  # one-off conversions: keep nothing in the cache
             src.unlink(missing_ok=True)
+            if out is not None:
+                out.unlink(missing_ok=True)
 
     def resize_avatar(self, data: bytes, key: str) -> tuple[bytes, str] | None:
         """Shrink a full-size contact photo to 256px (macOS only)."""

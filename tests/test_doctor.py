@@ -98,3 +98,72 @@ def test_conversion_checks_with_mac_tools(doctor_env, tmp_path, monkeypatch):
     assert code == 0
     assert "HEIC/TIFF → JPEG #1 (heic): OK in" in text
     assert "video thumbnail #1 (.mov): OK in" in text
+
+
+# --------------------------------------------------------------------------- --messages-ui
+
+INSPECTION = "\n".join([
+    "accessibility\tallowed",
+    "messages_running\tyes",
+    "windows\t1",
+    "menu_bar\tApple | Messages | File | Edit | View | Conversation | Format | Window | Help",
+    "conversation_menu\tDelete Conversation… | Mark as Read | Mark as Unread | Call Jordan Park | "
+    "Jordan.Park@icloud.example | +14155550134 | Priya's Birthday",
+    "tree\t0\tAXWindow\t2",
+    "tree\t1\tAXSplitGroup\t3",
+    "tree\t2\tJordan Park\t1",  # a role is never a name: shown as (other)
+    "tree\t2\tAXStaticText\t0",
+    "tree\t3\tAXRow\tare you down to hike Saturday?",  # dropped: counts must be numbers
+    "rows\t12\t12\t0\t12\t48\t0\t60",
+    "rows\t12\tJordan\t0\t12\t48\t0\t60",  # dropped
+    "description\tJordan Park, are you down to hike Saturday?, 2:41 PM",  # unknown keys are dropped
+    "Marcus Webb",
+])
+
+
+def test_messages_ui_inspection_never_prints_names(doctor_env, monkeypatch):
+    from server import messages_ui
+
+    calls = []
+
+    def fake_runner(script, argv, timeout):
+        calls.append((script, argv))
+        return messages_ui.Outcome(0, INSPECTION, "")
+
+    monkeypatch.setattr(messages_ui, "osascript_runner", fake_runner)
+    code, text = doctor.run(["--messages-ui"], dotenv=False)
+    assert code == 0
+    assert calls == [(messages_ui.INSPECT_SCRIPT, [])]
+    section = text[text.index("## Messages UI (Accessibility)"):]
+    assert "- markReadInMessages setting: off" in section and "- last result: (none)" in section
+    assert "- Accessibility: allowed" in section and "- Messages running: yes" in section and "- windows: 1" in section
+    assert "- menu bar: Apple | Messages | File | Edit | View | Conversation | Format | Window | Help" in section
+    assert ("- Conversation menu: Delete Conversation… | Mark as Read | Mark as Unread | (hidden) | (hidden) | "
+            "(hidden) | (hidden)") in section
+    assert "AXSplitGroup (3)" in section and "(other) (1)" in section and "AXStaticText (0)" in section
+    assert "row-like elements (AXRow/AXCell): 12; with description 12 (longest 48)" in section
+    for secret in SECRETS + ("Saturday", "2:41"):
+        assert secret not in text, secret
+
+
+@pytest.mark.parametrize("outcome, expected", [
+    (("", "execution error: System Events got an error: osascript is not allowed assistive access. (-25211)"),
+     "- Accessibility: NOT allowed for this app"),
+    (("", "execution error: Not authorized to send Apple events to System Events. (-1743)"),
+     "- Automation: NOT allowed to control System Events"),
+    (("", 'execution error: Can\'t get row "Jordan Park" of window 1. (-1728)'),
+     "- inspection: failed (exit 1, error -1728)"),
+])
+def test_messages_ui_inspection_failures(doctor_env, monkeypatch, outcome, expected):
+    from server import messages_ui
+
+    monkeypatch.setattr(messages_ui, "osascript_runner", lambda script, argv, timeout: messages_ui.Outcome(1, *outcome))
+    code, text = doctor.run(["--messages-ui"], dotenv=False)
+    assert code == 0 and expected in text
+    assert "Jordan" not in text
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="would really drive System Events")
+def test_messages_ui_needs_macos(doctor_env):
+    code, text = doctor.run(["--messages-ui"], dotenv=False)
+    assert code == 0 and "- inspection: skipped (osascript isn't available: this needs macOS)" in text

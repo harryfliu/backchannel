@@ -273,12 +273,12 @@ class ContactBook:
         return out
 
     def private_names(self) -> set[str]:
-        """Every contact's full name, nickname and organization, lowercased (for redacting reports)."""
+        """Every contact's names (full, first, last, nickname, organization), lowercased, for redacting reports."""
         names: set[str] = set()
         with self._lock:
             for contact in self._contacts:
                 full = " ".join(p for p in (contact.first, contact.last) if p)
-                for name in (full, contact.nickname, contact.organization):
+                for name in (full, contact.first, contact.last, contact.nickname, contact.organization):
                     if name and len(name.strip()) >= 3:
                         names.add(name.strip().lower())
         return names

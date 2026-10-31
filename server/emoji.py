@@ -218,23 +218,40 @@ def tls_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
+def _connect_any(ips: list[str], port: int, timeout: float) -> socket.socket:
+    """Connect to the first of these (already checked) addresses that answers, e.g. IPv4 when IPv6 is down."""
+    deadline = time.monotonic() + timeout
+    last: OSError = TimeoutError("timed out")
+    for ip in ips:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            return socket.create_connection((ip, port), min(remaining, 5.0) if len(ips) > 1 else remaining)
+        except OSError as exc:
+            last = exc
+    raise last
+
+
 class _PinnedHTTP(http.client.HTTPConnection):
-    def __init__(self, host: str, port: int, ip: str, timeout: float):
+    """Connects only to the addresses we checked (no second DNS lookup), still sending Host: <name>."""
+
+    def __init__(self, host: str, port: int, ips: list[str], timeout: float):
         super().__init__(host, port, timeout=timeout)
-        self._ip = ip
+        self._ips = ips
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self._ip, self.port), self.timeout)
+        self.sock = _connect_any(self._ips, self.port, self.timeout)
 
 
 class _PinnedHTTPS(http.client.HTTPSConnection):
-    def __init__(self, host: str, port: int, ip: str, timeout: float, context: ssl.SSLContext):
+    def __init__(self, host: str, port: int, ips: list[str], timeout: float, context: ssl.SSLContext):
         super().__init__(host, port, timeout=timeout, context=context)
-        self._ip = ip
+        self._ips = ips
         self._ctx = context
 
     def connect(self) -> None:
-        sock = socket.create_connection((self._ip, self.port), self.timeout)
+        sock = _connect_any(self._ips, self.port, self.timeout)
         self.sock = self._ctx.wrap_socket(sock, server_hostname=self.host)
 
 
@@ -269,9 +286,9 @@ def fetch_image(
         if remaining <= 0:
             raise EmojiError(504, "Downloading the image took longer than 15 seconds.")
         if parts.scheme == "https":
-            conn: http.client.HTTPConnection = _PinnedHTTPS(parts.hostname, port, addresses[0], remaining, tls_context())
+            conn: http.client.HTTPConnection = _PinnedHTTPS(parts.hostname, port, addresses, remaining, tls_context())
         else:
-            conn = _PinnedHTTP(parts.hostname, port, addresses[0], remaining)
+            conn = _PinnedHTTP(parts.hostname, port, addresses, remaining)
         target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
         try:
             conn.request("GET", target, headers={
@@ -294,8 +311,11 @@ def fetch_image(
             chunks: list[bytes] = []
             total = 0
             while True:
-                if time.monotonic() > deadline:
+                left = deadline - time.monotonic()
+                if left <= 0:
                     raise EmojiError(504, "Downloading the image took longer than 15 seconds.")
+                if conn.sock is not None:
+                    conn.sock.settimeout(left)  # a slow trickle can't stretch the 15 s
                 chunk = response.read(65536)
                 if not chunk:
                     break

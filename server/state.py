@@ -451,8 +451,32 @@ class State:
         return row[0] if row else None
 
     def store_hash(self, guid: str, mtime: float, size: int, digest: str) -> None:
-        self._exec("INSERT OR REPLACE INTO file_hashes (guid, mtime, size, sha256) VALUES (?, ?, ?, ?)",
-                   (guid, mtime, size, digest))
+        self.store_hashes([(guid, mtime, size, digest)])
+
+    def store_hashes(self, rows: Sequence[tuple[str, float, int, str]]) -> None:
+        """(guid, mtime, size, sha256) rows, in one transaction."""
+        if not rows:
+            return
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO file_hashes (guid, mtime, size, sha256) VALUES (?, ?, ?, ?)", rows)
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
+
+    def cached_hashes(self, guids: Sequence[str]) -> dict[str, tuple[float, int, str]]:
+        """guid -> (mtime, size, sha256) for the guids we've hashed before."""
+        out: dict[str, tuple[float, int, str]] = {}
+        guids = list(guids)
+        for start in range(0, len(guids), 500):
+            chunk = guids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for row in self._all(f"SELECT guid, mtime, size, sha256 FROM file_hashes WHERE guid IN ({marks})", chunk):
+                out[row["guid"]] = (row["mtime"], row["size"], row["sha256"])
+        return out
 
     # ------------------------------------------------------------------ server settings
 

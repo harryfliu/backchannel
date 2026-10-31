@@ -1562,6 +1562,105 @@ button.msg-name:hover {
   height: 18px;
   object-fit: contain;
 }
+.reaction.is-button {
+  cursor: pointer;
+}
+.reaction.is-button:hover {
+  border-color: var(--line-strong);
+  background: var(--popover);
+}
+.reaction.is-mine.is-button:hover {
+  border-color: var(--reaction-mine-line);
+  background: var(--reaction-mine-bg);
+}
+.reaction.is-pending {
+  animation: reaction-pending 1.2s ease-in-out infinite;
+}
+@keyframes reaction-pending {
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reaction.is-pending {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+/* Slack's little "add reaction" pill after the others, shown on hover. */
+.reaction.is-add {
+  padding: 0 7px;
+  color: var(--fg-3);
+  visibility: hidden;
+}
+.msg:hover .reaction.is-add,
+.msg:focus-within .reaction.is-add,
+.reaction.is-add:focus-visible {
+  visibility: visible;
+}
+
+.tapback-picker {
+  position: fixed;
+  z-index: 1000;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+  color: var(--fg);
+}
+.tapback-picker.is-off {
+  width: 300px;
+}
+.tb-row {
+  display: flex;
+  gap: 2px;
+}
+.tb-btn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  font-size: 22px;
+  line-height: 1;
+  transition: transform 0.08s ease;
+}
+.tb-btn:hover:not(:disabled),
+.tb-btn:focus-visible {
+  background: var(--sunk);
+  transform: scale(1.12);
+}
+.tb-btn.is-mine {
+  background: var(--reaction-mine-bg);
+  border-color: var(--reaction-mine-line);
+}
+.tb-btn:disabled {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.tb-note {
+  margin: 4px 6px 2px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.tb-off {
+  display: grid;
+  gap: 10px;
+  padding: 6px 6px 4px;
+}
+.tb-off p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg-2);
+}
+.tb-off-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 
 .thread-summary {
   display: flex;
@@ -2202,6 +2301,12 @@ button.member-row:hover {
   margin: 6px 0 0;
   font-size: 13px;
   color: var(--fg-3);
+}
+.setting-intro {
+  margin: -4px 0 4px;
+}
+.composer-note .link-btn {
+  font-size: 12px;
 }
 
 /* ------------------------------------------------------------------ views */
@@ -2935,6 +3040,12 @@ button.member-row:hover {
 .toggle-row input {
   margin-top: 4px;
   accent-color: var(--link);
+}
+.toggle-row > span {
+  display: grid;
+}
+.toggle-row .field-help {
+  margin-top: 2px;
 }
 .radio-row span {
   display: grid;

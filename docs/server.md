@@ -66,7 +66,9 @@ steps below are for running the server yourself in a terminal.
    on disk vs in iCloud, real HEIC/TIFF → JPEG (sips) and video thumbnail
    (qlmanage) attempts with timings, contact photos by storage, the AI backend
    and `claude --version`, Chief, and the macOS version. `--ai` adds one tiny
-   real Claude call. It exits non-zero when chat.db can't be read.
+   real Claude call. `--messages-ui` describes the Messages window for tuning
+   "mark read in Messages" (see below). It exits non-zero when chat.db can't be
+   read.
 
 ## Configuration
 
@@ -80,8 +82,8 @@ variables override both — mostly for dev and tests:
 | `BACKCHANNEL_CHAT_DB` | `~/Library/Messages/chat.db` | Messages database (opened read-only) |
 | `BACKCHANNEL_ADDRESSBOOK_GLOB` | `…/AddressBook/Sources/*/AddressBook-v22.abcddb` and the root `AddressBook-v22.abcddb` | Contacts DBs; several globs separated by `:` |
 | `BACKCHANNEL_ATTACHMENTS_ROOT` | `~/Library/Messages/Attachments` | Where `~/Library/Messages/Attachments/…` paths in chat.db point |
-| `BACKCHANNEL_STATE_DIR` | `~/Library/Application Support/Backchannel` | `state.db` (stars, mutes, snoozes, last-seen marks, later, scheduled sends, thread mapping), `search.db`, upload scratch |
-| `BACKCHANNEL_CACHE_DIR` | `~/Library/Caches/Backchannel` | HEIC→JPEG, thumbnails, `.caf`→`.m4a` |
+| `BACKCHANNEL_STATE_DIR` | `~/Library/Application Support/Backchannel` | `state.db` (stars, mutes, snoozes, last-seen marks, later, scheduled sends, thread mapping, custom emoji, server settings, sticker file hashes), `search.db`, `emoji/` (custom emoji files), upload scratch |
+| `BACKCHANNEL_CACHE_DIR` | `~/Library/Caches/Backchannel` | HEIC→JPEG, thumbnails, `.caf`→`.m4a`, sticker PNGs |
 | `BACKCHANNEL_SEND_MODE` | `applescript` | `dry-run` logs instead of calling osascript |
 | `BACKCHANNEL_FAKE_DB` | off | With dry-run: write sent messages into the fixture chat.db (refuses anything under `~/Library/Messages`) |
 | `BACKCHANNEL_ME_NAME` | `id -F` | Your name |
@@ -144,6 +146,89 @@ variables override both — mostly for dev and tests:
   same applies to link-preview images and sticker tapbacks. Genmoji
   attachments carry `isGenmoji` and `emojiDescription`.
 
+## Custom emoji, stickers and settings
+
+- **Custom emoji** (`/api/emoji`): files live in `<state_dir>/emoji/` as
+  `<random id>.<ext>`, metadata (name, type, size, animated, source, sha256) in
+  state.db. A name is `:shortcode:`-style: colons and case are stripped, then it
+  must match `^[a-z0-9_+-]{2,40}$` (400), and be free (409). The bytes decide the
+  type: PNG, GIF, JPEG and WebP are kept as they are; HEIC becomes PNG with sips
+  (415 without it, i.e. off macOS); SVG, TIFF, PDF and anything else are refused
+  with 415 and a sentence. At most 5 MB (413). Width/height come from the file;
+  `animated` means a GIF with more than one frame, an APNG (`acTL` with more than
+  one frame) or an animated WebP. Images are served with the same headers as
+  attachments (`nosniff`, a sandboxing CSP).
+- **Emoji from a link** (`POST /api/emoji/link`): http(s) only, no
+  `user:password@`; the host is resolved and every address must be public
+  (no private, loopback, link-local, multicast, reserved or CGNAT ranges,
+  including IPv4-mapped/6to4/Teredo forms of them), and the connection goes to
+  that checked address (no second DNS lookup). Up to 3 redirects, each checked
+  the same way; 15 s timeout; the download stops at 5 MB; Safari's User-Agent
+  (some emoji sites refuse unknown clients). Errors: 400 for a bad or private
+  link, 502 when the site answers with an error or too many redirects, 504 on
+  timeout, 413/415 as for uploads.
+- **Stickers & Genmoji** (`/api/stickers`): every attachment with
+  `is_sticker = 1` or an `emoji_image_content_identifier` (macOS 15+), sticker
+  tapbacks included. Copies are grouped by the Genmoji identifier, else by the
+  file's SHA-256 (cached in state.db by attachment guid + mtime + size, so each
+  file is read once); `id` is the newest copy, `timesUsed` counts copies,
+  `sentByMe` is true if any copy is yours. Files that are missing (iCloud) or
+  that an `<img>` couldn't draw are skipped. The list is cached for 5 minutes
+  and rebuilt as soon as chat.db changes. `/api/stickers/{id}/image` serves
+  PNG/GIF/JPEG/WebP as they are and HEIC/TIFF as a PNG made with
+  `sips -s format png` (transparency kept, cached), else 404.
+  `POST /api/stickers/{id}/save {name}` copies that image into custom emoji
+  with `source: "imessage"`.
+- **Server settings** (`GET/PATCH /api/settings`) are stored in state.db;
+  unknown keys are ignored and missing ones keep their value.
+
+## Mark read in Messages (experimental)
+
+Off by default (`markReadInMessages`). When it's on, `POST /read` also queues a
+job when chat.db still has unread incoming messages in that conversation. One
+background worker runs jobs one at a time; a conversation already waiting in
+the queue isn't queued twice (one that arrives while its own job runs is queued
+once more). The request never waits for it. It never runs in dry-run or
+fake-DB mode.
+
+The job is one `osascript` (script lines as `-e`, names as arguments, never in
+the source) that drives System Events against the running Messages app, with an
+8 s timeout:
+
+1. If Messages isn't running or has no window, stop.
+2. Collect the labels (description, name, value) of rows, cells, buttons,
+   groups and static texts in the front window (the first 2,500 elements),
+   then look for the conversation:
+   first a label line that is exactly one of its names (or `Name, …`), then one
+   that starts with its title, full name, nickname, company or phone number
+   (`(415) 555-0134` and `+1 (415) 555-0134`). The short name ("Jordan") only
+   counts as an exact match, so it can't pick "Jordan Lee". Matches are climbed
+   to their row; rows win over other elements.
+3. Select the row (AXSelected, else AXPress — rows and cells only, never
+   buttons) and, if the selection took, click the menu bar's
+   Conversation › Mark as Read when it's enabled.
+4. Otherwise open the element's context menu (AXShowMenu) and click
+   Mark as Read there; if that isn't offered, press Escape.
+
+Jobs still queued when the setting is turned off are dropped.
+It never types text and never sends anything. Three seconds after a success it
+checks chat.db again; if the messages that were unread are still unread,
+`lastResult` says so. Results go to `Health.messagesUi`
+(`permission` granted/denied/unknown, `lastResult`, `lastAt`, kept across
+restarts) and a short code to the log (never the conversation's name).
+"Not allowed assistive access" (-1719/-25211) means Accessibility is off for the
+app that runs the server: System Settings › Privacy & Security › Accessibility.
+-1743 means the "control System Events" prompt was declined:
+System Settings › Privacy & Security › Automation.
+
+`./backchannel doctor --messages-ui` shows whether Accessibility is allowed,
+whether Messages is running, its window count, the menu bar titles, the
+Conversation menu's items, the front window's roles and child counts to
+depth 8 (at most 400 elements), and how many row-like elements expose a
+description/name/value (counts and lengths only). It never prints labels or
+values, never opens a menu, and hides any menu title with digits, `@` or `+`,
+or a contact's name.
+
 ## Development (no Mac needed)
 
 ```sh
@@ -200,6 +285,16 @@ Tests: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pyt
   `claude_bin` if it lives somewhere unusual. "Claude Code isn't logged in" →
   run `claude` in Terminal once and log in. Or put `ANTHROPIC_API_KEY=…` in
   `.env` at the repo root.
+- **Mark read in Messages doesn't work** — check `messagesUi.lastResult` in
+  `/api/health`. "Couldn't find … in Messages' sidebar" or "didn't offer Mark as
+  Read" usually means your macOS labels things differently: run
+  `./backchannel doctor --messages-ui` with Messages open and paste the report.
+  Permission errors: allow the app that runs the server (Backchannel, or your
+  terminal) under Privacy & Security › Accessibility (and › Automation › System
+  Events).
+- **An emoji link fails** — 400 "private or local address" means the link
+  pointed (or redirected) at your network; 502/504 are the site's answer or a
+  timeout. Downloading the image and uploading it works too.
 - **Broken contact photos or image previews** — `./backchannel doctor` shows
   contact photos by storage (inline / external / Images dir / invalid / missing
   external file) and whether sips converts HEIC/TIFF and qlmanage makes video

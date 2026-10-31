@@ -129,6 +129,8 @@ export function createHttpApi(): Api {
     catchUp: (refresh) => get<CatchUp>(`/api/ai/catchup?refresh=${refresh ? 1 : 0}`),
     chiefCard: (handle) => get<ChiefCard | null>(`/api/people/${enc(handle)}/chief`),
     addChiefLoop: (cid, mid, title) => send<{ id: number; title: string }>('POST', '/api/chief/loops', { conversationId: cid, messageId: mid, title }),
+    sendTapback: (cid, mid, kind, remove) =>
+      send<{ status: 'queued' }>('POST', `/api/conversations/${enc(cid)}/messages/${enc(mid)}/tapback`, { kind, remove }),
     serverSettings: () => get<ServerSettings>('/api/settings'),
     setServerSettings: (patch) => send<ServerSettings>('PATCH', '/api/settings', patch),
     customEmoji: async () => (await get<{ items: CustomEmoji[] }>('/api/emoji')).items,

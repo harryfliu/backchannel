@@ -59,6 +59,7 @@ not be able to drive it.
 | GET | `/api/ai/catchup?refresh=0` | `CatchUp` |
 | GET | `/api/people/{handle}/chief` | `ChiefCard`, or `null` when Chief doesn't know them or isn't installed |
 | POST | `/api/chief/loops` | body `{ conversationId, messageId, title }` → `{ id, title }` |
+| POST | `/api/conversations/{id}/messages/{messageId}/tapback` | body `{ kind, remove }` → 202 `{ status: 'queued' }` (needs `tapbacksViaMessages`, else 409) |
 | GET | `/api/settings` | `ServerSettings` |
 | PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` |
 | GET | `/api/emoji` | `{ items: CustomEmoji[] }` |
@@ -197,3 +198,36 @@ never types into Messages and never sends anything. Results go to the log and to
 "not allowed assistive access"). `./backchannel doctor --messages-ui` prints the
 Messages window's accessibility structure (roles, counts and menu titles only; no
 message text) so the script can be tuned to the user's macOS version.
+
+**Tapbacks and threaded replies via Messages (experimental, opt-in).** The same
+Accessibility automation as read sync, for the two things AppleScript can't do.
+Both act only inside the conversation's own Messages transcript, only on
+messages Messages has loaded (recent ones), and are verified in chat.db. Each
+attempt ends with one `ui-action` event: `result` is `done`, `fallback` (replies
+only) or `failed`, and `detail` is a sentence the UI shows as a toast.
+- Tapback (`tapbacksViaMessages`): select the conversation in Messages' sidebar,
+  find the target bubble in the transcript (match sender + text, newest match
+  first; attachments by their placeholder), open its context menu (AXShowMenu)
+  and choose the tapback (Tapback submenu or reaction buttons, whatever the
+  user's macOS exposes); to remove, choose the same tapback again. Verify a new
+  row with `associated_message_guid` pointing at the target and the right
+  `associated_message_type` within ~5 s, then emit `ui-action` (`done` or
+  `failed`). The new reaction itself reaches the UI as the target's normal
+  `message-updated`, the same as anyone else's tapback. One tapback per person
+  per message, like iMessage: picking a different one replaces yours.
+- Thread reply (`threadRepliesViaMessages`): when a send has `threadRootId`,
+  find the root bubble the same way, choose Reply in its context menu, then put
+  the text in Messages' reply field via the clipboard (saved and restored) and
+  press Return. Typing needs Messages in front for about a second, then focus
+  returns to Backchannel. Verify the sent row has `thread_originator_guid` =
+  root and reconcile it to the clientId as usual (`ui-action` `done`). If the
+  reply field couldn't be opened (nothing typed), send it the normal AppleScript
+  way and emit `fallback` ("went out as a regular text"). If text may have been
+  typed but nothing was verified, never send a second copy: emit `failed` and a
+  `send-status` failed whose error says to check Messages before retrying (the
+  row is still reconciled if it shows up later).
+- Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes don't.
+- At most one Messages action at a time (queue), ~10 s timeout each. Never in
+  dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
+  row it would have produced into the fake chat.db (like simulated sends), so
+  the whole flow can be tried without a Mac. Tests use a fake runner.
