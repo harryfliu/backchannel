@@ -85,9 +85,11 @@ def prioritize(kind: str, items: list[Item], asking_guid: str | None, vips: dict
             continue
         counts = m.unread or m.guid in in_run
         asking = kind == "dm" and m.guid == asking_guid
-        # Time and urgent words count while unread, and in a DM also on any unanswered message that
-        # asks something: reading "call me in 20 min" doesn't resolve it. (Groups: unread only.)
-        pending = m.unread or (kind == "dm" and m.guid in in_run and (m.asks or asking))
+        # Time and urgent words count while unread, and in a DM that's waiting on the user also on any
+        # unanswered message that asks something: reading "call me in 20 min" doesn't resolve it (a
+        # closing "ok thanks" does). Groups: unread only.
+        pending = m.unread or (kind == "dm" and asking_guid is not None and m.guid in in_run
+                               and (m.asks or asking))
         if asking:
             add(m, {"kind": "asked"})
         if counts and kind == "group" and m.mentions_me:

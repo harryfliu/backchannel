@@ -54,6 +54,16 @@ CASES = [
     ("at 6", WED_8PM, "Tomorrow 6 PM", at(29, 18)),
     ("at 11", WED_9AM, "Today 11 AM", at(28, 11)),
     ("at 12", WED_9AM, "Today 12 PM", at(28, 12)),
+    ("at 12", WED_3PM, "Tomorrow 12 PM", at(29, 12)),  # 12 is noon…
+    ("12am", WED_3PM, "Tomorrow 12 AM", at(29, 0)),  # …unless it says am
+    ("by 12:30", WED_3PM, "Tomorrow 12:30 PM", at(29, 12, 30)),
+    # a bare H:MM is a clock time too
+    ("7:30?", WED_3PM, "Today 7:30 PM", at(28, 19, 30)),
+    ("the 7:30 show", WED_3PM, "Today 7:30 PM", at(28, 19, 30)),
+    ("9:30", WED_3PM, "Today 9:30 PM", at(28, 21, 30)),
+    ("9:30", WED_8PM, "Today 9:30 PM", at(28, 21, 30)),
+    ("10:30-11:30 works", WED_9AM, "Today 10:30 AM", at(28, 10, 30)),
+    ("21:15", WED_3PM, "Today 9:15 PM", at(28, 21, 15)),
     ("dinner @ 7", WED_3PM, "Today 7 PM", at(28, 19)),
     ("at 19:00", WED_9AM, "Today 7 PM", at(28, 19)),
     ("lunch at noon", WED_9AM, "Today 12 PM", at(28, 12)),
@@ -63,7 +73,13 @@ CASES = [
     ("tonight at 8", WED_9AM, "Today 8 PM", at(28, 20)),
     ("this morning at 11", WED_9AM, "Today 11 AM", at(28, 11)),
     # a clock time attaches to a named day
-    ("tomorrow at 9", WED_3PM, "Tomorrow 9 AM", at(29, 9)),
+    ("tomorrow at 9", WED_3PM, "Tomorrow 9 PM", at(29, 21)),  # on a named day, 7–11 means pm
+    ("tomorrow at 8", WED_3PM, "Tomorrow 8 PM", at(29, 20)),
+    ("tomorrow morning at 9", WED_3PM, "Tomorrow 9 AM", at(29, 9)),
+    ("thursday at 11", WED_3PM, "Tomorrow 11 PM", at(29, 23)),
+    ("tomorrow at 2", WED_3PM, "Tomorrow 2 PM", at(29, 14)),
+    ("tomorrow at 12", WED_3PM, "Tomorrow 12 PM", at(29, 12)),
+    ("tomorrow at 9am", WED_3PM, "Tomorrow 9 AM", at(29, 9)),
     ("tmrw 10am?", WED_3PM, "Tomorrow 10 AM", at(29, 10)),
     ("tomorrow night at 8", WED_3PM, "Tomorrow 8 PM", at(29, 20)),
     ("thursday 7pm", WED_3PM, "Tomorrow 7 PM", at(29, 19)),
@@ -104,7 +120,8 @@ NOT_TIMES = [
     "58° out today is crazy",  # a "today" window, but no clock time…
     "it was $40", "got 2 tickets", "top 5 albums", "iOS 18 is out", "room 7", "the 9-11 game", "at 9-11",
     "see https://example.com/at/7pm", "www.site.io/7pm", "call 415-555-0134", "text +1 (415) 555-0134 at 7pm? no",
-    "at 7 people max", "by 5%", "at 3 points", "split by 4 of us", "9:30", "7", "the 7:30 show",
+    "at 7 people max", "by 5%", "at 3 points", "split by 4 of us", "7",
+    "won 3:1", "a 3:1 ratio", "2:10 pace", "ran a 2:10/km", "score was 2:10", "finished in 1:23:45", "4:5",
     "I sat down", "the sun is out", "wed 3 times", "send me the doc",
 ]
 
@@ -159,9 +176,9 @@ def test_the_36_hour_limit():
 
 
 def test_labels_follow_now():
-    sent = at(28, 22)  # Wed 10 pm: "tomorrow at 9"
-    assert hit("tomorrow at 9", sent, at(28, 22, 5)).label == "Tomorrow 9 AM"
-    assert hit("tomorrow at 9", sent, at(29, 8)).label == "Today 9 AM"  # it's Thursday now
+    sent = at(28, 22)  # Wed 10 pm: "tomorrow at 9am"
+    assert hit("tomorrow at 9am", sent, at(28, 22, 5)).label == "Tomorrow 9 AM"
+    assert hit("tomorrow at 9am", sent, at(29, 8)).label == "Today 9 AM"  # it's Thursday now
     assert hit("tomorrow", sent, at(29, 8)).label == "Today"
     assert hit("at 11:30pm", at(28, 23), at(29, 0, 10)).label == "Yesterday 11:30 PM"  # in its grace hour
 
@@ -181,10 +198,10 @@ def test_weekdays_up_to_six_days_ahead():
 
 def test_dst_and_zone_handling():
     sent = datetime(2026, 10, 31, 22, 0, tzinfo=TZ)  # Sat night; DST ends Sun Nov 1 at 2 am
-    found = find_time("tomorrow at 9", sent, sent, TZ)
+    found = find_time("tomorrow at 9am", sent, sent, TZ)
     assert found.at == datetime(2026, 11, 1, 9, 0, tzinfo=TZ) and found.at.utcoffset() == timedelta(hours=-8)
     utc_sent = sent.astimezone(ZoneInfo("UTC"))  # the zone decides the day, not the input's offset
-    assert find_time("tomorrow at 9", utc_sent, utc_sent, TZ).at == found.at
+    assert find_time("tomorrow at 9am", utc_sent, utc_sent, TZ).at == found.at
     tokyo = ZoneInfo("Asia/Tokyo")  # 22:00 Saturday in California is 2 pm Sunday in Tokyo
     assert find_time("this afternoon", sent, sent, tokyo).label == "This afternoon"
     assert find_time("tonight", sent, sent, tokyo).stops == datetime(2026, 11, 1, 23, 59, tzinfo=tokyo)

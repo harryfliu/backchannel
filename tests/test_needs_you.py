@@ -65,7 +65,8 @@ def test_messages_carry_their_importance(rw):
     dad = page(rw, DAD)
     soon, earlier = dad[rw.guid("d_call_soon")], dad[rw.guid("d_call")]
     assert kinds(soon["importance"]) == ["urgent", "time", "vip"]
-    assert earlier["importance"] == [{"kind": "asked"}, {"kind": "vip", "name": "Dad"}]
+    assert earlier["importance"] == [{"kind": "urgent", "word": "call me"}, {"kind": "asked"},
+                                     {"kind": "vip", "name": "Dad"}]  # read, but still unanswered
     assert all(m["importance"] is None for m in dad.values() if m["fromMe"])
     climbing = page(rw, CLIMBING)
     assert kinds(climbing[rw.guid("cc_headcount")]["importance"]) == ["time", "mention"]
@@ -83,6 +84,19 @@ def test_messages_carry_their_importance(rw):
     assert kinds(thread["replies"][0]["importance"]) == ["reply", "vip"]
     for message in [*dad.values(), *climbing.values(), *nina.values()]:
         assert not validate(message, "Message"), message["id"]
+
+
+def test_reading_dads_text_keeps_it_urgent(rw):
+    summary = rw.post(f"/api/conversations/{q(DAD)}/read")  # Harry opened it, didn't answer
+    assert summary["unreadCount"] == 0
+    priority = summary["priority"]
+    assert priority["level"] == "urgent" and kinds(priority["reasons"])[:3] == ["urgent", "time", "asked"]
+    assert priority["messageId"] == rw.guid("d_call_soon")
+    assert kinds(page(rw, DAD)[rw.guid("d_call_soon")]["importance"])[:2] == ["urgent", "time"]
+    rw.post(f"/api/conversations/{q(DAD)}/messages", {"text": "calling now", "clientId": "dad-1"})
+    events = rw.events_until(lambda e: any(x["type"] == "send-status" for x in e))
+    dad = [e["conversation"] for e in events if e["type"] == "conversation" and e["conversation"]["id"] == DAD]
+    assert dad and dad[-1]["priority"] is None  # answered: done
 
 
 def test_mute_star_and_read_change_it(rw):

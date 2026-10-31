@@ -200,9 +200,11 @@ What needs Harry first, worked out on the Mac with no AI (rules: docs/api.md,
   conversations that aren't muted or automated. A message counts when it asks
   Harry something (DMs: the first asking message of the unanswered run),
   mentions him or replies inline to him (unread or unanswered), names a time
-  that's coming up (unread), uses urgent words (unread), or is the third+
-  unread text in a row from one person within 30 minutes. Read and answered
-  messages stop counting; times stop counting an hour after they pass.
+  that's coming up or uses urgent words (unread, or in a DM waiting on him any
+  unanswered message that asks something — reading "call me in 20 min" doesn't
+  resolve it), or is the third+ unread text in a row from one person within 30
+  minutes. Answered messages stop counting; times stop counting an hour after
+  they pass.
 - **VIPs** (only ever added to a message that already counts): the other person
   in a starred DM; anyone in Chief's people (matched by name like the Chief
   card: full name or nickname, else a first name only one Chief person has —

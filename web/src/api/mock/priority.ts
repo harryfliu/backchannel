@@ -6,7 +6,9 @@ export const ASK_RE = /\?|\b(can you|could you|would you|will you|are you|do you
 
 const HOUR = 3600000
 const DAY = 24 * HOUR
-const URGENT_RE = /\b(urgent|asap|a\.s\.a\.p|emergency|911|hospital|accident|call me|call asap|pick up|answer your phone|need you now)\b|\bhelp!/i
+// "call me" alone is just a request ("call me when you get a chance"); it's urgent next to now/asap/…
+const URGENT_RE =
+  /\b(urgent|asap|a\.s\.a\.p|emergency|911|hospital|accident|call asap|answer your phone|need you now|pick up (?:the|your) phone)\b|\bhelp!|\bpick up!|\bcall me\b(?=.*\b(?:asap|now|right away|immediately|urgent|emergency|when you see this)\b)|\b(?:asap|now|right away|immediately|urgent|emergency|when you see this)\b(?=.*\bcall me\b)/i
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 const ORDER: PriorityReason['kind'][] = ['urgent', 'repeat', 'time', 'asked', 'mention', 'reply', 'vip']
 const WEIGHT: Record<PriorityReason['kind'], number> = { urgent: 80, repeat: 40, time: 30, asked: 60, mention: 50, reply: 40, vip: 25 }
