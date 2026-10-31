@@ -34,16 +34,39 @@ steps below are for running the server yourself in a terminal.
    click Allow. If you missed it: System Settings → Privacy & Security →
    Automation → (your terminal) → Messages.
 
-6. **Optional AI** (reply drafts, catch-up): put `ANTHROPIC_API_KEY=sk-ant-…`
-   in `.env` at the repo root (gitignored), or export it, then restart.
-   `python -m server` reads `.env` itself at startup (so the Mac app needs no
-   shell): `KEY=VALUE` lines, optional `export `, quotes stripped, `#`
-   comments ignored, and variables already in the environment win. Without it the AI routes answer 503 and everything else
-   works. Models are set under `"models"` in `config.json` (drafts
-   `claude-haiku-5-5`, catch-up `claude-sonnet-5-5`). Drafts use Harry's
+6. **AI** (reply drafts, catch-up) works two ways; `"ai": {"backend": "auto"}`
+   (the default) picks the first that's available:
+   - **Claude Code** (`claude -p`, your Claude subscription, no API key) — like
+     Chief. Install Claude Code and run `claude` once in Terminal to log in.
+     Backchannel finds `claude` even when the app is launched from the Dock
+     (where PATH is only /usr/bin:/bin:/usr/sbin:/sbin): `claude_bin` /
+     `BACKCHANNEL_CLAUDE_BIN` if set, then PATH plus ~/.local/bin,
+     ~/.claude/local, /opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin,
+     ~/.bun/bin, ~/.volta/bin and ~/.nvm/versions/node/*/bin, then your login
+     shell's PATH. It runs `claude -p --model <haiku|sonnet> --no-session-persistence
+     --tools "" --disable-slash-commands --system-prompt …` with that PATH, in an
+     empty folder under the state dir, and **without** ANTHROPIC_API_KEY (so the
+     subscription is used); JSON is requested in the system prompt (not
+     `--json-schema`). At most 2 run at once; timeouts are 90 s (drafts), 240 s
+     (catch-up) and 120 s (style profile). Models: `"models_cli"` in config.json.
+   - **API key**: `ANTHROPIC_API_KEY=sk-ant-…` in `.env` at the repo root (or the
+     environment). Models: `"models"` in config.json.
+   Set `"backend"` to `"claude-cli"` or `"api"` to force one. `/api/health`
+   reports `ai.backend`. `python -m server` reads `.env` itself at startup (the
+   Mac app needs no shell): `KEY=VALUE` lines, optional `export `, quotes
+   stripped, `#` comments ignored, variables already set win. Drafts use Harry's
    style profile from `~/Documents/claude_projects/imessage-checker/.texting_style.json`
    when it exists; otherwise one is built from recent sent messages and cached
    for 72 h in the state dir.
+
+7. **Diagnostics:** `./backchannel doctor` (or `.venv/bin/python -m server.doctor`)
+   prints a report to paste back — counts, file formats, timings and versions
+   only, never message text, names or handles: chat.db and attachment counts,
+   attachments from the last 90 days by kind/extension/format and how many are
+   on disk vs in iCloud, real HEIC/TIFF → JPEG (sips) and video thumbnail
+   (qlmanage) attempts with timings, contact photos by storage, the AI backend
+   and `claude --version`, Chief, and the macOS version. `--ai` adds one tiny
+   real Claude call. It exits non-zero when chat.db can't be read.
 
 ## Configuration
 
@@ -65,6 +88,8 @@ variables override both — mostly for dev and tests:
 | `BACKCHANNEL_ME_HANDLES` | from `config.json`, else read from your sent messages | Your phone/email handles, comma-separated |
 | `BACKCHANNEL_STYLE_PROFILE` | Harry's imessage-checker profile | Texting-style profile JSON (`{"profile": "…"}`) |
 | `BACKCHANNEL_CHIEF_DB` | `~/Documents/claude_projects/chief/db/chief.db` | Chief's database (`chief_db` in config.json) |
+| `BACKCHANNEL_CLAUDE_BIN` | found automatically | Path to `claude` (`claude_bin` in config.json) |
+| `BACKCHANNEL_AI_BACKEND` | `auto` | `auto`, `claude-cli` or `api` (`ai.backend` in config.json) |
 | `BACKCHANNEL_DEV_ORIGINS` | empty | Extra origins allowed on POST/PATCH/PUT/DELETE (dev: `http://localhost:5173`) |
 | `BACKCHANNEL_DIST_DIR` | `web/dist` | Built UI |
 | `BACKCHANNEL_CONFIG` | `config.json` | Alternate config file |
@@ -98,6 +123,26 @@ variables override both — mostly for dev and tests:
   (SMS account for phone numbers if that fails) and the reply is the future
   `dm:<handle>` id. When Messages writes the new chat, the watcher emits
   `conversation`, then `message` (with `clientId`), then `send-status`.
+
+## Photos and previews
+
+- **Contact photos** come from Core Data binary storage in the AddressBook
+  databases: `ZTHUMBNAILIMAGEDATA` (then `ZIMAGEDATA`) is `0x01` + the image
+  bytes, or `0x02` + a UUID naming a file in
+  `<folder of the .abcddb>/.AddressBook-v22_SUPPORT/_EXTERNAL_DATA/`; older
+  cards use `Images/<unique id>`. Formats are judged by their first bytes only.
+  JPEG/PNG/GIF are served as is; HEIC/TIFF/WebP become JPEG with sips; photos
+  over 200 KB are shrunk to 256 px. `avatarUrl` (people and you) is only set when
+  there is a photo that can really be served, and `/api/avatar` answers 404
+  otherwise.
+- **Attachments:** image sizes come from the bytes (for HEIC, the primary
+  item's `ispe` with its `irot`, not the 512×512 tiles). Files are judged by
+  their bytes, not their names (an iPhone may send HEIC named `.JPG`). `thumbUrl`
+  is only offered when an `<img>` can draw the result (browser formats, or
+  HEIC/TIFF with sips; videos only with qlmanage), and `/thumb` answers 404
+  rather than handing an `<img>` a video, a document or an unconverted HEIC. The
+  same applies to link-preview images and sticker tapbacks. Genmoji
+  attachments carry `isGenmoji` and `emojiDescription`.
 
 ## Development (no Mac needed)
 
@@ -150,5 +195,12 @@ Tests: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pyt
 - **No Chief card / "Chief's database isn't at …"** — set `"chief_db"` in
   `config.local.json` to where chief.db lives; cards only appear for people
   whose Chief name matches their Contacts name or nickname.
-- **AI says there's no API key in the Mac app** — put `ANTHROPIC_API_KEY=…` in
-  `.env` at the repo root; the server reads it at startup.
+- **AI is off in the app** — `/api/health` → `ai.backend`. With Claude Code,
+  run `./backchannel doctor` to see whether `claude` was found; set
+  `claude_bin` if it lives somewhere unusual. "Claude Code isn't logged in" →
+  run `claude` in Terminal once and log in. Or put `ANTHROPIC_API_KEY=…` in
+  `.env` at the repo root.
+- **Broken contact photos or image previews** — `./backchannel doctor` shows
+  contact photos by storage (inline / external / Images dir / invalid / missing
+  external file) and whether sips converts HEIC/TIFF and qlmanage makes video
+  thumbnails on this Mac.

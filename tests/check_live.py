@@ -25,6 +25,7 @@ EXTRAS = {"stickerUrl"}
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://127.0.0.1:5556")
+    parser.add_argument("--ai", action="store_true", help="also check /api/ai/catchup (makes a real Claude call)")
     args = parser.parse_args()
     problems = 0
     checked = 0
@@ -82,8 +83,10 @@ def main() -> int:
         check("/api/later", "LaterItem", key="items", each=True)
         check("/api/scheduled", "ScheduledMessage", key="items", each=True)
         check("/api/search", "SearchResult", key="results", each=True, params={"q": "in"})
-        catchup = client.get("/api/ai/catchup")
-        if catchup.status_code == 200:
+        catchup = client.get("/api/ai/catchup") if args.ai else None
+        if catchup is None:
+            print("skip /api/ai/catchup (pass --ai to include it)")
+        elif catchup.status_code == 200:
             errors = validate(catchup.json(), "CatchUp")
             checked += 1
             problems += bool(errors)
