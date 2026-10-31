@@ -279,19 +279,17 @@ function MessageList({ c }: { c: Conversation }) {
     }
   }, [items, loaded])
 
-  // Content that grows in place (a new reaction, a photo finishing loading): stay at the bottom.
+  // Stay at the bottom when things change size in place: a new reaction, a photo finishing
+  // loading, or the composer growing (which shrinks the list).
   useEffect(() => {
     const el = scroller.current
     const inner = content.current
     if (!el || !inner || !loaded || typeof ResizeObserver === 'undefined') return
-    let last = inner.offsetHeight
     const ro = new ResizeObserver(() => {
-      const h = inner.offsetHeight
-      const grew = h > last
-      last = h
-      if (grew && atBottom.current && !prepend.current) el.scrollTop = el.scrollHeight
+      if (atBottom.current && !prepend.current) el.scrollTop = el.scrollHeight
     })
     ro.observe(inner)
+    ro.observe(el)
     return () => ro.disconnect()
   }, [c.id, loaded])
 

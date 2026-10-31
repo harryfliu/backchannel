@@ -701,7 +701,7 @@ function CustomEmojiSettings() {
         <p className="field-help">None yet. Add your own images, or links from slackmojis.com, and send them with :name:.</p>
       )}
       <div>
-        <button type="button" className="btn" onClick={() => setState({ emojiDialog: {}, settingsOpen: false })}>
+        <button type="button" className="btn" onClick={() => setState({ emojiDialog: { fromSettings: true }, settingsOpen: false })}>
           <Icon name="plus" size={14} /> Add emoji
         </button>
       </div>
@@ -712,10 +712,10 @@ function CustomEmojiSettings() {
 export function AddEmojiModal() {
   const dialog = useStore((s) => s.emojiDialog)
   if (!dialog) return null
-  return <AddEmojiInner key={dialog.sticker?.id ?? 'new'} sticker={dialog.sticker ?? null} />
+  return <AddEmojiInner key={dialog.sticker?.id ?? 'new'} sticker={dialog.sticker ?? null} fromSettings={!!dialog.fromSettings} />
 }
 
-function AddEmojiInner({ sticker }: { sticker: StickerItem | null }) {
+function AddEmojiInner({ sticker, fromSettings }: { sticker: StickerItem | null; fromSettings: boolean }) {
   const existing = useStore((s) => s.customEmoji)
   const [mode, setMode] = useState<'upload' | 'link'>('upload')
   const [file, setFile] = useState<File | null>(null)
@@ -735,7 +735,8 @@ function AddEmojiInner({ sticker }: { sticker: StickerItem | null }) {
   const taken = existing.some((e) => e.name === name)
   const nameOk = EMOJI_NAME_RE.test(name) && !taken
   const sourceOk = sticker ? true : mode === 'upload' ? !!file : linkOk
-  const close = () => setState({ emojiDialog: null })
+  // Opened from Settings: go back there afterward.
+  const close = () => setState({ emojiDialog: null, ...(fromSettings ? { settingsOpen: true } : {}) })
 
   const save = async () => {
     if (!nameOk || !sourceOk || saving) return
@@ -861,7 +862,7 @@ function MessagesHelpers() {
       key: 'markReadInMessages',
       id: 'mark-read-messages',
       label: 'Mark texts read in Messages',
-      help: 'When you open a conversation here that Messages still shows as unread, it gets marked read there too, which syncs to your phone.',
+      help: 'When you open a conversation here that Messages still shows as unread, it gets marked read there too, which syncs to your phone. Read receipts follow your Messages setting.',
     },
   ]
   return (

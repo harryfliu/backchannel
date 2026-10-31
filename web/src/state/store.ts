@@ -117,7 +117,7 @@ export interface State {
   /** Stickers and Genmoji from your iMessage history; null until first opened. */
   stickers: StickerItem[] | null
   /** The "Add emoji" dialog; a sticker to save, or blank for a new one. */
-  emojiDialog: { sticker?: StickerItem } | null
+  emojiDialog: { sticker?: StickerItem; fromSettings?: boolean } | null
   /** Preferences that change what the Mac does (null until loaded). */
   serverSettings: ServerSettings | null
   /** Tapbacks you just sent, shown right away until Messages confirms them. Keyed by message id. */

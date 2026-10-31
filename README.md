@@ -61,7 +61,7 @@ Access instead.
 | Named group chat | `#channel` under Groups |
 | 1:1 and unnamed groups | Direct messages (phone, email and SMS chats with one person are merged) |
 | Swipe-to-reply | A thread: “5 replies” under the message, opens on the side |
-| Tapbacks | Reaction chips |
+| Tapbacks | Reaction chips; click one (or the smiley) to add yours |
 | Edited / unsent | “(edited)” / “This message was unsent.” |
 | SMS | Green SMS tag and send button |
 
@@ -79,11 +79,28 @@ Access instead.
   `:name:` or use the smiley button. iMessage has no custom emoji, so they go out
   as small pictures.
 
+**Messages helpers (experimental)**
+
+iMessage only accepts tapbacks, real thread replies and "mark as read" from the
+Messages app itself. Backchannel can do them by operating Messages for you through
+macOS Accessibility. Turn each one on in Settings (⌘,) › Messages helpers, and allow
+Backchannel in System Settings › Privacy & Security › Accessibility.
+- **Send tapbacks**: ❤️ 👍 👎 😂 ‼️ ❓ from the smiley on any text, or click a reaction to add yours.
+- **Send thread replies as real replies**: they thread on everyone's phone. Messages
+  comes to the front for about a second while it sends.
+- **Mark texts read in Messages**: opening a conversation here marks it read there
+  too, so your phone matches.
+
+Each one is checked against Messages' database afterward, and you'll see a note if
+it didn't work. They only reach recent messages, and a macOS update can break them
+until they're adjusted. `./backchannel doctor --messages-ui` shows what Backchannel
+can see in Messages (no message text).
+
 **iMessage limits**
-- Other apps can't send tapbacks or true threaded replies. Everyone else's show
-  up here; your thread replies go out as normal texts.
-- Reading here doesn't mark texts read in Messages (or on your phone), and doesn't
-  send read receipts. Backchannel does pick up reads you make elsewhere.
+- With the helpers off, your thread replies go out as normal texts (still threaded
+  here), and reading here doesn't mark texts read on your phone or send read
+  receipts. Backchannel does pick up reads you make elsewhere. With "Mark texts
+  read" on, read receipts follow your setting in Messages.
 - Your Mac must be awake with Backchannel running for sends, scheduled sends and reminders.
 
 ## Commands
