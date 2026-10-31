@@ -25,6 +25,7 @@ EXTRAS = {"stickerUrl"}
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://127.0.0.1:5556")
+    parser.add_argument("--ai", action="store_true", help="also check /api/ai/catchup (makes a real Claude call)")
     args = parser.parse_args()
     problems = 0
     checked = 0
@@ -82,8 +83,20 @@ def main() -> int:
         check("/api/later", "LaterItem", key="items", each=True)
         check("/api/scheduled", "ScheduledMessage", key="items", each=True)
         check("/api/search", "SearchResult", key="results", each=True, params={"q": "in"})
-        catchup = client.get("/api/ai/catchup")
-        if catchup.status_code == 200:
+        check("/api/settings", "ServerSettings")
+        emoji = check("/api/emoji", "CustomEmoji", key="items", each=True) or {"items": []}
+        stickers = check("/api/stickers", "StickerItem", key="items", each=True) or {"items": []}
+        images = [e["url"] for e in emoji["items"]] + [s["url"] for s in stickers["items"]]
+        for url in images:
+            response = client.get(url)
+            if response.status_code != 200 or not response.headers.get("content-type", "").startswith("image/"):
+                print(f"FAIL {url}: HTTP {response.status_code} {response.headers.get('content-type')}")
+                problems += 1
+        print(f"{len(emoji['items'])} custom emoji, {len(stickers['items'])} stickers; {len(images)} images fetched")
+        catchup = client.get("/api/ai/catchup") if args.ai else None
+        if catchup is None:
+            print("skip /api/ai/catchup (pass --ai to include it)")
+        elif catchup.status_code == 200:
             errors = validate(catchup.json(), "CatchUp")
             checked += 1
             problems += bool(errors)

@@ -73,7 +73,40 @@ export interface Conversation {
   awaitingReply: boolean
   /** When the message the user hasn't answered arrived. */
   awaitingSince: string | null
+  /** Why this needs the user, and how soon (docs/api.md, "Needs you"). Null when nothing does. */
+  priority: Priority | null
   prefs: ConversationPrefs
+}
+
+/** Why something needs the user. Worked out on the Mac from the text, who sent it and when. */
+export type PriorityReason =
+  /** A question or request for the user (the "Waiting on you" rule). */
+  | { kind: 'asked' }
+  /** Their name, in a group. */
+  | { kind: 'mention' }
+  /** An inline reply to one of their messages. */
+  | { kind: 'reply' }
+  /** A time that's coming up. label: "In 20 min", "Today 7 PM", "Tonight", "Tomorrow 9 AM", "Fri".
+   *  at: when, if a clock time or "in N min" was named (ISO); null for a whole day. */
+  | { kind: 'time'; label: string; at: string | null }
+  /** Urgent wording, e.g. "urgent", "asap", "emergency", "call me" (the matched words, lowercase). */
+  | { kind: 'urgent'; word: string }
+  /** Several unread texts in a row from the same person. */
+  | { kind: 'repeat'; count: number }
+  /** Someone close (starred DM, in Chief, or among the people the user texts most). Only alongside another reason. */
+  | { kind: 'vip'; name: string }
+
+export interface Priority {
+  /** urgent: now (urgent words, repeated texts, a time within ~3 hours). high: soon. */
+  level: 'urgent' | 'high'
+  /** Higher first, within a level. */
+  score: number
+  /** Most important first. */
+  reasons: PriorityReason[]
+  /** The message that matters most (jump target). */
+  messageId: string | null
+  /** When the time-sensitive part stops mattering (ISO), or null. */
+  until: string | null
 }
 
 export type TapbackKind =
@@ -112,6 +145,10 @@ export interface Attachment {
   width: number | null
   height: number | null
   isSticker: boolean
+  /** An iOS 18+ Genmoji (custom emoji made on device). Rendered at emoji size. */
+  isGenmoji: boolean
+  /** iMessage's description of a Genmoji or sticker, e.g. "dog wearing sunglasses". */
+  emojiDescription: string | null
   /** The file isn't on this Mac (offloaded to iCloud). */
   missing: boolean
 }
@@ -163,6 +200,8 @@ export interface Message {
   isAudioMessage: boolean
   /** One-time passcode found in the text, for the copy button. */
   otpCode: string | null
+  /** Why this message needs the user (only on messages that count toward the conversation's priority). */
+  importance: PriorityReason[] | null
   /** Group events (someone added, renamed the chat…). Render as a centered event line. */
   event: { type: MessageEventType; text: string } | null
   /** Echo of the client id when this message was sent from Backchannel. */
@@ -258,9 +297,60 @@ export interface Health {
   chatDb: { path: string; readable: boolean; error: string | null }
   contacts: { count: number }
   send: { mode: 'applescript' | 'dry-run' | 'unavailable' }
-  ai: { enabled: boolean; model: string | null }
+  /** backend: 'claude-cli' = `claude -p` on your Claude subscription; 'api' = ANTHROPIC_API_KEY. */
+  ai: { enabled: boolean; model: string | null; backend: 'claude-cli' | 'api' | null }
   /** Chief's database was found (profile cards + "Add to Chief loops"). */
   chief: { available: boolean }
+  /** "Also mark read in Messages" (drives the Messages app through Accessibility). */
+  messagesUi: {
+    enabled: boolean
+    /** Whether macOS lets Backchannel use Accessibility: unknown until the first try. */
+    permission: 'granted' | 'denied' | 'unknown'
+    /** The last attempt, e.g. "Marked Jordan Park read" or why it failed. */
+    lastResult: string | null
+    lastAt: string | null
+  }
+}
+
+/** Server-side preferences (they change what the Mac does, so they live on the server). */
+export interface ServerSettings {
+  /** When you open a conversation here that Messages still shows as unread, mark it read in Messages too. */
+  markReadInMessages: boolean
+  /** Send tapbacks by driving the Messages app (right-click the message › Tapback). Experimental. */
+  tapbacksViaMessages: boolean
+  /** Send thread replies as real inline replies by driving the Messages app (right-click › Reply). Experimental. */
+  threadRepliesViaMessages: boolean
+}
+
+/** The six classic tapbacks, the ones the Messages app can send from a right-click. */
+export type ClassicTapback = 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question'
+
+/** An emoji you added (Slack-style custom emoji). Sent through iMessage as an image. */
+export interface CustomEmoji {
+  /** Shortcode without colons: lowercase letters, digits, "-", "_", "+". */
+  name: string
+  /** Image URL (served by Backchannel). */
+  url: string
+  mimeType: string
+  width: number | null
+  height: number | null
+  animated: boolean
+  source: 'upload' | 'link' | 'imessage'
+  createdAt: string
+}
+
+/** A sticker or Genmoji found in your iMessage history. */
+export interface StickerItem {
+  /** Attachment GUID of the newest copy in chat.db. */
+  id: string
+  kind: 'sticker' | 'genmoji'
+  description: string | null
+  /** Browser-friendly image (PNG with transparency for HEIC stickers). */
+  url: string
+  timesUsed: number
+  lastUsedAt: string
+  /** You've sent it yourself at least once. */
+  sentByMe: boolean
 }
 
 /** What Chief knows about a person, shown on their profile. */
@@ -320,6 +410,22 @@ export type ServerEvent =
   | { type: 'scheduled'; scheduled: ScheduledMessage }
   /** A saved item changed: its reminder fired (firedAt set), or a reply resolved it. */
   | { type: 'later'; item: LaterItem }
+  /** How a Messages-app action went (tapback, thread reply, mark read). Tapbacks and replies
+   *  themselves arrive as normal message updates once they're in chat.db. */
+  | {
+      type: 'ui-action'
+      action: 'tapback' | 'reply' | 'mark-read'
+      conversationId: string
+      /** The tapback's target, or the thread root for a reply. */
+      messageId: string | null
+      /** The send's clientId, for replies. */
+      clientId: string | null
+      /** done: it worked. fallback: the reply couldn't be made a real reply, so it went out as a
+       *  regular text. failed: nothing was done, or Messages didn't confirm it. */
+      result: 'done' | 'fallback' | 'failed'
+      /** A sentence for a toast, e.g. "Couldn't find that message in Messages; it may be too old." */
+      detail: string
+    }
 
 export interface Api {
   health(): Promise<Health>
@@ -352,6 +458,18 @@ export interface Api {
   chiefCard(handle: string): Promise<ChiefCard | null>
   /** Track a message as an open loop in Chief. */
   addChiefLoop(conversationId: string, messageId: string, title: string): Promise<{ id: number; title: string }>
+  /** Add or remove one of your tapbacks by driving the Messages app (needs tapbacksViaMessages). */
+  sendTapback(conversationId: string, messageId: string, kind: ClassicTapback, remove: boolean): Promise<{ status: 'queued' }>
+  serverSettings(): Promise<ServerSettings>
+  setServerSettings(patch: Partial<ServerSettings>): Promise<ServerSettings>
+  customEmoji(): Promise<CustomEmoji[]>
+  /** Add an emoji from a file or from an image link (e.g. slackmojis.com). */
+  addCustomEmoji(name: string, source: { file: File } | { url: string }): Promise<CustomEmoji>
+  removeCustomEmoji(name: string): Promise<void>
+  /** Stickers and Genmoji from your iMessage history, most used first. */
+  stickers(): Promise<StickerItem[]>
+  /** Copy a sticker or Genmoji into your custom emoji under a name. */
+  saveStickerAsEmoji(stickerId: string, name: string): Promise<CustomEmoji>
   /** Live updates. onStatus reports the connection so the UI can show "Reconnecting…". */
   subscribe(onEvent: (e: ServerEvent) => void, onStatus?: (s: 'open' | 'reconnecting') => void): () => void
 }

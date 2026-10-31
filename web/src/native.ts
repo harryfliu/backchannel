@@ -5,6 +5,7 @@ type NativeMessage =
   | { type: 'theme'; frame: string }
   | { type: 'notify'; title: string; subtitle?: string; body: string; conversationId: string }
   | { type: 'requestNotifications' }
+  | { type: 'requestAccessibility' }
   | { type: 'attention' }
   | { type: 'retry' }
   | { type: 'quit' }
@@ -19,6 +20,7 @@ declare global {
     __bcOpen?: (conversationId: string) => void
     __bcCommand?: (name: string) => void
     __bcNotifyPermission?: (granted: boolean) => void
+    __bcAccessibility?: (trusted: boolean) => void
   }
 }
 

@@ -27,8 +27,11 @@ not be able to drive it.
 - `chat.db` and the AddressBook databases are opened read-only
   (`file:...?mode=ro`, never `immutable=1`, so new writes in the WAL are seen).
 - Attachments are served by GUID lookup only, never by a path from the
-  client, and only if the resolved file lives under
-  `~/Library/Messages/Attachments` (or the configured fixture dir).
+  client, and only if the resolved file (realpath) lives under
+  `~/Library/Messages/Attachments`, `~/Library/Messages/StickerCache` (where
+  Messages keeps stickers) or `~/Library/Containers/com.apple.MobileSMS` (or
+  the configured fixture dirs). Files in temp folders (`/var/folders/…`) are
+  never served: they show as `missing` (404).
 
 ## Routes
 
@@ -59,6 +62,17 @@ not be able to drive it.
 | GET | `/api/ai/catchup?refresh=0` | `CatchUp` |
 | GET | `/api/people/{handle}/chief` | `ChiefCard`, or `null` when Chief doesn't know them or isn't installed |
 | POST | `/api/chief/loops` | body `{ conversationId, messageId, title }` → `{ id, title }` |
+| POST | `/api/conversations/{id}/messages/{messageId}/tapback` | body `{ kind, remove }` → 202 `{ status: 'queued' }` (needs `tapbacksViaMessages`, else 409) |
+| GET | `/api/settings` | `ServerSettings` |
+| PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` |
+| GET | `/api/emoji` | `{ items: CustomEmoji[] }` |
+| POST | `/api/emoji` | multipart `name`, `file` → `CustomEmoji` |
+| POST | `/api/emoji/link` | body `{ name, url }` → `CustomEmoji` (the server downloads the image) |
+| DELETE | `/api/emoji/{name}` | 204 |
+| GET | `/api/emoji/{name}/image` | the emoji image |
+| GET | `/api/stickers?limit=300` | `{ items: StickerItem[] }` |
+| GET | `/api/stickers/{id}/image` | browser-friendly sticker/Genmoji image (PNG for HEIC, transparency kept) |
+| POST | `/api/stickers/{id}/save` | body `{ name }` → `CustomEmoji` |
 | GET | `/api/avatar/{handle}` | contact photo (JPEG/PNG) or 404 |
 | GET | `/api/attachments/{id}` | the file (HEIC converted to JPEG) |
 | GET | `/api/attachments/{id}/thumb` | ~800px JPEG preview, falls back to the file |
@@ -107,6 +121,58 @@ non-automated conversations when:
 `awaitingSince` is the time of the first asking message in the run. The AI
 catch-up does the finer judging.
 
+**Needs you (priority).** What needs the user first, so important texts don't
+get buried in busy chats. Computed on the Mac, no AI, for every non-automated,
+non-muted conversation; `priority` is null when nothing applies. Only real
+messages from others in the last 3 days count (no tapbacks, events, unsent).
+Each message that counts gets `importance` (its reasons); the conversation's
+`priority.reasons` is the union, most important first (urgent, repeat, time,
+asked, mention, reply, vip), each kind once (for `time`, the soonest).
+- `asked`: a DM that is `awaitingReply` (rule above). Goes on the first asking
+  message. (In groups the `mention` / `reply` reasons already say it.)
+- `mention` / `reply`: a group message that mentions the user, or an inline
+  reply to one of the user's messages, that is unread or in the unanswered run.
+- `time`: an *unread* message (or an asking message in a DM's unanswered run)
+  names a time that is still ahead, judged from the message's own timestamp in
+  the Mac's time zone:
+  - in N min/mins/minutes/hr/hrs/hours → `at` = sent + N, label = that clock
+    time ("Today 7:42 PM"; the UI shows a live "In 12 min" when it's close);
+  - a clock time: "7pm", "7:30 pm", "at 7", "at 7:30", "by 5", noon, midnight.
+    Bare numbers count only with am/pm or after at/by; without am/pm take the
+    next 7:00 or 19:00 after the message, skipping 1–6 am. A clock time attaches
+    to a day named in the same message ("tomorrow at 9", "Friday 7pm") → label
+    "Today 7 PM", "Tomorrow 9 AM", "Fri 7 PM";
+  - this morning / this afternoon / this evening / tonight → `at` null (they're
+    vague), counting until 12:00, 17:00, 23:59, 23:59 that day; label "This
+    morning", "This afternoon", "Tonight" (never urgent on their own);
+  - today, eod / end of day → `at` null, label "Today", window ends 23:59;
+  - tomorrow / tmrw (optionally + morning/afternoon/night or a clock time) →
+    label "Tomorrow" or "Tomorrow 9 AM";
+  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri".
+  It counts while the moment (or the day's 23:59 when `at` is null) is still
+  ahead and within 36 hours, and for up to 1 hour after a named time passes.
+  A message mentioning several times uses the soonest still ahead.
+- `urgent`: an unread message with urgent, asap, a.s.a.p, emergency, 911,
+  hospital, accident, "call me", "call asap", "pick up", "answer your phone",
+  "need you now", or "help!" (whole words, any case; `word` = the match,
+  lowercase).
+- `repeat`: 3 or more unread messages in a row from the same person, each
+  within 30 minutes of the one before (`count` = how many).
+- `vip`: the sender is close: the other person in a starred DM, in Chief's
+  people, or one of the 8 people the user sent the most texts to in the last
+  90 days (`name` = short name). Added only to messages that already have
+  another reason; never creates priority alone.
+Level is `urgent` when there's an `urgent` or `repeat` reason, or a `time` whose
+`at` is within the next 3 hours (or passed less than an hour ago); otherwise
+`high`. `score` orders within a level: start at 300 (urgent) or 100 (high),
+add urgent +80, repeat +40 per message past 2, time-in-3h +80, time +30,
+asked +60, mention +50, reply +40, vip +25, then subtract the hours since the
+newest counting message (at most 72). `messageId` is the counting message with
+the most weight (newest on ties). `until` is when the earliest time-based reason
+stops counting, or null. Priorities are recomputed whenever the conversation
+changes and every 5 minutes for those with an `until`; a change emits the
+usual `conversation` event, and new messages arrive with `importance` set.
+
 **Automated.** `isAutomated` when the sender is a short code (3–6 digits) or a
 non-contact who the user has never written to and whose texts look automated
 (codes, deliveries, appointment reminders, bank alerts).
@@ -124,7 +190,9 @@ or chat.db `error != 0`, emit `send-status: failed`.
 **Thread replies.** AppleScript can't send a real inline reply. A reply sent
 with `threadRootId` goes out as a normal text; the server stores
 (sent message GUID → threadRootId) locally and reports the message with that
-`threadRootId`, so it stays in the thread in Backchannel.
+`threadRootId`, so it stays in the thread in Backchannel. With
+`threadRepliesViaMessages` on, it's sent as a real reply through the Messages
+app instead (see "Tapbacks and threaded replies via Messages" below).
 
 **Live updates.** A watcher polls `PRAGMA data_version` about once a second.
 On change it emits `message` for new rows, `message-updated` for messages whose
@@ -157,3 +225,83 @@ their title mentions the person's full or first name. New loops are inserted
 as `owner='harry', urgency='medium', category='imessage', autonomy_tier='ask',
 status='open'`, with `source_ref='backchannel:<message guid>'` and no calendar
 event (the same shape Chief's own meeting tool uses for undated loops).
+
+**Custom emoji.** Slack-style emoji Harry adds himself: an uploaded file or an
+image link (often from slackmojis.com; nothing is bundled). Names match
+`^[a-z0-9_+-]{2,40}$` and are unique (409 when taken). Images must really be
+images by their bytes (PNG, GIF, JPEG, WebP; HEIC is converted to PNG), at
+most 5 MB; link downloads accept http(s) only, follow at most 3 redirects, time
+out after 15 s, and never reach private or loopback addresses. Files live in
+`<state_dir>/emoji/`, metadata in state.db. iMessage can't carry custom emoji, so
+the UI sends them as image attachments through the normal file route.
+
+**Stickers and Genmoji.** `/api/stickers` lists attachments with
+`is_sticker = 1` or a Genmoji identifier (`emoji_image_content_identifier`, with
+`emoji_image_short_description` as the description), deduplicated by content
+(identifier, else file hash), counted by how often they appear, most used first.
+Files missing from disk are skipped. Message attachments carry `isGenmoji` and
+`emojiDescription` so the UI can draw Genmoji at emoji size.
+
+**Mark read in Messages (experimental, opt-in).** Apple gives other apps no way
+to mark texts read, so with `markReadInMessages` on, `POST /read` also asks the
+Messages app to do it through macOS Accessibility (System Events), but only when
+chat.db still has unread incoming messages in that conversation. It runs in the
+background, never blocks the request, at most one at a time, and gives up after
+~8 s. Strategy, in order: (1) find the conversation's row in Messages' sidebar
+by its display name, select it and, if the selection took, use Conversation ›
+Mark as Read; (2) the row's context menu (AXShowMenu) › Mark as Read. It
+never types into Messages and never sends anything. Results go to the log and to
+`Health.messagesUi` (permission granted/denied; denied = macOS error -1719/-25211,
+"not allowed assistive access"). `./backchannel doctor --messages-ui` prints the
+Messages window's accessibility structure (roles, counts and menu titles only; no
+message text) so the script can be tuned to the user's macOS version.
+
+**Tapbacks and threaded replies via Messages (experimental, opt-in).** The same
+Accessibility automation as read sync, for the two things AppleScript can't do.
+Both act only inside the conversation's own Messages transcript, only on
+messages Messages has loaded (recent ones), and are verified in chat.db. Each
+attempt ends with one `ui-action` event: `result` is `done`, `fallback` (replies
+only) or `failed`, and `detail` is a sentence the UI shows as a toast.
+- Tapback (`tapbacksViaMessages`): select the conversation in Messages' sidebar,
+  find the target bubble in the transcript (match sender + text, newest match
+  first; attachments by their placeholder), open its context menu (AXShowMenu)
+  and choose the tapback (Tapback submenu or reaction buttons, whatever the
+  user's macOS exposes); to remove, choose the same tapback again. Because
+  choosing a tapback toggles it, chat.db is checked first: adding one you
+  already have, or removing one you don't, is `done` without touching
+  Messages. Verify a new row with `associated_message_guid` pointing at the
+  target and the right `associated_message_type` within ~5 s, then emit
+  `ui-action` (`done` or `failed`). The new reaction itself reaches the UI as
+  the target's normal `message-updated`, the same as anyone else's tapback. One
+  tapback per person per message, like iMessage: picking a different one
+  replaces yours.
+- Thread reply (`threadRepliesViaMessages`): when a send (immediate or
+  scheduled) has `threadRootId`, find the root bubble the same way, choose
+  Reply in its context menu, then put the text in Messages' reply field: first
+  by setting the field's value (no clipboard), read back; only if that didn't
+  take, by pasting (the plain-text clipboard is saved and restored; if the
+  clipboard holds anything but text it isn't touched and nothing is typed).
+  Return is pressed only when the focused field holds exactly the reply.
+  Pasting and Return need Messages in front for about a second, then the app
+  that was in front gets focus back. Verify the sent row has
+  `thread_originator_guid` = root and reconcile it to the clientId as usual
+  (`ui-action` `done`; if the row arrived without a thread, `fallback`). If the
+  reply field couldn't be opened (nothing typed), send it the normal AppleScript
+  way and emit `fallback` ("went out as a regular text"). If text may have been
+  typed but nothing was verified (including timeouts), never send a second
+  copy: emit `failed` and a `send-status` failed whose error says to check
+  Messages before retrying (the row is still reconciled if it shows up later).
+- Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes
+  don't, and neither does "Messages isn't open / has no window" (it would come
+  with every conversation you open).
+- Turning any helper on (false → true in `PATCH /api/settings`) queues a
+  harmless System Events call (~90 s timeout, never touches Messages) so macOS
+  asks "Backchannel wants to control System Events" right then, not during the
+  first real action. Its result goes to `Health.messagesUi`: -1743 → `denied`,
+  success → `lastResult: "Ready"` (permission stays as it was: Accessibility
+  isn't proven until a real action works).
+- At most one Messages action at a time (queue: read sync, tapbacks, replies
+  and the permission check share it), ~10 s timeout each. Never in
+  dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
+  row it would have produced into the fake chat.db (like simulated sends), so
+  the whole flow can be tried without a Mac. Tests use a fake runner.

@@ -4,6 +4,7 @@ import type {
   Api,
   CatchUp,
   ChiefCard,
+  CustomEmoji,
   Conversation,
   ConversationPrefs,
   Health,
@@ -17,6 +18,8 @@ import type {
   SendRequest,
   SendResponse,
   ServerEvent,
+  ServerSettings,
+  StickerItem,
   ThreadResponse,
 } from './types'
 
@@ -126,6 +129,30 @@ export function createHttpApi(): Api {
     catchUp: (refresh) => get<CatchUp>(`/api/ai/catchup?refresh=${refresh ? 1 : 0}`),
     chiefCard: (handle) => get<ChiefCard | null>(`/api/people/${enc(handle)}/chief`),
     addChiefLoop: (cid, mid, title) => send<{ id: number; title: string }>('POST', '/api/chief/loops', { conversationId: cid, messageId: mid, title }),
+    sendTapback: (cid, mid, kind, remove) =>
+      send<{ status: 'queued' }>('POST', `/api/conversations/${enc(cid)}/messages/${enc(mid)}/tapback`, { kind, remove }),
+    serverSettings: () => get<ServerSettings>('/api/settings'),
+    setServerSettings: (patch) => send<ServerSettings>('PATCH', '/api/settings', patch),
+    customEmoji: async () => (await get<{ items: CustomEmoji[] }>('/api/emoji')).items,
+    addCustomEmoji: async (name, source) => {
+      await ready
+      if ('url' in source) return request<CustomEmoji>('POST', '/api/emoji/link', { name, url: source.url })
+      const form = new FormData()
+      form.append('name', name)
+      form.append('file', source.file, source.file.name)
+      const post = () => fetch('/api/emoji', { method: 'POST', credentials: 'same-origin', body: form })
+      let res = await post()
+      if (res.status === 401) {
+        await refreshSession()
+        res = await post()
+      }
+      const data = await res.json().catch(() => null)
+      if (!res.ok) throw new ApiError((data && data.error) || `Adding the emoji failed (${res.status}).`, res.status)
+      return data as CustomEmoji
+    },
+    removeCustomEmoji: (name) => send<void>('DELETE', `/api/emoji/${enc(name)}`),
+    stickers: async () => (await get<{ items: StickerItem[] }>('/api/stickers?limit=300')).items,
+    saveStickerAsEmoji: (id, name) => send<CustomEmoji>('POST', `/api/stickers/${enc(id)}/save`, { name }),
     subscribe(onEvent, onStatus) {
       let es: EventSource | null = null
       let closed = false

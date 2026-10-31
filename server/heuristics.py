@@ -19,6 +19,9 @@ TAPBACKS: dict[int, tuple[str, str, str]] = {
     2007: ("sticker", "🖼️", "Sent a sticker on"),
 }
 STICKER_EMOJI = "🖼️"
+# How Messages words a removed tapback: "Removed a heart from “…”".
+REMOVED_NOUNS: dict[int, str] = {3000: "a heart", 3001: "a like", 3002: "a dislike", 3003: "a laugh",
+                                 3004: "an exclamation", 3005: "a question mark"}
 
 
 def is_reaction_type(assoc_type: int | None) -> bool:

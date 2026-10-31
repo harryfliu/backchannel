@@ -14,6 +14,7 @@ attributedBody, like real chat.db rows since Ventura.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import plistlib
 import shutil
@@ -49,18 +50,19 @@ ME_NAME = "Harry Liu"
 CONTACTS: list[dict[str, Any]] = [
     dict(key="jordan", first="Jordan", last="Park", phones=["(415) 555-0134"], emails=["Jordan.Park@icloud.example"], photo="thumb"),
     dict(key="priya", first="Priya", last="Natarajan", phones=["+1 415-555-0178"], photo="image"),
-    dict(key="mom", first="Linda", last="Liu", nickname="Mom", phones=["+1 (510) 555-0122"], photo="thumb"),
-    dict(key="dad", first="David", last="Liu", nickname="Dad", phones=["510.555.0123"]),
-    dict(key="grace", first="Grace", last="Liu", phones=["(628) 555-0190"]),
+    dict(key="mom", first="Linda", last="Liu", nickname="Mom", phones=["+1 (510) 555-0122"], photo="external"),
+    dict(key="dad", first="David", last="Liu", nickname="Dad", phones=["510.555.0123"], photo="broken"),
+    dict(key="grace", first="Grace", last="Liu", phones=["(628) 555-0190"], photo="garbage"),
     dict(key="marcus", first="Marcus", last="Webb", org="Webb Renovations", phones=["415-555-0161"]),
-    dict(key="ellie", first="Ellie", last="Chen", phones=["(650) 555-0147"]),
+    dict(key="ellie", first="Ellie", last="Chen", phones=["(650) 555-0147"], photo="imagedata"),
     dict(key="sam", first="Sam", last="Rivera", phones=["(415) 555-0112"]),
     dict(key="tomas", first="Tomás", last="Ortega", phones=["(415) 555-0118"]),
-    dict(key="kevin", first="Kevin", last="Huang", phones=["(415) 555-0126"]),
+    dict(key="kevin", first="Kevin", last="Huang", phones=["(415) 555-0126"], photo="tiff"),
     dict(key="aisha", first="Aisha", last="Bello", phones=["(415) 555-0139"]),
     dict(key="ben", first="Ben", last="Carter", phones=["(415) 555-0143"], source="local"),
     dict(key="sunset", org="Sunset Auto Repair", phones=["(415) 555-0170"], source="local"),
-    dict(key="me", first="Harry", last="Liu", phones=["(510) 555-0100"], emails=[ME_EMAIL], source="root"),
+    dict(key="me", first="Harry", last="Liu", phones=["(510) 555-0100"], emails=[ME_EMAIL], source="root",
+         photo="thumb_png"),
 ]
 
 # chat.db handle ids (E.164 / lowercase email / short code) for everyone who texts
@@ -124,19 +126,37 @@ def write_addressbook(out: Path) -> dict[str, str]:
         record = pk[source]
         unique = det_uuid(f"contact:{contact['key']}") + ":ABPerson"
         unique_ids[contact["key"]] = unique
-        thumb = None
-        if contact.get("photo") == "thumb":
-            thumb = b"\x01" + avatar_jpeg(index)  # real thumbnails carry a leading format byte
-        elif contact.get("photo") == "image":
+        # Core Data binary storage: 0x01 + inline bytes, or 0x02 + a UUID naming a file in
+        # .AddressBook-v22_SUPPORT/_EXTERNAL_DATA/. Older cards use Images/<unique id>.
+        thumb = image_data = None
+        kind = contact.get("photo")
+        if kind == "thumb":
+            thumb = b"\x01" + avatar_jpeg(index)
+        elif kind == "thumb_png":
+            thumb = b"\x01" + media_gen.png(48, 48, lambda x, y: (40, 90 + y, 160 + x))
+        elif kind == "image":
             images = sources[source].parent / "Images"
             images.mkdir(parents=True, exist_ok=True)
             (images / unique.split(":")[0]).write_bytes(avatar_jpeg(index))
+        elif kind in ("external", "broken"):
+            ref = det_uuid(f"external:{contact['key']}")
+            thumb = b"\x02" + ref.encode() + b"\x00"
+            if kind == "external":
+                external = sources[source].parent / ".AddressBook-v22_SUPPORT" / "_EXTERNAL_DATA"
+                external.mkdir(parents=True, exist_ok=True)
+                (external / ref).write_bytes(avatar_jpeg(index))
+        elif kind == "garbage":
+            thumb = b"\x07bplist00 not an image \xff\xd8 trailing junk" + bytes(range(40))
+        elif kind == "tiff":
+            thumb = b"\x01" + media_gen.tiff(16, 16, (120, 180, 90))
+        elif kind == "imagedata":
+            image_data = b"\x01" + media_gen.png(40, 40, lambda x, y: (250, 120 + x, 90 + y))
         conn.execute(
             """INSERT INTO ZABCDRECORD (Z_PK, Z_ENT, Z_OPT, ZFIRSTNAME, ZLASTNAME, ZNICKNAME, ZORGANIZATION,
-                   ZDISPLAYFLAGS, ZUNIQUEID, ZTHUMBNAILIMAGEDATA, ZME, ZCREATIONDATE, ZMODIFICATIONDATE)
-               VALUES (?, 22, 1, ?, ?, ?, ?, ?, ?, ?, ?, 700000000, 780000000)""",
+                   ZDISPLAYFLAGS, ZUNIQUEID, ZTHUMBNAILIMAGEDATA, ZIMAGEDATA, ZME, ZCREATIONDATE, ZMODIFICATIONDATE)
+               VALUES (?, 22, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 700000000, 780000000)""",
             (record, contact.get("first"), contact.get("last"), contact.get("nickname"), contact.get("org"),
-             1 if contact.get("org") and not contact.get("first") else 0, unique, thumb,
+             1 if contact.get("org") and not contact.get("first") else 0, unique, thumb, image_data,
              1 if contact["key"] == "me" else 0),
         )
         for order, phone in enumerate(contact.get("phones", [])):
@@ -227,10 +247,28 @@ class ChatBuilder:
                            "member_ids": member_ids}
         self.manifest["chats"][key] = {"rowid": rowid, "guid": guid}
 
+    # Where Messages keeps some files besides Attachments/ (chat.db prefix, folder in the fixtures).
+    LOCATIONS = {
+        "stickercache": ("~/Library/Messages/StickerCache", "StickerCache"),
+        "container": ("~/Library/Containers/com.apple.MobileSMS", "Containers/com.apple.MobileSMS"),
+    }
+
     def _attachment(self, msg_guid: str, part: int, name: str, data: bytes | None, mime: str | None,
-                    uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float) -> dict:
+                    uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float,
+                    location: str = "attachments", **columns: Any) -> dict:
         guid = f"at_{part}_{msg_guid}"
-        if data is None:  # offloaded to iCloud: the row exists, the file doesn't
+        if location == "varfolders":  # a transient temp file Backchannel never serves
+            filename, size = f"/var/folders/h2/b7k2q0x51_9c0000gn/T/com.apple.MobileSMS/{guid}/{name}", 1_204_220
+        elif location in self.LOCATIONS:
+            prefix, folder = self.LOCATIONS[location]
+            digest = hashlib.sha1(guid.encode()).hexdigest().upper()
+            rel = (f"{digest[:8]}-{digest[8:12]}/{guid}/{name}" if location == "stickercache"
+                   else f"Data/Library/Caches/com.apple.MobileSMS/{guid}/{name}")
+            dest = self.out / folder / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data or b"")
+            filename, size = f"{prefix}/{rel}", len(data or b"")
+        elif data is None:  # offloaded to iCloud: the row exists, the file doesn't
             filename = f"~/Library/Messages/Attachments/{fakedb.attachment_relpath(guid, name)}"
             size = 2_481_337
         else:
@@ -238,7 +276,7 @@ class ChatBuilder:
         self.manifest["attachments"][f"{msg_guid}:{part}"] = guid
         return {"guid": guid, "filename": filename, "mime_type": mime, "uti": uti, "transfer_name": name,
                 "total_bytes": size, "is_sticker": int(sticker), "is_outgoing": int(outgoing),
-                "transfer_state": 5 if data is not None else 0, "created_date": unix_to_apple_ns(when)}
+                "transfer_state": 5 if data is not None else 0, "created_date": unix_to_apple_ns(when), **columns}
 
     def msg(self, chat_key: str, sender: str, text: str | None, when: float, *, label: str | None = None,
             unread: bool = False, attachments: list[tuple] = (), mentions: list[tuple[int, int, str]] = (),
@@ -288,7 +326,8 @@ class ChatBuilder:
         return guid
 
     def tapback(self, chat_key: str, sender: str, target: str, kind: int, when: float, *, emoji: str | None = None,
-                part: int = 0, sticker: bytes | None = None, label: str | None = None) -> str:
+                part: int = 0, sticker: bytes | None = None, sticker_location: str = "attachments",
+                label: str | None = None) -> str:
         target_text = self.texts.get(target, "")
         if part == 0 and self._has_attachment(target):
             quoted = "an image"
@@ -306,7 +345,8 @@ class ChatBuilder:
             text = f"Removed a reaction from {quoted}"
         attachments = []
         if sticker is not None:
-            attachments.append(("sticker.png", sticker, "image/png", "public.png", {"sticker": True}))
+            attachments.append(("sticker.png", sticker, "image/png", "public.png",
+                                {"sticker": True, "location": sticker_location}))
         cols = {
             "associated_message_guid": f"p:{part}/{self.guids[target]}",
             "associated_message_type": kind,
@@ -381,6 +421,9 @@ def build_story(b: ChatBuilder) -> None:
     JPEG, HEIC, MOV = "image/jpeg", "image/heic", "video/quicktime"
     photo = lambda seed, w=96, h=72: media_gen.jpeg(w, h, lambda bx, by: ((seed * 40 + bx * 20) % 256, (by * 30 + 60) % 256, (seed * 70 + 90) % 256))  # noqa: E731
     sticker_png = media_gen.png(48, 48, lambda x, y: (255, 200, 40) if (x - 24) ** 2 + (y - 24) ** 2 < 400 else (255, 255, 255))
+    party_sticker = media_gen.png(40, 40, lambda x, y: (200, 60, 200) if (x + y) % 8 < 4 else (250, 250, 250))
+    ramen_sticker = media_gen.png(44, 44, lambda x, y: (240, 180, 90) if y > 20 else (250, 250, 250))
+    genmoji_copy = media_gen.png(64, 64, lambda x, y: (240, 200, 61) if (x - 32) ** 2 + (y - 32) ** 2 < 700 else (255, 255, 255))
     preview_png = media_gen.png(120, 63, lambda x, y: (200 - y, 80 + x // 2, 60))
 
     # -- chats --------------------------------------------------------------------------
@@ -422,12 +465,16 @@ def build_story(b: ChatBuilder) -> None:
           message_summary_info=edit_history("yes!! bringing it saturday", "yes!! bringing it sunday", sent, sent + 95))
     b.tapback("jordan", "me", "j_bring", 2001, b.day(6, 18, 34))
     b.msg("jordan", "jordan", "the new place 🏠", b.day(2, 12, 10), label="j_place",
-          attachments=[("IMG_4821.HEIC", media_gen.heic_placeholder(4032, 3024), HEIC, "public.heic")])
+          attachments=[("IMG_4821.HEIC", media_gen.heic_iphone(4032, 3024, turns=1), HEIC, "public.heic")])
     b.tapback("jordan", "me", "j_place", 2000, b.day(2, 12, 14))
     unsent_at = b.day(2, 12, 15)
     b.msg("jordan", "me", None, unsent_at, label="j_unsent", attributedBody=None, date_edited=unix_to_apple_ns(unsent_at + 30),
           date_retracted=unix_to_apple_ns(unsent_at + 30), message_summary_info=retraction_info(15))
     b.msg("jordan", "me", "congrats!! it looks amazing", b.day(2, 12, 16))
+    b.msg("jordan", "me", None, b.day(2, 12, 17), label="j_my_sticker",
+          attachments=[("party.png", party_sticker, "image/png", "public.png", {"sticker": True})])
+    b.msg("jordan", "jordan", None, b.day(10, 9, 0), label="j_gone_sticker",
+          attachments=[("old-sticker.heic", None, "image/heic", "public.heic", {"sticker": True})])
     b.msg("jordan", "jordan", "are you down to hike Saturday?", b.ago(hours=2), label="j_hike", unread=True)
     b.msg("jordan", "jordan", "can carpool from mine", b.ago(hours=1, minutes=54), label="j_carpool", unread=True)
 
@@ -471,6 +518,11 @@ def build_story(b: ChatBuilder) -> None:
     # -- Ellie: video + custom emoji tapback --------------------------------------------------
     b.msg("ellie", "ellie", "omg did you see this", b.day(7, 22, 10),
           attachments=[("IMG_0937.MOV", media_gen.mov_placeholder(1920, 1080), MOV, "com.apple.quicktime-movie")])
+    genmoji = media_gen.png(64, 64, lambda x, y: (240, 200, 60) if (x - 32) ** 2 + (y - 32) ** 2 < 700 else (255, 255, 255))
+    b.msg("ellie", "ellie", None, b.day(7, 22, 12), label="e_genmoji",
+          attachments=[("Genmoji.png", genmoji, "image/png", "public.png",
+                        {"emoji_image_content_identifier": "genmoji:" + det_uuid("genmoji-dog"),
+                         "emoji_image_short_description": "dog wearing sunglasses"})])
     b.msg("ellie", "me", "LOL", b.day(7, 22, 15), label="e_lol")
     b.tapback("ellie", "ellie", "e_lol", 2006, b.day(7, 22, 16), emoji="🔥", label="e_fire")
 
@@ -516,7 +568,7 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("family", "mom", "Made us a family chat! 🏡", b.day(21, 18, 1))
     b.msg("family", "dad", "👍", b.day(21, 18, 5))
     b.msg("family", "dad", "Found this old one of you two", b.day(8, 10, 0), label="f_missing",
-          attachments=[("IMG_2210.JPG", None, JPEG, "public.jpeg")])
+          attachments=[("IMG_2210.JPG", None, JPEG, "public.jpeg", {"location": "varfolders"})])
     b.msg("family", "mom", "Thanksgiving planning thread! Who's hosting this year?", b.day(6, 19, 0), label="f_root")
     b.msg("family", "grace", "I can host! We finally have the big table", b.day(6, 19, 10), thread="f_root")
     b.msg("family", "dad", "Grace's it is. I'll bring the turkey 🦃", b.day(6, 19, 12), thread="f_root")
@@ -534,6 +586,8 @@ def build_story(b: ChatBuilder) -> None:
     b.tapback("family", "dad", "f_job", 2000, b.day(4, 12, 2))
     b.tapback("family", "me", "f_job", 2000, b.day(4, 12, 3))
     b.msg("family", "mom", "So proud of you sweetie!! ❤️", b.day(4, 12, 4))
+    b.msg("family", "me", None, b.day(4, 12, 5), label="f_my_sticker",  # the same party sticker again
+          attachments=[("party copy.png", party_sticker, "image/png", "public.png", {"sticker": True})])
     b.msg("family", "dad", "Does anyone know where the Costco card is?", b.ago(hours=26))
     b.msg("family", "mom", "In the kitchen drawer", b.ago(hours=25, minutes=30))
     chairs = "Harry can you bring your folding chairs too?"
@@ -551,7 +605,8 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("soccer", "kevin", "in 💪", b.ago(hours=14, minutes=48), thread="soc_root")
     b.msg("soccer", "aisha", "in but might be 10 min late", b.ago(hours=14, minutes=30), thread="soc_root")
     b.msg("soccer", "ben", "out this week, sorry 😩", b.ago(hours=14), thread="soc_root")
-    b.tapback("soccer", "kevin", "soc_root", 2007, b.ago(hours=13, minutes=54), sticker=sticker_png, label="soc_sticker")
+    b.tapback("soccer", "kevin", "soc_root", 2007, b.ago(hours=13, minutes=54), sticker=sticker_png,
+              sticker_location="container", label="soc_sticker")  # one of the few in Messages' container
     b.tapback("soccer", "ben", "soc_root", 2002, b.ago(hours=13, minutes=48))
     b.tapback("soccer", "jordan", "soc_tomas_in", 2001, b.ago(hours=13, minutes=30))
     b.msg("soccer", "me", "I can bring the new ball + pump", b.ago(hours=12), label="soc_ball")
@@ -575,6 +630,9 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("dinner", "sam", "nvm wrong chat lol", b.day(2, 20, 5))
     sake = "Harry are you bringing the sake again? 🍶"
     b.msg("dinner", "ellie", sake, b.ago(hours=1), label="d_sake", unread=True, mentions=[(0, 5, ME_PHONE)])
+    b.msg("dinner", "ellie", None, b.day(8, 12, 0), label="d_ellie_sticker",  # stickers live in StickerCache/
+          attachments=[("ramen-sticker.png", ramen_sticker, "image/png", "public.png",
+                        {"sticker": True, "location": "stickercache"})])
 
     # -- An unnamed group ---------------------------------------------------------------------------------
     b.msg("trio", "sam", "surprise party for priya — sat the 14th?", b.day(16, 19, 0))
@@ -583,6 +641,10 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("trio", "me", "I'll get her a gift from all of us", b.day(16, 19, 20))
     b.msg("trio", "sam", "perfect", b.day(16, 19, 22))
     b.msg("trio", "jordan", "reminder: don't tell priya 🤫", b.day(3, 11, 0))
+    b.msg("trio", "me", None, b.day(3, 11, 5), label="t_my_genmoji",  # the same Genmoji Ellie sent, new file
+          attachments=[("Genmoji.png", genmoji_copy, "image/png", "public.png",
+                        {"emoji_image_content_identifier": "genmoji:" + det_uuid("genmoji-dog"),
+                         "emoji_image_short_description": "dog wearing sunglasses"})])
 
 
 def write_chief(out: Path) -> None:

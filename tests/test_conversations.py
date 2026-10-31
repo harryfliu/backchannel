@@ -96,7 +96,9 @@ def test_sidebar_window_keeps_starred(make_rw):
 def test_me(ro):
     me = ro.get("/api/me")
     assert me == {"name": "Harry Liu", "shortName": "Harry",
-                  "handles": ["+15105550100", "harry.liu@icloud.example"], "avatarUrl": None}
+                  "handles": ["+15105550100", "harry.liu@icloud.example"], "avatarUrl": "/api/avatar/%2B15105550100"}
+    avatar = ro.client.get(me["avatarUrl"])
+    assert avatar.status_code == 200 and avatar.headers["content-type"] == "image/png"
 
 
 def test_health(ro):

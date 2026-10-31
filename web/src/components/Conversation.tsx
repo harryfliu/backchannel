@@ -9,7 +9,9 @@ import {
   openDetails,
   openProfile,
   openSearch,
+  openThread,
   openView,
+  setState,
   snooze,
   toggleMute,
   toggleStar,
@@ -237,11 +239,33 @@ function MessageList({ c }: { c: Conversation }) {
   const items = ms?.items ?? []
   const groups = useMemo(() => buildGroups(items, mode, marker, c.kind === 'group'), [items, mode, marker, c.kind])
   const scroller = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const prevCount = useRef(0)
   const prepend = useRef<{ height: number; top: number } | null>(null)
   const [jump, setJump] = useState(0)
   const loaded = !!ms && !ms.loading
+
+  // In a busy conversation, the new messages that need you (asked, mentioned, time-sensitive…).
+  const { forYou, freshCount } = useMemo(() => {
+    const i = marker ? items.findIndex((m) => m.id === marker) : -1
+    if (i < 0) return { forYou: [] as Message[], freshCount: 0 }
+    const fresh = items.slice(i).filter((m) => !m.fromMe && !m.event)
+    const important = fresh.filter((m) => m.importance?.some((r) => r.kind !== 'vip'))
+    return { forYou: fresh.length >= 4 ? important : [], freshCount: fresh.length }
+  }, [items, marker])
+  const [forYouStep, setForYouStep] = useState(0)
+  const [forYouHidden, setForYouHidden] = useState(false)
+  useEffect(() => {
+    setForYouStep(0)
+    setForYouHidden(false)
+  }, [c.id, marker])
+  const showNextForYou = () => {
+    const m = forYou[forYouStep % forYou.length]
+    setForYouStep((n) => n + 1)
+    if (m.threadRootId && mode === 'thread-only') void openThread(c.id, m.threadRootId)
+    else setState({ highlight: { id: m.id, at: Date.now() } })
+  }
 
   // Opening a conversation: land on the "New" line, or the bottom.
   useLayoutEffect(() => {
@@ -278,6 +302,20 @@ function MessageList({ c }: { c: Conversation }) {
     }
   }, [items, loaded])
 
+  // Stay at the bottom when things change size in place: a new reaction, a photo finishing
+  // loading, or the composer growing (which shrinks the list).
+  useEffect(() => {
+    const el = scroller.current
+    const inner = content.current
+    if (!el || !inner || !loaded || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (atBottom.current && !prepend.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(inner)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [c.id, loaded])
+
   const onScroll = () => {
     const el = scroller.current
     if (!el) return
@@ -307,30 +345,44 @@ function MessageList({ c }: { c: Conversation }) {
   return (
     <div className="msg-list-wrap">
       <div className="msg-list" ref={scroller} onScroll={onScroll}>
-        {ms.loadingOlder && (
-          <div className="older-loading">
-            <Spinner label="Loading older messages" />
-          </div>
-        )}
-        {!ms.nextCursor && <ConversationIntro c={c} />}
-        {groups.map((g) => (
-          <section key={g.key} className="day-group" aria-label={g.label}>
-            <div className="day-divider" role="separator">
-              <span>{g.label}</span>
+        <div ref={content}>
+          {ms.loadingOlder && (
+            <div className="older-loading">
+              <Spinner label="Loading older messages" />
             </div>
-            {g.rows.map((r) =>
-              r.type === 'new' ? (
-                <div key={r.key} className="new-divider" role="separator">
-                  <span>New</span>
-                </div>
-              ) : (
-                <MessageRow key={r.key} m={r.m} opts={r.opts} />
-              ),
-            )}
-          </section>
-        ))}
-        <div className="msg-list-end" />
+          )}
+          {!ms.nextCursor && <ConversationIntro c={c} />}
+          {groups.map((g) => (
+            <section key={g.key} className="day-group" aria-label={g.label}>
+              <div className="day-divider" role="separator">
+                <span>{g.label}</span>
+              </div>
+              {g.rows.map((r) =>
+                r.type === 'new' ? (
+                  <div key={r.key} className="new-divider" role="separator">
+                    <span>New</span>
+                  </div>
+                ) : (
+                  <MessageRow key={r.key} m={r.m} opts={r.opts} />
+                ),
+              )}
+            </section>
+          ))}
+          <div className="msg-list-end" />
+        </div>
       </div>
+      {forYou.length > 0 && !forYouHidden && (
+        <div className="for-you" role="status">
+          <button type="button" className="for-you-pill" onClick={showNextForYou} title="Jump to the messages that need you">
+            <Icon name="at" size={14} strokeWidth={2.2} />
+            {forYou.length} for you in {freshCount} new
+            <span className="for-you-go">{forYouStep === 0 ? 'Show' : forYou.length > 1 ? 'Next' : 'Again'}</span>
+          </button>
+          <button type="button" className="for-you-x" aria-label="Hide" onClick={() => setForYouHidden(true)}>
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      )}
       {jump > 0 && (
         <button
           type="button"
@@ -357,7 +409,7 @@ function ConversationIntro({ c }: { c: Conversation }) {
         {dm
           ? `This is the start of your conversation with ${dm.name}.`
           : c.isNamed
-            ? `This is the start of #${c.title}. ${plural(c.participants.length + 1, 'person', 'people')} are in this group.`
+            ? `This is the start of ${c.title.startsWith('#') ? '' : '#'}${c.title}. ${plural(c.participants.length + 1, 'person', 'people')} are in this group.`
             : `This is the start of your group conversation with ${c.participants.map((p) => p.shortName).join(', ')}.`}
       </p>
     </div>
@@ -392,7 +444,12 @@ function MediaTab({ c }: { c: Conversation }) {
           <div className="media-grid">
             {visual.map((i) => (
               <a key={i.attachment.id} className="media-cell" href={i.attachment.url} target="_blank" rel="noreferrer" title={i.attachment.name}>
-                <img src={i.attachment.thumbUrl ?? i.attachment.url} alt={i.attachment.name} loading="lazy" />
+                <img
+                  src={i.attachment.thumbUrl ?? i.attachment.url}
+                  alt={i.attachment.name}
+                  loading="lazy"
+                  onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
+                />
                 {i.attachment.kind === 'video' && (
                   <span className="media-play is-small">
                     <Icon name="play" size={14} filled />

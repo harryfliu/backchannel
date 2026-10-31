@@ -35,6 +35,7 @@ const paths: Record<string, ReactNode> = {
       <path d="M12 5v14" />
     </>
   ),
+  minus: <path d="M5 12h14" />,
   home: (
     <>
       <path d="M3 10.5 12 3l9 7.5V20a1.5 1.5 0 0 1-1.5 1.5H15v-6.5H9v6.5H4.5A1.5 1.5 0 0 1 3 20z" />
@@ -282,6 +283,11 @@ const paths: Record<string, ReactNode> = {
       <path d="M15 3h6v6" />
       <path d="M10 14 21 3" />
       <path d="M18.5 13.5v5.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2h5.5" />
+    </>
+  ),
+  cloud: (
+    <>
+      <path d="M17.5 19H8a5.5 5.5 0 1 1 1.06-10.9A6 6 0 0 1 20.5 11 4 4 0 0 1 17.5 19Z" />
     </>
   ),
   download: (

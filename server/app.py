@@ -7,9 +7,10 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -25,8 +26,12 @@ from .chief import Chief, ChiefUnavailable, Who
 from .config import Settings, load_dotenv, load_settings, system_full_name
 from .contacts import ContactBook
 from .conversations import ConversationService, NotFound, build_me, conv_title, my_handles
+from .emoji import EmojiError, EmojiStore, clean_name
+from .messages_ui import HELPER_SETTINGS, TAPBACKS_OFF, MessagesUI, Runner, Simulator, osascript_runner
+from .stickers import StickerLibrary
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
+from .imagetypes import AVATAR_IMAGES, MIME
 from .messages import MessageBuilder
 from .reminders import Reminders, later_json
 from .search import SearchIndex
@@ -40,6 +45,7 @@ from .watcher import EventHub, Watcher
 log = logging.getLogger("backchannel")
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_EMOJI_BYTES = 5 * 1024 * 1024
 MAX_TEXT = 20000
 KEEPALIVE_SECONDS = 15.0
 
@@ -93,6 +99,30 @@ class NewConversationBody(BaseModel):
     clientId: str
 
 
+class SettingsBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    markReadInMessages: bool | None = None
+    tapbacksViaMessages: bool | None = None
+    threadRepliesViaMessages: bool | None = None
+
+
+class TapbackBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["love", "like", "dislike", "laugh", "emphasize", "question"]
+    remove: bool = False
+
+
+class EmojiLinkBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str
+    url: str
+
+
+class StickerSaveBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str
+
+
 class ChiefLoopBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     conversationId: str
@@ -111,15 +141,17 @@ class DraftBody(BaseModel):
 
 
 class Services:
-    def __init__(self, settings: Settings, *, ai_client_factory: Callable[[], Any] | None = None):
+    def __init__(self, settings: Settings, *, ai_client_factory: Callable[[], Any] | None = None,
+                 messages_ui_runner: Runner | None = None):
         self.settings = settings
         settings.state_dir.mkdir(parents=True, exist_ok=True)
         self.token = new_token()
         self.db = ChatDB(settings.chat_db)
         self.tracker = ChangeTracker(self.db)
-        self.contacts = ContactBook(settings.addressbook_globs)
+        self.media = Media(settings.attachments_root, settings.cache_dir, sticker_cache_root=settings.sticker_cache_root,
+                           messages_container_root=settings.messages_container_root)
+        self.contacts = ContactBook(settings.addressbook_globs, can_convert=self.media.sips is not None)
         self.state = State(settings.state_dir / "state.db")
-        self.media = Media(settings.attachments_root, settings.cache_dir)
         self.hub = EventHub()
         self._full_name: str | None = None
         self.builder: MessageBuilder
@@ -136,6 +168,20 @@ class Services:
         self.reminders = Reminders(self.db, self.convs, self.state, self.builder, self.hub.publish)
         self.watcher.reminders = self.reminders
         self.chief = Chief(settings.chief_db)
+        self.emoji = EmojiStore(self.state, settings.state_dir / "emoji",
+                                convert_heic=lambda data: self.media.png_bytes(data, uuid.uuid4().hex))
+        self.stickers = StickerLibrary(self.db, self.tracker, self.state, self.media)
+        # The Messages helpers only drive the real app when sends are real; with the fake chat.db they
+        # write the rows the app would have written instead (tests inject a fake runner).
+        simulator = None
+        if messages_ui_runner is None and settings.send_mode == "applescript" and not settings.fake_db:
+            messages_ui_runner = osascript_runner
+        elif messages_ui_runner is None and settings.fake_db:
+            simulator = Simulator(settings.chat_db, my_handle=self.sending._my_handle)
+        self.messages_ui = MessagesUI(self.db, self.state, messages_ui_runner, publish=self.hub.publish,
+                                      simulator=simulator, convs=self.convs, builder=self.builder,
+                                      contacts=self.contacts)
+        self.sending.helpers = self.messages_ui
         self.ai = AIService(settings, self.convs, self.builder, self.state, client_factory=ai_client_factory)
 
     def _me(self):
@@ -193,11 +239,12 @@ def create_app(
     *,
     start_background: bool = True,
     ai_client_factory: Callable[[], Any] | None = None,
+    messages_ui_runner: Runner | None = None,
 ) -> FastAPI:
     if settings is None:  # e.g. `uvicorn server.app:create_app --factory`
         load_dotenv()
         settings = load_settings()
-    services = Services(settings, ai_client_factory=ai_client_factory)
+    services = Services(settings, ai_client_factory=ai_client_factory, messages_ui_runner=messages_ui_runner)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -211,6 +258,9 @@ def create_app(
             tasks.append(asyncio.create_task(services.watcher.run()))
             tasks.append(asyncio.create_task(services.sending.scheduler_loop()))
             tasks.append(asyncio.create_task(services.reminders.loop()))
+            if settings.ai.get("backend") in ("auto", "claude-cli"):
+                # Finding `claude` may need the login shell (a few seconds): do it now, off the request path.
+                tasks.append(asyncio.create_task(asyncio.to_thread(services.ai.cli.locate)))
             services.search.start_background()
         log.info("Backchannel %s on http://127.0.0.1:%s (send mode: %s%s)", __version__, settings.port,
                  services.sender.availability, ", fake chat.db" if settings.fake_db else "")
@@ -240,6 +290,10 @@ def create_app(
     @app.exception_handler(ChatDBError)
     async def _chatdb(request: Request, exc: ChatDBError):
         return JSONResponse({"error": str(exc)}, status_code=503)
+
+    @app.exception_handler(EmojiError)
+    async def _emoji_error(request: Request, exc: EmojiError):
+        return JSONResponse({"error": exc.message}, status_code=exc.status)
 
     @app.exception_handler(ChiefUnavailable)
     async def _chief_unavailable(request: Request, exc: ChiefUnavailable):
@@ -287,8 +341,9 @@ def create_app(
             "chatDb": {"path": str(settings.chat_db), "readable": readable, "error": error},
             "contacts": {"count": s.contacts.count},
             "send": {"mode": s.sender.availability},
-            "ai": {"enabled": s.ai.enabled, "model": settings.models.get("draft") if s.ai.enabled else None},
+            "ai": {"enabled": s.ai.backend is not None, "model": s.ai.model_label, "backend": s.ai.backend},
             "chief": {"available": s.chief.available},
+            "messagesUi": s.messages_ui.health(),
         }
 
     @app.get("/api/me")
@@ -319,9 +374,96 @@ def create_app(
 
     @app.post("/api/conversations/{conv_id}/read")
     def mark_read(conv_id: str):
-        summary = s.convs.mark_read(s.convs.get(conv_id))
+        conv = s.convs.get(conv_id)
+        summary = s.convs.mark_read(conv)
         s.watcher.note_state_change(summary["id"])
+        if s.messages_ui.mark_read_on:  # experimental: also mark it read in Messages, in the background
+            s.messages_ui.request(s.messages_ui.mark_read_job(conv, summary["title"]))
         return summary
+
+    @app.post("/api/conversations/{conv_id}/messages/{message_id}/tapback", status_code=202)
+    def send_tapback(conv_id: str, message_id: str, body: TapbackBody):
+        """Add or remove one of your tapbacks by driving the Messages app (experimental)."""
+        if not s.messages_ui.tapbacks_on:
+            raise ApiError(409, TAPBACKS_OFF)
+        conv = s.convs.get(conv_id)
+        job = s.messages_ui.tapback_job(conv, message_id, body.kind, body.remove)  # 404 / 400
+        s.messages_ui.request(job)
+        return JSONResponse({"status": "queued"}, status_code=202)
+
+    # ------------------------------------------------------------------ server settings
+
+    @app.get("/api/settings")
+    def get_settings():
+        return s.state.get_settings()
+
+    @app.patch("/api/settings")
+    def patch_settings(body: SettingsBody):
+        patch: dict[str, Any] = {}
+        for key in HELPER_SETTINGS:
+            value = getattr(body, key)
+            if key in body.model_fields_set and value is not None:
+                patch[key] = bool(value)
+        before = s.state.get_settings()
+        after = s.state.update_settings(patch)
+        if any(after[key] and not before[key] for key in HELPER_SETTINGS):
+            # Ask for "control System Events" now, not in the middle of the first real action.
+            s.messages_ui.probe()
+        return after
+
+    # ------------------------------------------------------------------ custom emoji
+
+    @app.get("/api/emoji")
+    def list_emoji():
+        return {"items": s.emoji.list()}
+
+    @app.post("/api/emoji")
+    async def upload_emoji(name: str = Form(...), file: UploadFile = File(...)):
+        data = await file.read(MAX_EMOJI_BYTES + 1)
+        if len(data) > MAX_EMOJI_BYTES:
+            raise ApiError(413, "That image is larger than 5 MB.")
+        return await asyncio.to_thread(s.emoji.add, name, data, "upload", file.filename or None)
+
+    @app.post("/api/emoji/link")
+    def link_emoji(body: EmojiLinkBody):
+        return s.emoji.add_link(body.name, body.url)
+
+    @app.delete("/api/emoji/{name}", status_code=204)
+    def delete_emoji(name: str):
+        s.emoji.delete(name)
+        return Response(status_code=204)
+
+    @app.get("/api/emoji/{name}/image")
+    def emoji_image(name: str):
+        found = s.emoji.path(name.strip().strip(":").lower())
+        if found is None:
+            raise ApiError(404, "There's no emoji with that name.")
+        path, mime = found
+        mime, headers = serving_headers(mime, path.name)
+        return FileResponse(path, media_type=mime, headers=headers)
+
+    # ------------------------------------------------------------------ stickers & Genmoji
+
+    @app.get("/api/stickers")
+    def list_stickers(limit: int = Query(300, ge=1, le=2000)):
+        return {"items": s.stickers.list(limit)}
+
+    @app.get("/api/stickers/{sticker_id}/image")
+    def sticker_image(sticker_id: str):
+        found = s.stickers.image(sticker_id)
+        if found is None:
+            raise ApiError(404, "That sticker isn't available as an image on this Mac.")
+        path, mime = found
+        mime, headers = serving_headers(mime, path.name)
+        return FileResponse(path, media_type=mime, headers=headers)
+
+    @app.post("/api/stickers/{sticker_id}/save")
+    def save_sticker(sticker_id: str, body: StickerSaveBody):
+        name = clean_name(body.name)
+        data = s.stickers.image_bytes(sticker_id)
+        if data is None:
+            raise ApiError(404, "That sticker isn't available as an image on this Mac.")
+        return s.emoji.add(name, data, "imessage", sticker_id)
 
     @app.patch("/api/conversations/{conv_id}/prefs")
     def set_prefs(conv_id: str, body: PrefsBody):
@@ -522,12 +664,14 @@ def create_app(
         photo = s.contacts.photo(contact)
         if photo is None:
             raise ApiError(404, "No contact photo for that handle.")
-        data, mime = photo
-        if len(data) > 200_000:
-            smaller = s.media.resize_avatar(data, contact.key.replace(":", "-"))
-            if smaller:
-                data, mime = smaller
-        return Response(content=data, media_type=mime, headers={
+        data, fmt = photo
+        if fmt not in AVATAR_IMAGES or len(data) > 200_000:
+            converted = s.media.resize_avatar(data, contact.key.replace(":", "-"))  # JPEG, 256px
+            if converted:
+                data, fmt = converted[0], "jpeg"
+            elif fmt not in AVATAR_IMAGES:
+                raise ApiError(404, "That contact photo isn't in a format Backchannel can show.")
+        return Response(content=data, media_type=MIME[fmt], headers={
             "Cache-Control": "private, max-age=3600",
             "Content-Security-Policy": "sandbox; default-src 'none'",
         })
@@ -537,8 +681,10 @@ def create_app(
         if row is None:
             raise ApiError(404, "No attachment with that id.")
         path = s.media.resolve(row["filename"])
+        if path is None and s.media.is_transient(row["filename"]):
+            raise ApiError(404, "That attachment was a temporary file and isn't on this Mac anymore.")
         if path is None:
-            raise ApiError(403, "That attachment is stored outside the Messages attachments folder, so it isn't served.")
+            raise ApiError(403, "That attachment is stored outside the Messages folders, so it isn't served.")
         if not path.is_file():
             raise ApiError(404, "This attachment isn't on this Mac (it may be in iCloud). Open it in Messages to download it.")
         name = row["transfer_name"] or path.name
@@ -561,12 +707,12 @@ def create_app(
     def attachment_thumb(att_id: str):
         row, path, name, mime = _attachment_file(att_id)
         kind = kind_of(row["mime_type"], row["uti"], name)
-        thumb = s.media.thumbnail(path, row["guid"], kind)
-        if thumb:
-            path, mime = thumb
+        preview = s.media.preview_file(path, row["guid"], kind)
+        if preview is None:  # never hand an <img> a video, a document or a HEIC it can't draw
+            raise ApiError(404, "There's no preview for this attachment.")
+        path, mime = preview
+        if mime == "image/jpeg" and not name.lower().endswith((".jpg", ".jpeg")):
             name = Path(name).with_suffix(".jpg").name
-        else:
-            path, mime = s.media.full_file(path, row["guid"], mime)
         mime, headers = serving_headers(mime, name)
         return FileResponse(path, media_type=mime, headers=headers)
 

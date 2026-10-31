@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .claude_cli import ClaudeCLI, ClaudeCLIError, ClaudeCLIMissing
 from .config import Settings
 from .conversations import Conv, ConversationService, conv_title
 from .messages import MessageBuilder
@@ -33,6 +34,8 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Models that accept server-side `fallbacks="default"` (Haiku has no fallback).
 _FALLBACK_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "claude-fable-5-1")
 STYLE_KEY = "style_profile"
+# `claude -p` timeouts (seconds) per kind of call.
+CLI_TIMEOUTS = {"draft": 90.0, "catchup": 240.0, "style": 120.0}
 _EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
 _BOT_PREFIXES = ("📩", "📋", "👀", "📊", "✅ Added", "✅ Done", "📝")
 _COMMANDS = ("todo:", "done ", "schedule:", "cancel:", "reschedule:", "explore ", "hangout", "ghosted",
@@ -213,6 +216,7 @@ class AIService:
         builder: MessageBuilder,
         state: State,
         client_factory: Callable[[], Any] | None = None,
+        cli: ClaudeCLI | None = None,
     ):
         self.settings = settings
         self.convs = convs
@@ -222,23 +226,63 @@ class AIService:
         self._client: Any = None
         self._lock = threading.Lock()
         self._catchup: tuple[float, dict[str, Any]] | None = None
+        self.cli = cli or ClaudeCLI(settings.claude_bin, settings.state_dir / "claude-cwd")
 
-    # ------------------------------------------------------------------ plumbing
+    # ------------------------------------------------------------------ backend choice
+
+    @property
+    def mode(self) -> str:
+        return str(self.settings.ai.get("backend", "auto"))
+
+    @staticmethod
+    def has_api_key() -> bool:
+        return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+    @property
+    def backend(self) -> str | None:
+        """'claude-cli' (`claude -p`, Harry's subscription), 'api' (ANTHROPIC_API_KEY) or None."""
+        if self._client_factory is not None:
+            return "api"
+        if self.mode == "api":
+            return "api" if self.has_api_key() else None
+        if self.mode == "claude-cli":
+            return "claude-cli" if self.cli.locate() else None
+        if self.cli.locate():
+            return "claude-cli"
+        return "api" if self.has_api_key() else None
 
     @property
     def enabled(self) -> bool:
-        if self._client_factory is not None:
-            return True
-        return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+        return self.backend is not None
 
-    unavailable_message = (
-        "AI features need an Anthropic API key. Set ANTHROPIC_API_KEY in the environment "
-        "(or in .env next to the backchannel script) and restart Backchannel."
-    )
+    @property
+    def model_label(self) -> str | None:
+        backend = self.backend
+        if backend == "claude-cli":
+            return self.settings.models_cli.get("draft")
+        if backend == "api":
+            return self.settings.models.get("draft")
+        return None
 
-    def _require(self) -> Any:
-        if not self.enabled:
+    @property
+    def unavailable_message(self) -> str:
+        if self.mode == "api":
+            return ("AI features need an Anthropic API key. Set ANTHROPIC_API_KEY in the environment "
+                    "(or in .env at the repo root) and restart Backchannel.")
+        if self.mode == "claude-cli":
+            return ("Backchannel is set to use Claude Code but can't find the `claude` command. Install Claude Code, "
+                    "or set \"claude_bin\" in config.local.json (or BACKCHANNEL_CLAUDE_BIN) to its path.")
+        return ("AI features need Claude Code (the `claude` command) or an ANTHROPIC_API_KEY. Install Claude Code "
+                "and run `claude` once in Terminal to log in, or put ANTHROPIC_API_KEY=… in .env at the repo root, "
+                "then restart Backchannel.")
+
+    def _require(self) -> str:
+        backend = self.backend
+        if backend is None:
             raise AIUnavailable(self.unavailable_message)
+        return backend
+
+    def _api_client(self) -> Any:
         with self._lock:
             if self._client is None:
                 if self._client_factory is not None:
@@ -286,23 +330,50 @@ class AIService:
                 return block.text
         raise AIFailed("Claude returned no text.")
 
-    def call_json(self, *, model: str, system: str, user: str, schema: dict, max_tokens: int, effort: str) -> dict[str, Any]:
-        client = self._require()
-        response = self._create(client, {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": system,
-            "messages": [{"role": "user", "content": user}],
-            "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-        })
-        text = self._text(response)
+    def _cli(self, call: Callable[[], Any]) -> Any:
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise AIFailed("Claude's answer wasn't valid JSON. Try again.") from exc
+            return call()
+        except ClaudeCLIMissing as exc:
+            raise AIUnavailable(self.unavailable_message) from exc
+        except ClaudeCLIError as exc:
+            raise AIFailed(str(exc)) from exc
+
+    def call_json(self, *, kind: str, system: str, user: str, schema: dict, max_tokens: int, effort: str) -> dict[str, Any]:
+        """One JSON answer from whichever backend is available. `kind` is 'draft' or 'catchup'."""
+        if self._require() == "claude-cli":
+            data = self._cli(lambda: self.cli.run_json(
+                user=user, system=system, schema=schema, model=self.settings.models_cli[kind],
+                timeout=CLI_TIMEOUTS[kind]))
+        else:
+            response = self._create(self._api_client(), {
+                "model": self.settings.models[kind],
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+                "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+            })
+            text = self._text(response)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise AIFailed("Claude's answer wasn't valid JSON. Try again.") from exc
         if not isinstance(data, dict):
             raise AIFailed("Claude's answer had an unexpected shape.")
         return data
+
+    def call_text(self, *, system: str, user: str, max_tokens: int = 2000) -> str:
+        """A plain-text answer (the style profile), using the draft model."""
+        if self._require() == "claude-cli":
+            return self._cli(lambda: self.cli.run(
+                user=user, system=system, model=self.settings.models_cli["draft"], timeout=CLI_TIMEOUTS["style"]))
+        response = self._create(self._api_client(), {
+            "model": self.settings.models["draft"],
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "output_config": {"effort": "low"},
+        })
+        return self._text(response)
 
     # ------------------------------------------------------------------ style
 
@@ -348,16 +419,10 @@ class AIService:
         profile, source = heuristic_style(samples), "heuristic"
         if samples and self.enabled:
             try:
-                client = self._require()
-                response = self._create(client, {
-                    "model": self.settings.models["draft"],
-                    "max_tokens": 2000,
-                    "system": STYLE_SYSTEM,
-                    "messages": [{"role": "user", "content": "Here are their recent texts:\n" +
-                                  "\n".join(f"- {s}" for s in samples[:150])}],
-                    "output_config": {"effort": "low"},
-                })
-                profile, source = self._text(response).strip(), "claude"
+                answer = self.call_text(system=STYLE_SYSTEM, user="Here are their recent texts:\n" +
+                                        "\n".join(f"- {s}" for s in samples[:150]))
+                if answer.strip():
+                    profile, source = answer.strip(), "claude"
             except (AIFailed, AIUnavailable) as exc:
                 log.info("Style profile call failed, using the local one: %s", exc)
         self.state.set_kv(STYLE_KEY, {"profile": profile, "updated": time.time(), "source": source,
@@ -391,7 +456,7 @@ class AIService:
         self._require()
         system, user = self.build_draft_prompt(conv, thread_root_id, hint)
         data = self.call_json(
-            model=self.settings.models["draft"], system=system, user=user, schema=DRAFT_SCHEMA,
+            kind="draft", system=system, user=user, schema=DRAFT_SCHEMA,
             max_tokens=4000, effort=str(self.settings.ai.get("draft_effort", "low")),
         )
         return clean_drafts(data.get("drafts"))
@@ -448,7 +513,7 @@ class AIService:
         else:
             system, user = self.build_catchup_prompt(picked)
             data = self.call_json(
-                model=self.settings.models["catchup"], system=system, user=user, schema=CATCHUP_SCHEMA,
+                kind="catchup", system=system, user=user, schema=CATCHUP_SCHEMA,
                 max_tokens=16000, effort=str(self.settings.ai.get("catchup_effort", "medium")),
             )
             result = parse_catchup(data, picked)

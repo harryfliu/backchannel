@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS pending_sends (
     thread_root_id TEXT,
     created_at REAL NOT NULL,
     dispatched_at REAL,
-    status TEXT NOT NULL,              -- sending | dispatched | sent | failed
+    status TEXT NOT NULL,              -- sending | dispatched | unconfirmed | sent | failed
     error TEXT,
     message_guid TEXT,
     handle TEXT                        -- set for new conversations (no chat row yet)
@@ -74,6 +74,24 @@ CREATE TABLE IF NOT EXISTS sent_threads (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sent_threads_root ON sent_threads(thread_root_id);
+CREATE TABLE IF NOT EXISTS custom_emoji (
+    name TEXT PRIMARY KEY,
+    file TEXT NOT NULL,                -- file name inside <state_dir>/emoji/
+    mime_type TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    animated INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,              -- upload | link | imessage
+    source_ref TEXT,                   -- the link, or the sticker's attachment guid
+    sha256 TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS file_hashes (
+    guid TEXT PRIMARY KEY,             -- chat.db attachment guid
+    mtime REAL NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -91,6 +109,11 @@ MIGRATIONS = (
     ("pending_sends", "handle", "TEXT"),
 )
 UNSET: Any = object()
+
+
+# `ServerSettings` (web/src/api/types.ts) and their defaults.
+SERVER_SETTINGS: dict[str, bool] = {"markReadInMessages": False, "tapbacksViaMessages": False,
+                                    "threadRepliesViaMessages": False}
 
 
 class State:
@@ -347,8 +370,20 @@ class State:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._exec(f"UPDATE pending_sends SET {cols} WHERE client_id = ?", (*fields.values(), client_id))
 
+    def update_pending_if(self, client_id: str, statuses: Sequence[str], **fields: Any) -> bool:
+        """Update only while the send is still in one of `statuses` (e.g. not already confirmed)."""
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        marks = ",".join("?" * len(statuses))
+        return self._exec(
+            f"UPDATE pending_sends SET {cols} WHERE client_id = ? AND status IN ({marks})",
+            (*fields.values(), client_id, *statuses),
+        ).rowcount == 1
+
     def open_pending(self) -> list[sqlite3.Row]:
-        return self._all("SELECT * FROM pending_sends WHERE status IN ('sending', 'dispatched') ORDER BY created_at")
+        """Sends a chat.db row can still confirm. 'unconfirmed' is a thread reply typed into Messages that
+        wasn't confirmed in time: reported as failed, but still matched if its row shows up."""
+        return self._all(
+            "SELECT * FROM pending_sends WHERE status IN ('sending', 'dispatched', 'unconfirmed') ORDER BY created_at")
 
     def client_ids_for(self, guids: Sequence[str]) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -396,6 +431,79 @@ class State:
 
     def recent_local_threads(self, since: float) -> list[sqlite3.Row]:
         return self._all("SELECT * FROM sent_threads WHERE created_at >= ?", (since,))
+
+    # ------------------------------------------------------------------ custom emoji
+
+    def list_emoji(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM custom_emoji ORDER BY name")
+
+    def get_emoji(self, name: str) -> sqlite3.Row | None:
+        return self._one("SELECT * FROM custom_emoji WHERE name = ?", (name,))
+
+    def add_emoji(self, row: dict[str, Any]) -> bool:
+        """Insert; False when the name is taken."""
+        cols = ", ".join(row)
+        marks = ", ".join("?" * len(row))
+        try:
+            self._exec(f"INSERT INTO custom_emoji ({cols}) VALUES ({marks})", tuple(row.values()))
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def delete_emoji(self, name: str) -> sqlite3.Row | None:
+        with self._lock:
+            row = self.get_emoji(name)
+            if row is not None:
+                self._conn.execute("DELETE FROM custom_emoji WHERE name = ?", (name,))
+            return row
+
+    # ------------------------------------------------------------------ attachment file hashes
+
+    def cached_hash(self, guid: str, mtime: float, size: int) -> str | None:
+        row = self._one("SELECT sha256 FROM file_hashes WHERE guid = ? AND mtime = ? AND size = ?", (guid, mtime, size))
+        return row[0] if row else None
+
+    def store_hash(self, guid: str, mtime: float, size: int, digest: str) -> None:
+        self.store_hashes([(guid, mtime, size, digest)])
+
+    def store_hashes(self, rows: Sequence[tuple[str, float, int, str]]) -> None:
+        """(guid, mtime, size, sha256) rows, in one transaction."""
+        if not rows:
+            return
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO file_hashes (guid, mtime, size, sha256) VALUES (?, ?, ?, ?)", rows)
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
+
+    def cached_hashes(self, guids: Sequence[str]) -> dict[str, tuple[float, int, str]]:
+        """guid -> (mtime, size, sha256) for the guids we've hashed before."""
+        out: dict[str, tuple[float, int, str]] = {}
+        guids = list(guids)
+        for start in range(0, len(guids), 500):
+            chunk = guids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for row in self._all(f"SELECT guid, mtime, size, sha256 FROM file_hashes WHERE guid IN ({marks})", chunk):
+                out[row["guid"]] = (row["mtime"], row["size"], row["sha256"])
+        return out
+
+    # ------------------------------------------------------------------ server settings
+
+    def get_settings(self) -> dict[str, Any]:
+        """`ServerSettings`: the known keys only, with their defaults."""
+        stored = self.get_kv("server_settings") or {}
+        return {key: bool(stored.get(key, default)) for key, default in SERVER_SETTINGS.items()}
+
+    def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            settings = self.get_settings()
+            settings.update(patch)
+            self.set_kv("server_settings", settings)
+            return settings
 
     # ------------------------------------------------------------------ key/value
 

@@ -6,8 +6,8 @@ can't change what the script does. Calls block (30 s timeout); callers run
 them off the event loop.
 
 Order of attempts for text:
- 1. `send msgText to chat id chatGuid`
- 2. DMs only: `send msgText to participant handle of (1st account whose service type = iMessage)`
+ 1. `send bcText to chat id bcChatGuid`
+ 2. DMs only: `send bcText to participant handle of (1st account whose service type = iMessage)`
     (or SMS for SMS chats), then the pre-Monterey `buddy … of 1st service` form.
 """
 
@@ -26,56 +26,58 @@ log = logging.getLogger("backchannel.sender")
 
 TIMEOUT = 30
 
+# Variables are `bc`-prefixed: AppleScript names are case-insensitive and an app's terms win inside
+# its tell block, so a plain name can silently become one of Messages' classes or properties.
 SEND_TO_CHAT = (
     "on run argv",
-    "set chatGuid to item 1 of argv",
-    "set msgText to item 2 of argv",
+    "set bcChatGuid to item 1 of argv",
+    "set bcText to item 2 of argv",
     'tell application "Messages"',
-    "send msgText to chat id chatGuid",
+    "send bcText to chat id bcChatGuid",
     "end tell",
     "end run",
 )
 SEND_TO_PARTICIPANT = (
     "on run argv",
-    "set targetHandle to item 1 of argv",
-    "set msgText to item 2 of argv",
-    "set serviceName to item 3 of argv",
+    "set bcHandle to item 1 of argv",
+    "set bcText to item 2 of argv",
+    "set bcServiceName to item 3 of argv",
     'tell application "Messages"',
-    'if serviceName is "SMS" then',
-    "set targetAccount to 1st account whose service type = SMS",
+    'if bcServiceName is "SMS" then',
+    "set bcAccount to 1st account whose service type = SMS",
     "else",
-    "set targetAccount to 1st account whose service type = iMessage",
+    "set bcAccount to 1st account whose service type = iMessage",
     "end if",
-    "send msgText to participant targetHandle of targetAccount",
+    "send bcText to participant bcHandle of bcAccount",
     "end tell",
     "end run",
 )
 SEND_TO_BUDDY = (
     "on run argv",
-    "set targetHandle to item 1 of argv",
-    "set msgText to item 2 of argv",
+    "set bcHandle to item 1 of argv",
+    "set bcText to item 2 of argv",
     'tell application "Messages"',
-    "set targetService to 1st service whose service type = iMessage",
-    "send msgText to buddy targetHandle of targetService",
+    "set bcService to 1st service whose service type = iMessage",
+    "send bcText to buddy bcHandle of bcService",
     "end tell",
     "end run",
 )
 SEND_FILE_TO_CHAT = (
     "on run argv",
-    "set chatGuid to item 1 of argv",
-    "set theFile to POSIX file (item 2 of argv)",
+    "set bcChatGuid to item 1 of argv",
+    "set bcFile to POSIX file (item 2 of argv)",
     'tell application "Messages"',
-    "send theFile to chat id chatGuid",
+    "send bcFile to chat id bcChatGuid",
     "end tell",
     "end run",
 )
 SEND_FILE_TO_PARTICIPANT = (
     "on run argv",
-    "set targetHandle to item 1 of argv",
-    "set theFile to POSIX file (item 2 of argv)",
+    "set bcHandle to item 1 of argv",
+    "set bcFile to POSIX file (item 2 of argv)",
     'tell application "Messages"',
-    "set targetAccount to 1st account whose service type = iMessage",
-    "send theFile to participant targetHandle of targetAccount",
+    "set bcAccount to 1st account whose service type = iMessage",
+    "send bcFile to participant bcHandle of bcAccount",
     "end tell",
     "end run",
 )

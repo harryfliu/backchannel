@@ -139,7 +139,7 @@ def test_avatars(ro):
     assert ro.client.get("/api/avatar/jordan.park%40icloud.example").content == jordan.content
     priya = ro.client.get("/api/avatar/%2B14155550178")  # full image in Sources/<id>/Images/<uuid>
     assert priya.status_code == 200 and priya.content[:2] == b"\xff\xd8"
-    assert ro.client.get("/api/avatar/%2B15105550123").status_code == 404  # Dad has no photo
+    assert ro.client.get("/api/avatar/%2B15105550123").status_code == 404  # Dad's photo file is missing
     assert ro.client.get("/api/avatar/%2B14155550155").status_code == 404  # not a contact
 
 

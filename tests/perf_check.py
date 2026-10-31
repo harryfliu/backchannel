@@ -85,6 +85,35 @@ def build(path: Path, n_messages: int, n_chats: int, seed: int = 1) -> None:
     conn.close()
 
 
+def add_attachments(path: Path, attachments_root: Path, n_attachments: int, n_stickers: int, n_messages: int,
+                    seed: int = 2) -> None:
+    """Attachment rows on random messages; `n_stickers` of them are stickers with small files on disk
+    (a quarter of them re-sent copies of the same image)."""
+    import media_gen
+
+    rng = random.Random(seed)
+    conn = sqlite3.connect(path)
+    conn.execute("BEGIN")
+    rows, joins = [], []
+    images = [media_gen.png(8, 8, lambda x, y, k=k: (k % 256, (k // 256) % 256, 7)) for k in range(max(1, n_stickers))]
+    for rowid in range(1, n_attachments + 1):
+        guid = f"AT{rowid:08X}-0000-4000-8000-000000000000"
+        sticker = rowid <= n_stickers
+        if sticker:
+            data = images[rng.randrange(len(images) // 4 + 1)] if rng.random() < 0.25 else images[rowid - 1]
+            filename, size = fakedb.store_attachment_file(attachments_root, guid, "sticker.png", data)
+        else:
+            filename, size = f"~/Library/Messages/Attachments/xx/{guid}/IMG_{rowid}.HEIC", 2_000_000
+        rows.append((rowid, guid, guid, filename, "image/png" if sticker else "image/heic", "sticker.png" if sticker
+                     else f"IMG_{rowid}.HEIC", size, int(sticker), 5))
+        joins.append((rng.randrange(1, n_messages + 1), rowid))
+    conn.executemany("INSERT INTO attachment (ROWID, guid, original_guid, filename, mime_type, transfer_name, "
+                     "total_bytes, is_sticker, transfer_state) VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (?,?)", joins)
+    conn.execute("COMMIT")
+    conn.close()
+
+
 def timed(label: str, fn, repeat: int = 1):
     best = None
     result = None
@@ -101,6 +130,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--messages", type=int, default=500_000)
     parser.add_argument("--chats", type=int, default=2500)
+    parser.add_argument("--attachments", type=int, default=60_000)
+    parser.add_argument("--stickers", type=int, default=2000)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bc-perf-") as tmp:
         tmp_path = Path(tmp)
@@ -109,14 +140,16 @@ def main() -> None:
         (fx / "AddressBook").mkdir()
         start = time.time()
         build(fx / "chat.db", args.messages, args.chats)
+        add_attachments(fx / "chat.db", fx / "Attachments", args.attachments, args.stickers, args.messages)
         size = (fx / "chat.db").stat().st_size / 1e6
-        print(f"Built {args.messages:,} messages / {args.chats:,} chats ({size:.0f} MB) in {time.time() - start:.0f} s")
+        print(f"Built {args.messages:,} messages / {args.chats:,} chats / {args.attachments:,} attachments "
+              f"({args.stickers:,} stickers) ({size:.0f} MB) in {time.time() - start:.0f} s")
         services = Services(settings_for(fx, tmp_path / "state"))
         convs = services.convs
         listed = timed("conversation list (cold)", convs.list)
         print(f"    -> {len(listed)} conversations in the sidebar")
-        convs._list_cache = None
-        timed("conversation list (warm, cache dropped)", convs.list, repeat=3)
+        timed("conversation list (warm, cache dropped)", lambda: (setattr(convs, "_list_cache", None), convs.list())[1],
+              repeat=3)
         timed("conversation list (cached)", convs.list, repeat=3)
         conn = fakedb.connect(fx / "chat.db")
         fakedb.insert_message(conn, chat_rowid=1, text="new one", is_from_me=False, handle_rowid=1, date=time.time())
@@ -128,6 +161,11 @@ def main() -> None:
         timed("search: first sync (newest batch)", lambda: services.search.sync(backfill_batches=0))
         timed("search: one backfill batch", lambda: services.search.sync(backfill_batches=1))
         timed("search query", lambda: services.search.search("dinner tomorrow", None, 40), repeat=3)
+        stickers = timed("stickers (cold: hashes every file)", lambda: services.stickers.list(10_000))
+        print(f"    -> {len(stickers)} distinct stickers")
+        timed("stickers (chat.db changed: hashes cached)",
+              lambda: (services.stickers.invalidate(), services.stickers.list())[1], repeat=3)
+        timed("stickers (cached)", services.stickers.list, repeat=3)
         services.close()
 
 

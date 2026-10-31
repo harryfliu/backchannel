@@ -13,9 +13,11 @@ import {
   toggleSection,
   useStore,
   type RailTab,
+  unreadConversations,
 } from '../state/store'
 import type { LaterItem } from '../api/types'
 import { Avatar, ConversationGlyph } from './common'
+import { byNeed, SidebarChip } from './Priority'
 
 export interface SidebarSections {
   waiting: Conversation[]
@@ -34,9 +36,8 @@ export function buildSections(convs: Record<string, Conversation>, now = Date.no
   const visible = Object.values(convs).filter((c) => !c.prefs.snoozedUntil || new Date(c.prefs.snoozedUntil).getTime() <= now)
   const automated = visible.filter((c) => c.isAutomated).sort(byRecent)
   const people = visible.filter((c) => !c.isAutomated)
-  const waiting = people
-    .filter((c) => c.awaitingReply && !c.prefs.muted)
-    .sort((a, b) => (b.awaitingSince ?? '').localeCompare(a.awaitingSince ?? ''))
+  // "Needs you": they asked you something, mentioned you, or it's time-sensitive. Most pressing first.
+  const waiting = people.filter((c) => (c.awaitingReply || c.priority) && !c.prefs.muted).sort(byNeed)
   const waitingIds = new Set(waiting.map((c) => c.id))
   const rest = people.filter((c) => !waitingIds.has(c.id))
   const starred = rest.filter((c) => c.prefs.starred).sort(byRecent)
@@ -108,6 +109,8 @@ function HomeSidebar() {
     (st) => st.catchUp.data?.sections.filter((x) => x.kind === 'reply_now' || x.kind === 'reply_soon').reduce((n, x) => n + x.items.length, 0) ?? 0,
   )
   const scheduledCount = useStore((st) => st.scheduled.filter((x) => x.status === 'pending').length)
+  const convs = useStore((st) => st.conversations)
+  const unreadCount = useMemo(() => unreadConversations(convs).length, [convs])
   const threadsUnread = 0
   const me = useStore((st) => st.me)
   return (
@@ -123,15 +126,16 @@ function HomeSidebar() {
       </header>
       <div className="sidebar-scroll">
         <div className="sidebar-nav">
+          <NavItem icon="inbox" label="Unreads" active={view?.kind === 'unreads'} count={unreadCount || undefined} bold={unreadCount > 0} onClick={() => openView('unreads')} />
           <NavItem icon="sparkles" label="Catch up" active={view?.kind === 'catchup'} badge={catchUpCount || undefined} onClick={() => openView('catchup')} accent />
           <NavItem icon="thread" label="Threads" active={view?.kind === 'threads'} badge={threadsUnread || undefined} onClick={() => openView('threads')} />
           <NavItem icon="send" label="Scheduled" active={view?.kind === 'scheduled'} count={scheduledCount || undefined} onClick={() => openView('scheduled')} />
         </div>
 
         {s.waiting.length > 0 && (
-          <Section id="waiting" title="Waiting on you" count={s.waiting.length} hint="Their message is the last one and it needs an answer">
+          <Section id="waiting" title="Needs you" count={s.waiting.length} hint="They asked you something, mentioned you, or it's time-sensitive. Most pressing first.">
             {s.waiting.map((c) => (
-              <Row key={c.id} c={c} trailing={<span className="age-pill">{ageShort(c.awaitingSince!)}</span>} />
+              <Row key={c.id} c={c} trailing={<SidebarChip c={c} />} />
             ))}
           </Section>
         )}
@@ -181,17 +185,19 @@ function NavItem({
   count,
   onClick,
   accent,
+  bold,
 }: {
-  icon: 'sparkles' | 'thread' | 'send'
+  icon: 'sparkles' | 'thread' | 'send' | 'inbox'
   label: string
   active: boolean
   badge?: number
   count?: number
   onClick: () => void
   accent?: boolean
+  bold?: boolean
 }) {
   return (
-    <button type="button" className={`side-row nav-row ${active ? 'is-active' : ''} ${accent ? 'is-accent' : ''}`} onClick={onClick}>
+    <button type="button" className={`side-row nav-row ${active ? 'is-active' : ''} ${accent ? 'is-accent' : ''} ${bold ? 'is-unread' : ''}`} onClick={onClick}>
       <span className="side-glyph">
         <Icon name={icon} size={17} />
       </span>

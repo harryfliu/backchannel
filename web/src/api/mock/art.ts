@@ -12,7 +12,7 @@ export function portrait(o: { bg: [string, string]; skin: string; hair: string; 
         : o.style === 'none'
           ? ''
           : `<path d="M36 54c-2-22 10-32 28-32s30 10 28 32c-6-9-16-13-28-13s-22 4-28 13z" fill="${o.hair}"/>`
-  return uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  return uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
 <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${o.bg[0]}"/><stop offset="1" stop-color="${o.bg[1]}"/></linearGradient></defs>
 <rect width="128" height="128" fill="url(#g)"/>
 <ellipse cx="64" cy="128" rx="46" ry="34" fill="${o.shirt}"/>
@@ -23,7 +23,7 @@ ${hair}
 }
 
 export const scenes = {
-  garden: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  garden: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
 <defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#bfe0f2"/><stop offset="1" stop-color="#f6efd9"/></linearGradient></defs>
 <rect width="800" height="600" fill="url(#s)"/>
 <circle cx="640" cy="120" r="56" fill="#ffe7a3"/>
@@ -39,7 +39,7 @@ export const scenes = {
 <g fill="#f08a5d"><circle cx="232" cy="250" r="18"/><circle cx="470" cy="230" r="16"/></g>
 <rect x="88" y="150" width="12" height="290" fill="#a77b4f"/><rect x="700" y="170" width="12" height="270" fill="#a77b4f"/>
 </svg>`),
-  house: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  house: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
 <defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9ccbe8"/><stop offset="1" stop-color="#e8f3f8"/></linearGradient></defs>
 <rect width="800" height="600" fill="url(#s)"/>
 <rect y="470" width="800" height="130" fill="#8fbf6a"/>
@@ -52,7 +52,7 @@ export const scenes = {
 <g fill="#5f9b4a"><circle cx="230" cy="480" r="38"/><circle cx="290" cy="490" r="30"/><circle cx="560" cy="485" r="36"/><circle cx="510" cy="492" r="26"/></g>
 <rect x="520" y="150" width="36" height="70" fill="#38485a"/>
 </svg>`),
-  pie: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  pie: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
 <defs><linearGradient id="w" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b9875a"/><stop offset="1" stop-color="#8a5a35"/></linearGradient></defs>
 <rect width="800" height="600" fill="url(#w)"/>
 <g stroke="#7a4d2c" stroke-width="3" opacity=".5"><path d="M0 120h800"/><path d="M0 260h800"/><path d="M0 400h800"/><path d="M0 540h800"/></g>
@@ -65,7 +65,7 @@ export const scenes = {
 </g>
 <ellipse cx="400" cy="310" rx="240" ry="170" fill="none" stroke="#c9843f" stroke-width="22" stroke-dasharray="6 26" stroke-linecap="round"/>
 </svg>`),
-  noodles: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420">
+  noodles: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420">
 <rect width="800" height="420" fill="#1f2a2e"/>
 <circle cx="640" cy="80" r="140" fill="#2c3b40"/>
 <path d="M210 210h380c0 110-85 170-190 170s-190-60-190-170z" fill="#e9e1d4"/>
@@ -78,7 +78,7 @@ export const scenes = {
 <path d="M560 60 400 190M600 70 440 195" stroke="#b07a4a" stroke-width="10" stroke-linecap="round"/>
 <g stroke="#ffffff" stroke-width="5" fill="none" opacity=".35" stroke-linecap="round"><path d="M320 140c-20-20 20-40 0-60"/><path d="M400 130c-20-20 20-40 0-60"/><path d="M480 140c-20-20 20-40 0-60"/></g>
 </svg>`),
-  field: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  field: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
 <rect width="800" height="600" fill="#4f9d4a"/>
 <g fill="#5aab55"><rect x="0" width="100" height="600"/><rect x="200" width="100" height="600"/><rect x="400" width="100" height="600"/><rect x="600" width="100" height="600"/></g>
 <g stroke="#f4f7f2" stroke-width="8" fill="none"><rect x="40" y="40" width="720" height="520"/><path d="M400 40v520"/><circle cx="400" cy="300" r="90"/><rect x="40" y="190" width="110" height="220"/><rect x="650" y="190" width="110" height="220"/></g>
@@ -93,4 +93,33 @@ export const avatars = {
   mom: portrait({ bg: ['#f3d6e4', '#d79bbb'], skin: '#e8bf9c', hair: '#3a2a22', shirt: '#5a6fa8', style: 'bun' }),
   grace: portrait({ bg: ['#d6dcf7', '#9aa7e6'], skin: '#efc7a5', hair: '#20160f', shirt: '#e0a23b', style: 'long' }),
   ellie: portrait({ bg: ['#fde3b5', '#f2b46a'], skin: '#f1cfae', hair: '#5b3a24', shirt: '#3e8e7e', style: 'bun' }),
+}
+
+// Original sample custom emoji and stickers for the mock (simple shapes, nothing borrowed).
+export const emojiArt = {
+  yayBlob: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<path d="M10 22 4 10M54 22l6-12" stroke="#f0a020" stroke-width="6" stroke-linecap="round"/>
+<ellipse cx="32" cy="38" rx="24" ry="21" fill="#ffc83d"/><ellipse cx="32" cy="44" rx="18" ry="12" fill="#ffd96a"/>
+<circle cx="24" cy="33" r="3.5" fill="#3a2a10"/><circle cx="40" cy="33" r="3.5" fill="#3a2a10"/>
+<path d="M23 42q9 9 18 0" stroke="#3a2a10" stroke-width="3.5" fill="none" stroke-linecap="round"/></svg>`),
+  lgtm: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><rect x="2" y="16" width="60" height="32" rx="9" fill="#1e8a5a"/>
+<text x="32" y="39" font-family="Arial, sans-serif" font-size="17" font-weight="900" fill="#fff" text-anchor="middle">LGTM</text></svg>`),
+  nice: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><rect x="2" y="16" width="60" height="32" rx="16" fill="#7a4fd0"/>
+<text x="32" y="38.5" font-family="Arial, sans-serif" font-size="17" font-weight="900" font-style="italic" fill="#fff" text-anchor="middle">nice</text></svg>`),
+  hype: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><defs><linearGradient id="f" x1="0" y1="1" x2="0" y2="0">
+<stop offset="0" stop-color="#e2361e"/><stop offset="1" stop-color="#ffb21e"/></linearGradient></defs>
+<path d="M32 4c4 12 18 18 18 34a18 18 0 0 1-36 0c0-9 5-13 8-18 1 6 4 8 6 8-2-8 0-16 4-24z" fill="url(#f)"/>
+<path d="M32 30c3 6 9 9 9 17a9 9 0 0 1-18 0c0-5 3-8 5-11 1 3 2 4 4 4-1-4 0-7 0-10z" fill="#fff3b0"/></svg>`),
+}
+
+export const stickerArt = {
+  pizza: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+<path d="M64 120 14 22q50-24 100 0z" fill="#f2c14e" stroke="#fff" stroke-width="6" stroke-linejoin="round"/>
+<path d="M14 22q50-24 100 0l-6 12q-44-20-88 0z" fill="#c9853c"/>
+<g fill="#c8382c"><circle cx="50" cy="48" r="9"/><circle cx="78" cy="50" r="8"/><circle cx="64" cy="76" r="8"/><circle cx="62" cy="100" r="5"/></g></svg>`),
+  coolDog: uri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+<ellipse cx="30" cy="40" rx="16" ry="28" fill="#8a5a32" transform="rotate(-20 30 40)"/><ellipse cx="98" cy="40" rx="16" ry="28" fill="#8a5a32" transform="rotate(20 98 40)"/>
+<circle cx="64" cy="66" r="44" fill="#d9a066"/><ellipse cx="64" cy="88" rx="24" ry="18" fill="#f1d3ad"/>
+<ellipse cx="64" cy="78" rx="9" ry="6" fill="#2b1d16"/><path d="M54 94q10 7 20 0" stroke="#2b1d16" stroke-width="4" fill="none" stroke-linecap="round"/>
+<rect x="28" y="50" width="30" height="18" rx="7" fill="#111"/><rect x="70" y="50" width="30" height="18" rx="7" fill="#111"/><path d="M58 56h12" stroke="#111" stroke-width="5"/></svg>`),
 }

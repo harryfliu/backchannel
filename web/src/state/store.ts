@@ -6,6 +6,10 @@ import type {
   ActivityItem,
   CatchUp,
   ChiefCard,
+  ClassicTapback,
+  CustomEmoji,
+  ServerSettings,
+  StickerItem,
   Conversation,
   ConversationPrefs,
   Health,
@@ -19,10 +23,12 @@ import type {
   ServerEvent,
 } from '../api/types'
 import { uid, whenLabel } from '../lib/format'
+import { applyTapback, myTapback, tapbackEmoji } from '../lib/tapbacks'
 
 export type View =
   | { kind: 'conversation'; id: string }
   | { kind: 'catchup' }
+  | { kind: 'unreads' }
   | { kind: 'threads' }
   | { kind: 'scheduled' }
 
@@ -42,6 +48,8 @@ export interface Settings {
   compact: boolean
   /** Mac app only: show a notification for new texts. */
   notify: boolean
+  /** Which texts notify: every one, DMs plus anything that needs you, or only what needs you. */
+  notifyLevel: 'all' | 'dms' | 'important'
 }
 
 export interface Toast {
@@ -107,6 +115,22 @@ export interface State {
   chiefCards: Record<string, ChiefCard | null | 'loading' | undefined>
   /** The "Add to Chief loops" dialog. */
   chiefDraft: { cid: string; mid: string; title: string } | null
+  /** Your own emoji (Slack-style), loaded at startup. */
+  customEmoji: CustomEmoji[]
+  /** Stickers and Genmoji from your iMessage history; null until first opened. */
+  stickers: StickerItem[] | null
+  /** The "Add emoji" dialog; a sticker to save, or blank for a new one. */
+  emojiDialog: { sticker?: StickerItem; fromSettings?: boolean } | null
+  /** Preferences that change what the Mac does (null until loaded). */
+  serverSettings: ServerSettings | null
+  /** Tapbacks you just sent, shown right away until Messages confirms them. Keyed by message id. */
+  pendingTapbacks: Record<string, PendingTapback>
+}
+
+export interface PendingTapback {
+  kind: ClassicTapback
+  remove: boolean
+  at: number
 }
 
 // ------------------------------------------------------------------ storage
@@ -136,6 +160,7 @@ const defaultSettings: Settings = {
   threadReplies: 'thread-only',
   compact: false,
   notify: false,
+  notifyLevel: 'all',
 }
 
 let state: State = {
@@ -177,6 +202,11 @@ let state: State = {
   pendingOpen: null,
   chiefCards: {},
   chiefDraft: null,
+  customEmoji: [],
+  stickers: null,
+  emojiDialog: null,
+  serverSettings: null,
+  pendingTapbacks: {},
 }
 
 const listeners = new Set<() => void>()
@@ -341,6 +371,8 @@ function onEvent(e: ServerEvent) {
     }
     case 'message-updated': {
       const m = e.message
+      const p = state.pendingTapbacks[m.id]
+      if (p && tapbackLanded(m, p)) clearPendingTapback(m.id)
       setState((s) => {
         const ms = s.messages[m.conversationId]
         const out: Partial<State> = {}
@@ -374,6 +406,9 @@ function onEvent(e: ServerEvent) {
         return { scheduled: [...others, e.scheduled].sort((a, b) => a.sendAt.localeCompare(b.sendAt)) }
       })
       break
+    case 'ui-action':
+      onUiAction(e)
+      break
     case 'later': {
       const item = e.item
       const before = state.later.find((l) => l.messageId === item.messageId)
@@ -392,6 +427,43 @@ function onEvent(e: ServerEvent) {
   }
 }
 
+let markReadWarned = false
+
+/** How a Messages-app action went. Successes are quiet; the result shows up as normal message updates. */
+function onUiAction(e: Extract<ServerEvent, { type: 'ui-action' }>) {
+  if (state.settingsOpen) void refreshHealth()
+  if (e.action === 'tapback' && e.messageId) {
+    const mid = e.messageId
+    const p = state.pendingTapbacks[mid]
+    if (e.result !== 'done') {
+      clearPendingTapback(mid)
+      toast(e.detail || "Messages didn't take that tapback.", 'error')
+    } else if (p) {
+      // The reaction arrives as its own message update; give it a moment so the pill doesn't flicker.
+      const m = findMessage(e.conversationId, mid)
+      if (m && tapbackLanded(m, p)) clearPendingTapback(mid)
+      else setTimeout(() => state.pendingTapbacks[mid]?.at === p.at && clearPendingTapback(mid), 4000)
+    }
+  } else if (e.action === 'reply') {
+    if (e.result === 'fallback') toast(e.detail || 'Messages couldn’t make it a reply, so it went out as a regular text.')
+    else if (e.result === 'failed') toast(e.detail || 'Messages didn’t confirm your reply. Check Messages before you try again.', 'error')
+  } else if (e.action === 'mark-read' && e.result === 'failed' && !markReadWarned) {
+    markReadWarned = true
+    toast(e.detail || 'Couldn’t mark that conversation read in Messages.')
+  }
+}
+
+function findMessage(cid: string, mid: string): Message | undefined {
+  const found = state.messages[cid]?.items.find((m) => m.id === mid)
+  if (found) return found
+  for (const t of Object.values(state.threads)) {
+    if (t.root?.id === mid) return t.root
+    const r = t.replies.find((x) => x.id === mid)
+    if (r) return r
+  }
+  return undefined
+}
+
 function previewOf(m: Message) {
   if (m.text) return m.text
   const a = m.attachments[0]
@@ -405,6 +477,12 @@ function maybeNotify(m: Message) {
   if (document.hasFocus()) return
   const c = state.conversations[m.conversationId]
   if (c?.prefs.muted) return
+  const needsYou = !!m.importance?.some((r) => r.kind !== 'vip')
+  const level = state.settings.notifyLevel ?? 'all'
+  if (level === 'important' && !needsYou) return
+  if (level === 'dms' && !needsYou && (c?.kind !== 'dm' || c.isAutomated)) return
+  // Urgent texts also bounce the Dock icon.
+  if (m.importance?.some((r) => r.kind === 'urgent' || r.kind === 'repeat')) postNative({ type: 'attention' })
   postNative({
     type: 'notify',
     title: displayName(m.senderHandle),
@@ -457,7 +535,9 @@ export async function boot(initial?: string) {
     } else if (first) {
       openConversation(first)
     }
-    // Catch up needs the Anthropic key on the Mac; without it the view shows a plain fallback.
+    void loadCustomEmoji()
+    void api.serverSettings().then((ss) => setState({ serverSettings: ss })).catch(() => {})
+    // Catch up needs Claude on the Mac; without it the view shows a plain fallback.
     if (health?.ai.enabled) void loadCatchUp(false)
   } catch (err) {
     setState({ bootError: err instanceof Error ? err.message : String(err), booted: true })
@@ -505,7 +585,7 @@ function firstUnreadId(cid: string, items: Message[]) {
   return first?.id ?? null
 }
 
-async function loadMessages(cid: string) {
+export async function loadMessages(cid: string) {
   const existing = state.messages[cid]
   if (existing && (existing.loading || existing.items.length)) return
   setState((s) => ({ messages: { ...s.messages, [cid]: { items: [], nextCursor: null, loading: true, loadingOlder: false, error: null } } }))
@@ -547,7 +627,7 @@ export function openConversation(cid: string, highlightId?: string) {
   }))
 }
 
-export function openView(kind: 'catchup' | 'threads' | 'scheduled') {
+export function openView(kind: 'catchup' | 'unreads' | 'threads' | 'scheduled') {
   pushView({ kind })
   setState({ mobilePane: 'main', panel: null })
   if (kind === 'catchup' && !state.catchUp.data) void loadCatchUp(false)
@@ -667,6 +747,7 @@ export async function sendMessage(cid: string, text: string, opts: { threadRootI
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId,
     }
@@ -766,6 +847,8 @@ export async function sendFiles(cid: string, files: File[]) {
           width: null,
           height: null,
           isSticker: false,
+          isGenmoji: false,
+          emojiDescription: null,
           missing: false,
         },
       ],
@@ -781,6 +864,7 @@ export async function sendFiles(cid: string, files: File[]) {
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId,
     }
@@ -1023,3 +1107,202 @@ export function moveConversation(delta: 1 | -1, unreadOnly = false, order: strin
 }
 
 export { isNarrow }
+
+// ------------------------------------------------------------------ custom emoji and stickers
+
+export async function loadCustomEmoji() {
+  try {
+    const items = await api.customEmoji()
+    setState({ customEmoji: items.sort((a, b) => a.name.localeCompare(b.name)) })
+  } catch {
+    // the picker just shows none
+  }
+}
+
+export async function loadStickers(force = false) {
+  if (state.stickers && !force) return
+  try {
+    setState({ stickers: await api.stickers() })
+  } catch {
+    setState({ stickers: [] })
+  }
+}
+
+export async function addCustomEmoji(name: string, source: { file: File } | { url: string }) {
+  const item = await api.addCustomEmoji(name, source)
+  setState((s) => ({ customEmoji: [...s.customEmoji.filter((e) => e.name !== item.name), item].sort((a, b) => a.name.localeCompare(b.name)) }))
+  toast(`Added :${item.name}:`)
+  return item
+}
+
+export async function saveStickerAsEmoji(stickerId: string, name: string) {
+  const item = await api.saveStickerAsEmoji(stickerId, name)
+  setState((s) => ({ customEmoji: [...s.customEmoji.filter((e) => e.name !== item.name), item].sort((a, b) => a.name.localeCompare(b.name)) }))
+  toast(`Saved as :${item.name}:`)
+  return item
+}
+
+export async function removeCustomEmoji(name: string) {
+  setState((s) => ({ customEmoji: s.customEmoji.filter((e) => e.name !== name) }))
+  try {
+    await api.removeCustomEmoji(name)
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't remove that emoji.", 'error')
+    void loadCustomEmoji()
+  }
+}
+
+/** data: URLs are decoded here (fetching them can be blocked); everything else is fetched with our session. */
+async function urlToBlob(url: string): Promise<Blob> {
+  if (url.startsWith('data:')) {
+    const comma = url.indexOf(',')
+    const meta = url.slice(5, comma)
+    const body = url.slice(comma + 1)
+    const type = meta.split(';')[0] || 'application/octet-stream'
+    if (meta.includes(';base64')) {
+      const bin = atob(body)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      return new Blob([bytes], { type })
+    }
+    return new Blob([decodeURIComponent(body)], { type })
+  }
+  const res = await fetch(url, { credentials: 'same-origin' })
+  if (!res.ok) throw new Error(`Couldn't load that image (${res.status}).`)
+  return res.blob()
+}
+
+const EXT: Record<string, string> = { 'image/png': 'png', 'image/gif': 'gif', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/heic': 'heic' }
+
+/** Put an emoji or sticker in the composer as an attachment; iMessage carries it as a picture. */
+export async function stageImageForSend(cid: string, url: string, baseName: string) {
+  try {
+    const blob = await urlToBlob(url)
+    const ext = EXT[blob.type] ?? 'png'
+    const safe = baseName.replace(/[^a-z0-9 _+-]+/gi, '').trim().slice(0, 60) || 'sticker'
+    const file = new File([blob], `${safe}.${ext}`, { type: blob.type || 'image/png' })
+    window.dispatchEvent(new CustomEvent('bc:attach', { detail: { cid, files: [file] } }))
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't add that.", 'error')
+  }
+}
+
+// ------------------------------------------------------------------ server-side preferences
+
+export async function refreshHealth() {
+  try {
+    setState({ health: await api.health() })
+  } catch {
+    // keep the last one
+  }
+}
+
+export async function setServerSetting(patch: Partial<ServerSettings>) {
+  // In the Mac app, turning on any of the Messages helpers asks macOS for Accessibility right away.
+  if ((patch.markReadInMessages || patch.tapbacksViaMessages || patch.threadRepliesViaMessages) && isNative) {
+    window.__bcAccessibility = (trusted) => {
+      if (!trusted) toast('Turn on Backchannel in System Settings › Privacy & Security › Accessibility, then try again.')
+    }
+    postNative({ type: 'requestAccessibility' })
+  }
+  const before = state.serverSettings
+  if (before) setState({ serverSettings: { ...before, ...patch } })
+  try {
+    setState({ serverSettings: await api.setServerSettings(patch) })
+    void refreshHealth()
+  } catch (err) {
+    setState({ serverSettings: before })
+    toast(err instanceof Error ? err.message : "Couldn't save that setting.", 'error')
+  }
+}
+
+// ------------------------------------------------------------------ tapbacks (through the Messages app)
+
+function tapbackLanded(m: Message, p: PendingTapback) {
+  const mine = myTapback(m.reactions)
+  return p.remove ? mine !== p.kind : mine === p.kind
+}
+
+function clearPendingTapback(mid: string) {
+  if (!state.pendingTapbacks[mid]) return
+  setState((s) => {
+    const pendingTapbacks = { ...s.pendingTapbacks }
+    delete pendingTapbacks[mid]
+    return { pendingTapbacks }
+  })
+}
+
+/** What to draw: the message's reactions with your just-sent tapback applied. */
+export function shownReactions(m: Message, p: PendingTapback | undefined) {
+  return p ? applyTapback(m.reactions, p.kind, p.remove) : m.reactions
+}
+
+export const tapbacksOn = () => !!state.serverSettings?.tapbacksViaMessages
+
+/** Add a tapback, or remove it if it's already yours. Messages allows one per person, so a new one replaces yours. */
+export async function sendTapback(m: Message, kind: ClassicTapback) {
+  if (!tapbacksOn()) {
+    toast('Turn on tapbacks in Settings › Messages helpers first.')
+    return
+  }
+  if (m.id.startsWith('local:') || m.status === 'sending' || m.status === 'failed') {
+    toast('You can react once it’s sent.')
+    return
+  }
+  if (m.event || m.unsent) return
+  const remove = myTapback(shownReactions(m, state.pendingTapbacks[m.id])) === kind
+  const p: PendingTapback = { kind, remove, at: Date.now() }
+  setState((s) => ({ pendingTapbacks: { ...s.pendingTapbacks, [m.id]: p } }))
+  try {
+    await api.sendTapback(m.conversationId, m.id, kind, remove)
+  } catch (err) {
+    if (state.pendingTapbacks[m.id]?.at === p.at) clearPendingTapback(m.id)
+    toast(err instanceof Error ? err.message : `Couldn't send ${tapbackEmoji(kind)}.`, 'error')
+    return
+  }
+  // If the result never arrives (say the connection dropped), stop showing it as pending.
+  setTimeout(() => {
+    if (state.pendingTapbacks[m.id]?.at !== p.at) return
+    clearPendingTapback(m.id)
+    const now = findMessage(m.conversationId, m.id)
+    if (!now || !tapbackLanded(now, p)) toast('Messages didn’t confirm that tapback. It may not have gone through.')
+  }, 25000)
+}
+
+// ------------------------------------------------------------------ unreads
+
+/** Conversations with something new, newest first (muted and snoozed ones left out, like the badge). */
+export function unreadConversations(convs: Record<string, Conversation>, now = Date.now()) {
+  return Object.values(convs)
+    .filter((c) => c.unreadCount > 0 && !c.prefs.muted && !(c.prefs.snoozedUntil && new Date(c.prefs.snoozedUntil).getTime() > now))
+    .sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? ''))
+}
+
+/** The messages that make up a conversation's unread count: its newest texts from other people. */
+export function unreadMessages(c: Conversation, items: Message[]) {
+  if (c.unreadCount <= 0) return []
+  return items.filter((m) => !m.fromMe && !m.event).slice(-c.unreadCount)
+}
+
+export async function markConversationRead(cid: string) {
+  window.clearTimeout(readTimers[cid])
+  try {
+    upsertConversation(await api.markRead(cid))
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't mark that read.", 'error')
+  }
+}
+
+export async function markAllRead(cids: string[]) {
+  if (!cids.length) return
+  const results = await Promise.allSettled(cids.map((cid) => api.markRead(cid)))
+  let done = 0
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      upsertConversation(r.value)
+      done += 1
+    }
+  }
+  if (done < cids.length) toast(`Marked ${done} of ${cids.length} read. Try again for the rest.`, 'error')
+  else toast(done === 1 ? 'Marked 1 conversation read' : `Marked ${done} conversations read`)
+}

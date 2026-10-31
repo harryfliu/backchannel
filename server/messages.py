@@ -96,7 +96,9 @@ class MessageBuilder:
         width, height = self.media.dimensions(path, kind) if exists and path else (None, None)
         url = attachment_url(att["guid"])
         thumb = None
-        if exists and (kind == "image" or (kind == "video" and self.media.video_thumbnails)):
+        if exists and kind == "image" and self.media.drawable(path):
+            thumb = url + "/thumb"  # a browser image, or one we can convert (HEIC/TIFF on macOS)
+        elif exists and kind == "video" and self.media.video_thumbnails:
             thumb = url + "/thumb"
         return {
             "id": att["guid"],
@@ -109,12 +111,15 @@ class MessageBuilder:
             "width": width,
             "height": height,
             "isSticker": bool(att["is_sticker"]),
+            # iOS 18+ Genmoji carry a content identifier; stickers and Genmoji may carry a description.
+            "isGenmoji": bool(att["emoji_image_content_identifier"]),
+            "emojiDescription": (att["emoji_image_short_description"] or "").strip() or None,
             "missing": not exists,
         }
 
-    def attachment_kinds(self, message_ids: list[int]) -> dict[int, list[tuple[str, str, bool, bool]]]:
-        """(kind, name, hidden, is_sticker) per message: what previews need."""
-        out: dict[int, list[tuple[str, str, bool, bool]]] = {}
+    def attachment_kinds(self, message_ids: list[int]) -> dict[int, list[tuple[str, str, bool, bool, bool]]]:
+        """(kind, name, hidden, is_sticker, is_genmoji) per message: what previews need."""
+        out: dict[int, list[tuple[str, str, bool, bool, bool]]] = {}
         if not message_ids:
             return out
         for mid, atts in self.db.attachments_for(message_ids).items():
@@ -122,7 +127,8 @@ class MessageBuilder:
                 name = att["transfer_name"] or os.path.basename(att["filename"] or "")
                 hidden = bool(att["hide_attachment"]) or self.is_plugin_payload(att)
                 out.setdefault(mid, []).append(
-                    (kind_of(att["mime_type"], att["uti"], name), name, hidden, bool(att["is_sticker"]))
+                    (kind_of(att["mime_type"], att["uti"], name), name, hidden, bool(att["is_sticker"]),
+                     bool(att["emoji_image_content_identifier"]))
                 )
         return out
 
@@ -141,6 +147,8 @@ class MessageBuilder:
         tapbacks = self.db.reaction_rows(list(candidates))
         stickers = [t["ROWID"] for t in tapbacks if (t["associated_message_type"] or 0) in (1000, 2007)]
         sticker_files = self.db.attachments_for(stickers) if stickers else {}
+        sticker_files = {rowid: [a for a in atts if self.media.drawable(self.media.resolve(a["filename"]))]
+                         for rowid, atts in sticker_files.items()}
         return fold_reactions(tapbacks, candidates, directory, sticker_files)
 
     # ------------------------------------------------------------------ threads
@@ -232,7 +240,7 @@ class MessageBuilder:
         preview_image = None
         for att in ctx.attachments.get(row["ROWID"], []):
             if self.is_plugin_payload(att):
-                if preview_image is None and self.media.exists(att["filename"]):
+                if preview_image is None and self.media.drawable(self.media.resolve(att["filename"])):
                     preview_image = attachment_url(att["guid"])
                 continue
             if att["hide_attachment"]:
@@ -287,6 +295,7 @@ class MessageBuilder:
             "effect": H.effect_name(row["expressive_send_style_id"]),
             "isAudioMessage": bool(row["is_audio_message"]),
             "otpCode": otp,
+            "importance": None,  # "Needs you" (round 6 contract): not computed yet
             "event": event,
             "clientId": ctx.client_ids.get(guid),
         }

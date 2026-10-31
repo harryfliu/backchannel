@@ -29,6 +29,8 @@ DEFAULTS: dict[str, Any] = {
         "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb",
     ],
     "attachments_root": "~/Library/Messages/Attachments",
+    "sticker_cache_root": "~/Library/Messages/StickerCache",
+    "messages_container_root": "~/Library/Containers/com.apple.MobileSMS",
     "state_dir": "~/Library/Application Support/Backchannel",
     "cache_dir": "~/Library/Caches/Backchannel",
     "style_profile_path": "~/Documents/claude_projects/imessage-checker/.texting_style.json",
@@ -36,7 +38,10 @@ DEFAULTS: dict[str, Any] = {
     "send_mode": "applescript",
     "me": {"name": None, "handles": []},
     "models": {"draft": "claude-haiku-5-5", "catchup": "claude-sonnet-5-5"},
+    "models_cli": {"draft": "haiku", "catchup": "sonnet"},
+    "claude_bin": None,
     "ai": {
+        "backend": "auto",
         "draft_effort": "low",
         "catchup_effort": "medium",
         "timeout_seconds": 90,
@@ -47,6 +52,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 SEND_MODES = ("applescript", "dry-run")
+AI_BACKENDS = ("auto", "claude-cli", "api")
 
 
 @dataclass
@@ -57,6 +63,8 @@ class Settings:
     chat_db: Path
     addressbook_globs: list[str]
     attachments_root: Path
+    sticker_cache_root: Path
+    messages_container_root: Path
     state_dir: Path
     cache_dir: Path
     style_profile_path: Path | None
@@ -66,6 +74,8 @@ class Settings:
     me_name: str | None
     me_handles: list[str]
     models: dict[str, str]
+    models_cli: dict[str, str]
+    claude_bin: str | None
     ai: dict[str, Any]
     dist_dir: Path
     dev_origins: list[str] = field(default_factory=list)
@@ -132,6 +142,11 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
 
     style = env.get("BACKCHANNEL_STYLE_PROFILE", raw.get("style_profile_path"))
     chief = env.get("BACKCHANNEL_CHIEF_DB", raw.get("chief_db"))
+    ai = {**DEFAULTS["ai"], **(raw.get("ai") or {})}
+    if env.get("BACKCHANNEL_AI_BACKEND"):
+        ai["backend"] = env["BACKCHANNEL_AI_BACKEND"].strip().lower()
+    if ai["backend"] not in AI_BACKENDS:
+        raise ValueError(f"ai.backend must be one of {', '.join(AI_BACKENDS)}, not {ai['backend']!r}")
 
     return Settings(
         port=int(env.get("BACKCHANNEL_PORT") or raw["port"]),
@@ -140,6 +155,9 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
         chat_db=_expand(env.get("BACKCHANNEL_CHAT_DB") or raw["chat_db"]),
         addressbook_globs=[str(_expand(g)) for g in globs],
         attachments_root=_expand(env.get("BACKCHANNEL_ATTACHMENTS_ROOT") or raw["attachments_root"]),
+        sticker_cache_root=_expand(env.get("BACKCHANNEL_STICKER_CACHE_ROOT") or raw["sticker_cache_root"]),
+        messages_container_root=_expand(env.get("BACKCHANNEL_MESSAGES_CONTAINER_ROOT")
+                                        or raw["messages_container_root"]),
         state_dir=_expand(env.get("BACKCHANNEL_STATE_DIR") or raw["state_dir"]),
         cache_dir=_expand(env.get("BACKCHANNEL_CACHE_DIR") or raw["cache_dir"]),
         style_profile_path=_expand(style) if style else None,
@@ -149,7 +167,9 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
         me_name=env.get("BACKCHANNEL_ME_NAME") or me.get("name") or None,
         me_handles=me_handles,
         models={**DEFAULTS["models"], **(raw.get("models") or {})},
-        ai={**DEFAULTS["ai"], **(raw.get("ai") or {})},
+        models_cli={**DEFAULTS["models_cli"], **(raw.get("models_cli") or {})},
+        claude_bin=env.get("BACKCHANNEL_CLAUDE_BIN") or raw.get("claude_bin") or None,
+        ai=ai,
         dist_dir=_expand(env.get("BACKCHANNEL_DIST_DIR") or REPO_ROOT / "web" / "dist"),
         dev_origins=_split_list(env.get("BACKCHANNEL_DEV_ORIGINS", "")),
     )

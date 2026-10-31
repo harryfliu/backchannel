@@ -7,6 +7,7 @@
 //
 // Build and install with `./backchannel app` (needs Xcode Command Line Tools).
 
+import ApplicationServices
 import Cocoa
 import ServiceManagement
 import UniformTypeIdentifiers
@@ -562,6 +563,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                    conversationId: body["conversationId"] as? String ?? "")
         case "requestNotifications":
             requestNotificationPermission()
+        case "requestAccessibility":
+            // Shows macOS's own prompt and adds Backchannel to the Accessibility list
+            // ("Mark read in Messages" drives the Messages app through Accessibility).
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(options)
+            webView.evaluateJavaScript("window.__bcAccessibility && window.__bcAccessibility(\(trusted))", completionHandler: nil)
         case "attention":
             NSApp.requestUserAttention(.informationalRequest)
         case "retry":

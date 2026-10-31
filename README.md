@@ -35,8 +35,10 @@ imessage-checker sends digests.
    open it again.
 2. On your first send, macOS asks whether Backchannel may control Messages. Click **Allow**.
 3. Right-click its Dock icon › **Options › Keep in Dock**.
-4. Optional: put `ANTHROPIC_API_KEY=sk-ant-…` in `.env` to turn on **Draft reply**
-   and **Catch up**. Drafts use the texting-style profile imessage-checker already keeps.
+4. **Draft reply** and **Catch up** run through Claude Code (`claude -p`) on your
+   Claude subscription, like Chief, so there's no API key to set up. Backchannel
+   finds `claude` even when it's opened from the Dock. Drafts use the texting-style
+   profile imessage-checker already keeps.
 
 Building the app needs Apple's command line tools (`xcode-select --install`).
 The app runs the server from this folder, so leave the repo where it is. Pulling
@@ -59,11 +61,13 @@ Access instead.
 | Named group chat | `#channel` under Groups |
 | 1:1 and unnamed groups | Direct messages (phone, email and SMS chats with one person are merged) |
 | Swipe-to-reply | A thread: “5 replies” under the message, opens on the side |
-| Tapbacks | Reaction chips |
+| Tapbacks | Reaction chips; click one (or the smiley) to add yours |
 | Edited / unsent | “(edited)” / “This message was unsent.” |
 | SMS | Green SMS tag and send button |
 
 **Beyond Slack**
+- **Unreads** (⌘⇧A): every conversation with something new on one page, with
+  reply and mark-read right there. Nothing is marked read until you say so.
 - **Catch up**: what needs you, with replies drafted in your voice.
 - **Waiting on you**: people who asked you something you haven't answered.
 - **Draft reply**: three suggestions in any conversation.
@@ -72,11 +76,33 @@ Access instead.
 - **Chief**: profile cards show what Chief knows (birthday, open loops, notes), and
   **Add to Chief loops** turns a text into a loop.
 - Photos and files: the + button, paste, or drag onto a conversation.
+- **Custom emoji**, Slack-style: add your own (upload an image or paste a link, e.g.
+  from slackmojis.com), plus the stickers and Genmoji already in your messages. Type
+  `:name:` or use the smiley button. iMessage has no custom emoji, so they go out
+  as small pictures.
+
+**Messages helpers (experimental)**
+
+iMessage only accepts tapbacks, real thread replies and "mark as read" from the
+Messages app itself. Backchannel can do them by operating Messages for you through
+macOS Accessibility. Turn each one on in Settings (⌘,) › Messages helpers, and allow
+Backchannel in System Settings › Privacy & Security › Accessibility.
+- **Send tapbacks**: ❤️ 👍 👎 😂 ‼️ ❓ from the smiley on any text, or click a reaction to add yours.
+- **Send thread replies as real replies**: they thread on everyone's phone. Messages
+  comes to the front for about a second while it sends.
+- **Mark texts read in Messages**: opening a conversation here marks it read there
+  too, so your phone matches.
+
+Each one is checked against Messages' database afterward, and you'll see a note if
+it didn't work. They only reach recent messages, and a macOS update can break them
+until they're adjusted. `./backchannel doctor --messages-ui` shows what Backchannel
+can see in Messages (no message text).
 
 **iMessage limits**
-- Other apps can't send tapbacks or true threaded replies. Everyone else's show
-  up here; your thread replies go out as normal texts.
-- Reading here doesn't send read receipts or clear unread on your phone.
+- With the helpers off, your thread replies go out as normal texts (still threaded
+  here), and reading here doesn't mark texts read on your phone or send read
+  receipts. Backchannel does pick up reads you make elsewhere. With "Mark texts
+  read" on, read receipts follow your setting in Messages.
 - Your Mac must be awake with Backchannel running for sends, scheduled sends and reminders.
 
 ## Commands

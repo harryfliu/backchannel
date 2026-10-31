@@ -1,7 +1,8 @@
-import { memo, useEffect, useRef, useState } from 'react'
-import type { Attachment, LinkPreview, Message, Reaction } from '../api/types'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import type { Attachment, LinkPreview, Message } from '../api/types'
 import { ageLong, fileSize, fullTimestamp, isEmojiOnly, segmentText, timeShort } from '../lib/format'
 import { Icon } from '../lib/icons'
+import { isClassic } from '../lib/tapbacks'
 import {
   chiefAvailable,
   displayName,
@@ -13,10 +14,15 @@ import {
   remindIfNoReply,
   retrySend,
   saveForLater,
+  sendTapback,
+  shownReactions,
   toast,
   useStore,
 } from '../state/store'
-import { Avatar, Menu, Modal, myNames, remindPresets, useMenu } from './common'
+import { Avatar, Menu, myNames, remindPresets, useMenu } from './common'
+import { Lightbox } from './Lightbox'
+import { TapbackPicker } from './TapbackPicker'
+import { ReasonChips } from './Priority'
 
 export interface RowOptions {
   /** First message of a run from the same sender: show avatar + name. */
@@ -46,8 +52,15 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
   const sender = m.fromMe ? null : personFor(m.senderHandle)
   const name = displayName(m.senderHandle)
   const head = opts.head || !!opts.inlineReplyContext
+  // Why it needs you. In a DM "asked you" goes without saying, so only time and urgency show there.
+  const reasons = !m.fromMe && m.importance ? m.importance.filter((r) => r.kind !== 'vip' && (opts.isGroup || (r.kind !== 'asked' && r.kind !== 'mention'))) : []
+  const urgent = reasons.some((r) => r.kind === 'urgent' || r.kind === 'repeat')
   return (
-    <div ref={ref} className={`msg ${head ? 'is-head' : 'is-cont'} ${m.status === 'sending' ? 'is-sending' : ''}`} data-mid={m.id}>
+    <div
+      ref={ref}
+      className={`msg ${head ? 'is-head' : 'is-cont'} ${m.status === 'sending' ? 'is-sending' : ''} ${reasons.length ? 'is-important' : ''} ${urgent ? 'is-urgent' : ''}`}
+      data-mid={m.id}
+    >
       <div className="msg-gutter">
         {head ? (
           m.fromMe ? (
@@ -84,7 +97,8 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
           </div>
         )}
         <MessageContent m={m} />
-        {m.reactions.length > 0 && <Reactions reactions={m.reactions} />}
+        {reasons.length > 0 && <ReasonChips reasons={reasons} />}
+        <Reactions m={m} />
         {!opts.inThread && m.thread && <ThreadSummary m={m} />}
         {opts.showStatus && m.fromMe && <StatusLine m={m} />}
       </div>
@@ -115,14 +129,49 @@ function EventRow({ m }: { m: Message }) {
   )
 }
 
+const SHORTCODE_RE = /:([a-z0-9_+-]{2,40}):/g
+
+/** Plain text with your custom :name: codes drawn as their images. */
+function TextWithEmoji({ value, emoji }: { value: string; emoji: Map<string, string> }) {
+  if (!emoji.size || !value.includes(':')) return <span>{value}</span>
+  const parts: React.ReactNode[] = []
+  let last = 0
+  for (const m of value.matchAll(SHORTCODE_RE)) {
+    const url = emoji.get(m[1].toLowerCase())
+    if (!url) continue
+    const at = m.index ?? 0
+    if (at > last) parts.push(value.slice(last, at))
+    parts.push(<img key={at} className="custom-emoji" src={url} alt={m[0]} title={m[0]} />)
+    last = at + m[0].length
+  }
+  if (!parts.length) return <span>{value}</span>
+  if (last < value.length) parts.push(value.slice(last))
+  return <span>{parts}</span>
+}
+
 export function MessageContent({ m }: { m: Message }) {
+  const customEmoji = useStore((s) => s.customEmoji)
+  const emojiMap = useMemo(() => new Map(customEmoji.map((e) => [e.name, e.url])), [customEmoji])
   if (m.unsent) return <p className="msg-text is-unsent">This message was unsent.</p>
   const people = getState().people
   const names = Object.values(people).map((p) => p.shortName)
-  const jumbo = m.attachments.length === 0 && isEmojiOnly(m.text)
+  // Genmoji are emoji, not photos: draw them inline at text size (big when sent alone).
+  const genmoji = m.attachments.filter((a) => a.isGenmoji && !a.missing)
+  const others = m.attachments.filter((a) => !(a.isGenmoji && !a.missing))
+  const jumbo = others.length === 0 && (m.text ? isEmojiOnly(m.text) && genmoji.length === 0 : genmoji.length > 0)
+  const genmojiImgs = genmoji.map((a) => (
+    <img
+      key={a.id}
+      className="genmoji"
+      src={a.thumbUrl ?? a.url}
+      alt={a.emojiDescription ?? 'Genmoji'}
+      title={a.emojiDescription ?? 'Genmoji'}
+      onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+    />
+  ))
   return (
     <>
-      {m.text && (
+      {(m.text || genmoji.length > 0) && (
         <p className={`msg-text ${jumbo ? 'is-jumbo' : ''} ${m.mentionsMe ? 'mentions-me' : ''}`}>
           {segmentText(m.text, names, myNames()).map((seg, i) =>
             seg.kind === 'link' ? (
@@ -134,9 +183,11 @@ export function MessageContent({ m }: { m: Message }) {
                 {seg.value}
               </span>
             ) : (
-              <span key={i}>{seg.value}</span>
+              <TextWithEmoji key={i} value={seg.value} emoji={emojiMap} />
             ),
           )}
+          {m.text && genmoji.length > 0 ? ' ' : null}
+          {genmojiImgs}
           {m.editedAt && (
             <span className="msg-edited" title={`Edited ${fullTimestamp(m.editedAt)}`}>
               {' '}
@@ -147,9 +198,9 @@ export function MessageContent({ m }: { m: Message }) {
       )}
       {m.effect && <p className="msg-effect">sent with {m.effect}</p>}
       {m.otpCode && <OtpChip code={m.otpCode} />}
-      {m.attachments.length > 0 && (
+      {others.length > 0 && (
         <div className="attachments">
-          {m.attachments.map((a) => (
+          {others.map((a) => (
             <AttachmentView key={a.id} a={a} isAudioMessage={m.isAudioMessage} />
           ))}
         </div>
@@ -182,54 +233,18 @@ function OtpChip({ code }: { code: string }) {
 }
 
 function AttachmentView({ a, isAudioMessage }: { a: Attachment; isAudioMessage: boolean }) {
-  const [open, setOpen] = useState(false)
   if (a.missing) {
     return (
-      <div className="file-card is-missing">
-        <Icon name="alert" size={20} />
+      <div className="file-card is-missing" title="Messages keeps older attachments in iCloud and downloads them when you view them there.">
+        <Icon name="cloud" size={20} />
         <span className="file-meta">
-          <span className="file-name">{a.name}</span>
-          <span className="file-sub">Not downloaded on this Mac. Open it on your phone, or turn on “Download attachments” in Messages.</span>
+          <span className="file-name">{a.kind === 'image' ? 'Photo in iCloud' : a.kind === 'video' ? 'Video in iCloud' : a.name}</span>
+          <span className="file-sub">Not on this Mac yet. Opening this conversation in Messages downloads it.</span>
         </span>
       </div>
     )
   }
-  if (a.kind === 'image' || a.kind === 'video') {
-    const src = a.thumbUrl ?? a.url
-    const ratio = a.width && a.height ? a.width / a.height : 4 / 3
-    const w = ratio >= 1 ? 360 : Math.round(300 * ratio)
-    return (
-      <>
-        <button type="button" className={`media-thumb ${a.isSticker ? 'is-sticker' : ''}`} onClick={() => setOpen(true)} style={{ width: w, aspectRatio: String(ratio) }} aria-label={`Open ${a.name}`}>
-          <img src={src} alt={a.name} loading="lazy" draggable={false} />
-          {a.kind === 'video' && (
-            <span className="media-play">
-              <Icon name="play" size={22} filled />
-            </span>
-          )}
-        </button>
-        {open && (
-          <Modal onClose={() => setOpen(false)} label={a.name} className="lightbox">
-            <div className="lightbox-bar">
-              <span>{a.name}</span>
-              <span className="lightbox-size">{fileSize(a.size)}</span>
-              <a className="icon-btn" href={a.url} target="_blank" rel="noreferrer" aria-label="Open original" title="Open original">
-                <Icon name="external" size={18} />
-              </a>
-              <button type="button" className="icon-btn" onClick={() => setOpen(false)} aria-label="Close">
-                <Icon name="x" size={18} />
-              </button>
-            </div>
-            {a.kind === 'video' && !a.url.startsWith('data:') && a.url !== '#' ? (
-              <video src={a.url} controls autoPlay className="lightbox-media" />
-            ) : (
-              <img src={a.url !== '#' ? a.url : src} alt={a.name} className="lightbox-media" />
-            )}
-          </Modal>
-        )}
-      </>
-    )
-  }
+  if (a.kind === 'image' || a.kind === 'video') return <MediaThumb a={a} />
   if (a.kind === 'audio') return <AudioRow a={a} voice={isAudioMessage} />
   return (
     <a className="file-card" href={a.url} target="_blank" rel="noreferrer noopener">
@@ -243,6 +258,73 @@ function AttachmentView({ a, isAudioMessage }: { a: Attachment; isAudioMessage: 
       </span>
       <Icon name="download" size={16} />
     </a>
+  )
+}
+
+/** Scale (w, h) down to fit a max box, never up. */
+function fitBox(w: number, h: number, max: number) {
+  const cap = Math.min(max, Math.round(window.innerWidth * 0.72))
+  const scale = Math.min(1, cap / w, max / h)
+  return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) }
+}
+
+/** A photo or video preview. Its size comes from the loaded image itself (the server's numbers are
+ *  only a first guess), so a wrong guess never crops a photo, and images without a built-in size
+ *  (SVG) still show up. */
+function MediaThumb({ a }: { a: Attachment }) {
+  const [open, setOpen] = useState(false)
+  const [broken, setBroken] = useState(false)
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
+  const src = a.thumbUrl ?? (a.kind === 'image' ? a.url : null)
+  const base = natural ?? (a.width && a.height ? { w: a.width, h: a.height } : { w: 4, h: 3 })
+  const box = fitBox(base.w, base.h, a.isSticker ? 140 : 360)
+  const lightbox = open && <Lightbox a={a} fallbackSrc={src} onClose={() => setOpen(false)} />
+  if (a.kind === 'image' && (broken || !src)) {
+    return (
+      <a className="file-card" href={a.url} target="_blank" rel="noreferrer noopener">
+        <span className="file-icon is-photo">
+          <Icon name="image" size={20} />
+        </span>
+        <span className="file-meta">
+          <span className="file-name">{a.name}</span>
+          <span className="file-sub">Can’t preview this photo here. Click to open it.</span>
+        </span>
+        <Icon name="external" size={16} />
+      </a>
+    )
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className={`media-thumb ${a.isSticker ? 'is-sticker' : ''} ${a.kind === 'video' ? 'is-video' : ''} ${broken || !src ? 'is-placeholder' : ''}`}
+        onClick={() => setOpen(true)}
+        aria-label={`Open ${a.name}`}
+      >
+        {src && !broken ? (
+          <img
+            src={src}
+            alt={a.name}
+            loading="lazy"
+            draggable={false}
+            style={box}
+            onLoad={(e) => {
+              const i = e.currentTarget
+              if (i.naturalWidth && i.naturalHeight) setNatural({ w: i.naturalWidth, h: i.naturalHeight })
+            }}
+            onError={() => setBroken(true)}
+          />
+        ) : (
+          <span className="media-placeholder">{a.name}</span>
+        )}
+        {a.kind === 'video' && (
+          <span className="media-play">
+            <Icon name="play" size={22} filled />
+          </span>
+        )}
+      </button>
+      {lightbox}
+    </>
   )
 }
 
@@ -310,7 +392,9 @@ function Unfurl({ p }: { p: LinkPreview }) {
         </a>
         {p.summary && <span className="unfurl-summary">{p.summary}</span>}
       </div>
-      {p.imageUrl && <img className="unfurl-img" src={p.imageUrl} alt="" loading="lazy" />}
+      {p.imageUrl && (
+        <img className="unfurl-img" src={p.imageUrl} alt="" loading="lazy" onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')} />
+      )}
     </div>
   )
 }
@@ -332,24 +416,59 @@ const TAPBACK_VERB: Record<string, string> = {
   sticker: 'stickered',
 }
 
-function Reactions({ reactions }: { reactions: Reaction[] }) {
+/** Reaction pills. Click one of the six tapbacks to add or remove yours (when tapbacks are on). */
+function Reactions({ m }: { m: Message }) {
+  const pending = useStore((s) => s.pendingTapbacks[m.id])
+  const on = useStore((s) => !!s.serverSettings?.tapbacksViaMessages)
+  const [picker, setPicker] = useState<HTMLElement | null>(null)
+  const reactions = shownReactions(m, pending)
+  if (!reactions.length) return null
+  const canReact = !m.event && !m.unsent && !m.id.startsWith('local:')
   return (
     <div className="reactions">
       {reactions.map((r, i) => {
         const mine = r.from.includes('me')
         const who = reactorNames(r.from)
         const label = `${who.charAt(0).toUpperCase() + who.slice(1)} ${TAPBACK_VERB[r.kind] ?? 'reacted'}${r.kind === 'emoji' ? ` with ${r.emoji}` : ' this'}`
+        const isPending = !!pending && mine && r.kind === pending.kind && !pending.remove
+        const face =
+          r.kind === 'sticker' && r.stickerUrl ? (
+            <img className="reaction-sticker" src={r.stickerUrl} alt="" />
+          ) : (
+            <span className="reaction-emoji">{r.emoji}</span>
+          )
+        const count = <span className="reaction-count">{r.from.length}</span>
+        const kind = r.kind
+        if (!canReact || !isClassic(kind)) {
+          return (
+            <span key={i} className={`reaction ${mine ? 'is-mine' : ''}`} title={label} aria-label={label}>
+              {face}
+              {count}
+            </span>
+          )
+        }
+        const action = !on ? 'Turn on tapbacks to react' : mine ? 'Click to remove yours' : 'Click to react too'
         return (
-          <span key={i} className={`reaction ${mine ? 'is-mine' : ''}`} title={label} aria-label={label}>
-            {r.kind === 'sticker' && r.stickerUrl ? (
-              <img className="reaction-sticker" src={r.stickerUrl} alt="" />
-            ) : (
-              <span className="reaction-emoji">{r.emoji}</span>
-            )}
-            <span className="reaction-count">{r.from.length}</span>
-          </span>
+          <button
+            key={i}
+            type="button"
+            className={`reaction is-button ${mine ? 'is-mine' : ''} ${isPending ? 'is-pending' : ''}`}
+            title={`${label}. ${action}`}
+            aria-label={`${label}. ${action}`}
+            aria-pressed={mine}
+            onClick={(e) => (on ? void sendTapback(m, kind) : setPicker(e.currentTarget))}
+          >
+            {face}
+            {count}
+          </button>
         )
       })}
+      {canReact && (
+        <button type="button" className="reaction is-button is-add" title="Add a tapback" aria-label="Add a tapback" onClick={(e) => setPicker(picker ? null : e.currentTarget)}>
+          <Icon name="smilePlus" size={15} />
+        </button>
+      )}
+      {picker && <TapbackPicker m={m} anchor={picker} onClose={() => setPicker(null)} />}
     </div>
   )
 }
@@ -410,18 +529,22 @@ function HoverBar({ m, inThread }: { m: Message; inThread: boolean }) {
   const remind = useMenu()
   const more = useMenu()
   const noReply = useMenu()
-  const open = !!remind.anchor || !!more.anchor || !!noReply.anchor
+  const react = useMenu()
+  const tapbacks = useStore((s) => !!s.serverSettings?.tapbacksViaMessages)
+  const open = !!remind.anchor || !!more.anchor || !!noReply.anchor || !!react.anchor
   return (
     <div className={`hover-bar ${open ? 'is-open' : ''}`} role="toolbar" aria-label="Message actions">
       <button
         type="button"
-        className="icon-btn"
-        title="Add reaction"
-        aria-label="Add reaction"
-        onClick={() => toast('Tapbacks can’t be sent from Backchannel yet. iMessage only accepts them from Messages.app.')}
+        className={`icon-btn ${react.anchor ? 'is-active' : ''}`}
+        title={tapbacks ? 'Tapback' : 'Tapback (needs turning on)'}
+        aria-label="Tapback"
+        aria-expanded={!!react.anchor}
+        onClick={react.open}
       >
         <Icon name="smilePlus" size={18} />
       </button>
+      {react.anchor && <TapbackPicker m={m} anchor={react.anchor} onClose={react.close} />}
       {!inThread && (
         <button type="button" className="icon-btn" title="Reply in thread" aria-label="Reply in thread" onClick={() => openThread(m.conversationId, m.threadRootId ?? m.id)}>
           <Icon name="thread" size={18} />

@@ -26,11 +26,15 @@ export function Avatar({
   const label = person?.name ?? name ?? '?'
   const tone = hashIndex(person?.handle ?? label, AVATAR_TONES)
   const style = { width: size, height: size, borderRadius: radius ?? Math.round(size * 0.22), fontSize: Math.max(10, Math.round(size * 0.4)) }
-  const body = person?.avatarUrl ? (
-    <img src={person.avatarUrl} alt="" draggable={false} />
-  ) : (
-    <span className="avatar-initials">{initials(label)}</span>
-  )
+  // A photo that won't load falls back to initials instead of the browser's broken-image icon.
+  const [failed, setFailed] = useState<string | null>(null)
+  const url = person?.avatarUrl ?? null
+  const body =
+    url && failed !== url ? (
+      <img src={url} alt="" draggable={false} onError={() => setFailed(url)} />
+    ) : (
+      <span className="avatar-initials">{initials(label)}</span>
+    )
   if (onClick) {
     return (
       <button type="button" className={`avatar tone-${tone}`} style={style} onClick={onClick} title={title ?? label} aria-label={title ?? label}>

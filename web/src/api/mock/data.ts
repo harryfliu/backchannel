@@ -15,6 +15,7 @@ import type {
   TapbackKind,
 } from '../types'
 import { avatars, scenes } from './art'
+import { prioritize } from './priority'
 
 const NOW = Date.now()
 
@@ -120,6 +121,7 @@ function msg(cid: string, from: Person | 'me', sentAt: string, text: string, ext
     effect: null,
     isAudioMessage: false,
     otpCode: null,
+    importance: null,
     event: null,
     clientId: null,
     ...rest,
@@ -146,6 +148,8 @@ function image(src: string, name: string, w = 800, h = 600): Attachment {
     width: w,
     height: h,
     isSticker: false,
+    isGenmoji: false,
+    emojiDescription: null,
     missing: false,
   }
 }
@@ -162,6 +166,8 @@ function file(name: string, kind: Attachment['kind'], size: number, mimeType: st
     width: thumb ? 800 : null,
     height: thumb ? 600 : null,
     isSticker: false,
+    isGenmoji: false,
+    emojiDescription: null,
     missing: false,
   }
 }
@@ -241,7 +247,12 @@ const soccerMsgs: Message[] = [
   }),
   msg(soc, P.kevin, ago(70), 'do we have pinnies or should I bring mine', { threadRootId: socRoot.id }),
   msg(soc, P.kevin, ago(64), 'Forecast says 58° and sunny ☀️', { unread: true, reactions: [r('like', [P.tomas])] }),
+  msg(soc, P.aisha, ago(52), "who has a pump? my ball's flat", { unread: true }),
+  msg(soc, P.jordan, ago(47), 'I got one', { unread: true }),
+  msg(soc, P.ben, ago(40), 'nate you’re on snack duty since you’re out 😂', { unread: true, reactions: [r('laugh', [P.kevin, P.aisha])] }),
+  msg(soc, P.aisha, ago(31), 'Leo can play keeper btw', { unread: true }),
   msg(soc, P.tomas, ago(20), 'Harry you in? need a head count by tonight', { unread: true, mentionsMe: true }),
+  msg(soc, P.kevin, ago(12), 'sunscreen gang 🧴', { unread: true }),
 ]
 
 // ---------------------------------------------------------------- Dinner Club
@@ -306,6 +317,7 @@ const momMsgs: Message[] = [
     attachments: [file("Grandma's pie crust.pdf", 'file', 184_000, 'application/pdf')],
   }),
   msg(mom, 'me', day(1, 21, 30), 'got it, thank you!!', { status: 'read', readAt: day(1, 21, 31) }),
+  msg(mom, P.mom, ago(4), "Can you call me in 20 min? Dad's flight got moved and I need to figure out pickup", { unread: true }),
 ]
 
 // ---------------------------------------------------------------- Priya
@@ -503,7 +515,7 @@ export function buildMockDb() {
     const last = list[list.length - 1]
     const unread = list.filter((m) => unreadIds.has(m.id))
     const awaitingSince = awaiting(d.kind, list, !!d.automated)
-    conversations.set(d.id, {
+    const c: Conversation = {
       id: d.id,
       kind: d.kind,
       title: d.title,
@@ -518,11 +530,21 @@ export function buildMockDb() {
       isAutomated: !!d.automated,
       awaitingReply: !!awaitingSince,
       awaitingSince,
+      priority: null,
       prefs: { starred: !!d.starred, muted: !!d.muted, snoozedUntil: null, section: null },
-    })
+    }
+    prioritize(c, list, awaitingSince, mockVips)
+    conversations.set(d.id, c)
   }
-  return { people, messages, conversations }
+  return { people, messages, conversations, vips: mockVips }
 }
+
+/** People close to the user, for the "vip" reason: starred DMs and family. */
+export const mockVips = new Map<string, string>([
+  [P.mom.handle, P.mom.shortName],
+  [P.dad.handle, P.dad.shortName],
+  [P.grace.handle, P.grace.shortName],
+])
 
 export const laterSeed = (): LaterItem[] => [
   {

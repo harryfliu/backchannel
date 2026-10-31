@@ -342,7 +342,7 @@ class ConversationService:
         me_factory: Callable[[], Me],
         sidebar_days: int,
         sidebar_max: int,
-        attachment_kinds: Callable[[list[int]], dict[int, list[tuple[str, str, bool, bool]]]],
+        attachment_kinds: Callable[[list[int]], dict[int, list[tuple[str, str, bool, bool, bool]]]],
     ):
         self.db = db
         self.tracker = tracker
@@ -505,6 +505,7 @@ class ConversationService:
                 "isAutomated": facts.automated,
                 "awaitingReply": awaiting,
                 "awaitingSince": iso_apple(facts.awaiting_since) if awaiting else None,
+                "priority": None,  # "Needs you" (round 6 contract): not computed yet
                 "prefs": {
                     "starred": bool(prefs.get("starred")),
                     "muted": bool(prefs.get("muted")),
@@ -638,7 +639,7 @@ class ConversationService:
             return True
         return any(H.looks_automated(t) for t in incoming_texts if t)
 
-    def preview_text(self, row: Any, attachments: list[tuple[str, str, bool, bool]]) -> str | None:
+    def preview_text(self, row: Any, attachments: list[tuple[str, str, bool, bool, bool]]) -> str | None:
         """One-line preview: text, 'Photo', 'Loved “…”', an event line…"""
         directory = self._directory
         assert directory is not None
@@ -663,6 +664,8 @@ class ConversationService:
         if visible or row["is_audio_message"]:
             kinds = [a[0] for a in visible]
             names = [a[1] for a in visible]
+            if visible and all(a[4] for a in visible):
+                return "Genmoji"
             stickers = bool(visible) and all(a[3] for a in visible)
             return attachment_label(kinds, names, bool(row["is_audio_message"]), stickers)
         if row["balloon_bundle_id"]:
