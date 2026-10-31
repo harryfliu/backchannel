@@ -26,7 +26,9 @@ def test_unread_and_mention_counts(ro):
     assert counts["dm:24273"] == (1, 0)
     assert counts["dm:69525"] == (1, 0)
     assert counts["dm:+14155550161"] == (0, 0)  # Marcus: read on the phone, not answered
-    assert counts["dm:+15105550123"] == (0, 0)
+    assert counts["dm:+15105550123"] == (1, 0)  # Dad: "Can you call me in 20 min?"
+    assert counts["g:chat100000000000000005"] == (7, 1)  # the busy climbing group
+    assert counts["dm:+14155550163"] == (3, 0)  # Nina, three in a row
 
 
 def test_mark_read_uses_a_local_mark(rw):
@@ -55,6 +57,9 @@ EXPECTED_AWAITING = {
     DINNER: "d_sake",               # group: mentions Harry
     SOCCER: "soc_ball_reply",       # group: inline reply to Harry's message (Nate's plain question doesn't count)
     "dm:+14155550199": "vet_closer",  # vet: opens with "Perfect," but still asks "Can you bring his records"
+    "g:chat100000000000000005": "cc_reply",  # climbing: an inline reply to Harry, before the @mention
+    "dm:+14155550157": "bp_confirm",  # Bay Plumbing: "Can you confirm today to hold the slot?"
+    "dm:+14155550163": "n_2",       # Nina: "are you around?"
 }
 
 

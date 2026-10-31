@@ -15,7 +15,7 @@ import type {
   TapbackKind,
 } from '../types'
 import { avatars, scenes } from './art'
-import { prioritize } from './priority'
+import { ASK_RE, prioritize } from './priority'
 
 const NOW = Date.now()
 
@@ -466,7 +466,7 @@ function summarizeThreads(messages: Message[]) {
 // "Waiting on you" — mirrors docs/api.md. Their message must ask something of you,
 // and must not just close the loop ("perfect, see you then").
 const CLOSER_RE = /^(ok|okay|k|kk|lol|lmao|haha+|ty|thanks|thank you|thx|np|no worries|sure|nice|cool|great|perfect|sounds good|got it|will do|yes|yeah|yep|same|true|word|bet|fr|see you|see ya|love you|👍|❤️|😂)\b/i
-const ASK_RE = /\?|\b(can you|could you|would you|will you|are you|do you|did you|have you|lmk|let me know|call me|text me|send me|wanna|want to|down to|thoughts|when you get a chance)\b/i
+// ASK_RE lives in ./priority (shared with the "Needs you" rules).
 
 export function awaiting(kind: 'dm' | 'group', messages: Message[], automated: boolean) {
   if (automated) return null

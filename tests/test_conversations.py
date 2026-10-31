@@ -104,7 +104,7 @@ def test_me(ro):
 def test_health(ro):
     health = ro.get("/api/health")
     assert health["ok"] and health["chatDb"]["readable"] and health["chatDb"]["error"] is None
-    assert health["contacts"]["count"] == 14
+    assert health["contacts"]["count"] == 17
     assert health["send"]["mode"] == "dry-run"
 
 

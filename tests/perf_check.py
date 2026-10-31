@@ -147,7 +147,7 @@ def main() -> None:
         services = Services(settings_for(fx, tmp_path / "state"))
         convs = services.convs
         listed = timed("conversation list (cold)", convs.list)
-        print(f"    -> {len(listed)} conversations in the sidebar")
+        print(f"    -> {len(listed)} conversations in the sidebar, {sum(1 for c in listed if c['priority'])} need you")
         timed("conversation list (warm, cache dropped)", lambda: (setattr(convs, "_list_cache", None), convs.list())[1],
               repeat=3)
         timed("conversation list (cached)", convs.list, repeat=3)
@@ -155,6 +155,8 @@ def main() -> None:
         fakedb.insert_message(conn, chat_rowid=1, text="new one", is_from_me=False, handle_rowid=1, date=time.time())
         conn.close()
         timed("conversation list (after one new message)", convs.list)
+        services.watcher.prime()
+        timed("needs-you re-check (watcher tick, nothing new)", services.watcher.tick, repeat=3)
         biggest = max(convs.directory().unique_convs(), key=lambda c: convs.last_date(c))
         timed("messages page (60) in a busy chat", lambda: services.builder.page(biggest, None, 60), repeat=3)
         timed("unread scan", services.convs._load_unread, repeat=3)

@@ -70,7 +70,7 @@ def test_report_counts_only(doctor_env):
     for heading in ("## Backchannel", "## chat.db", "## Attachments (last 90 days)", "## Contacts", "## AI",
                     "## Chief", "## Result"):
         assert heading in text
-    assert "- messages: 118" in text and "- readable: yes" in text
+    assert "- messages: 135" in text and "- readable: yes" in text
     assert "photos by storage: inline 3, external 1, images_dir 1, unconvertible 1, invalid 1, missing_external 1" in text
     assert "- backend in use: claude-cli" in text and "claude --version: 2.1.3 (Claude Code)" in text
     assert "- test call: OK in" in text

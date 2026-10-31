@@ -132,30 +132,53 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
   message. (In groups the `mention` / `reply` reasons already say it.)
 - `mention` / `reply`: a group message that mentions the user, or an inline
   reply to one of the user's messages, that is unread or in the unanswered run.
-- `time`: an *unread* message (or an asking message in a DM's unanswered run)
-  names a time that is still ahead, judged from the message's own timestamp in
-  the Mac's time zone:
+- `time` and `urgent` look at *pending* messages: unread ones, and in a DM that
+  is `awaitingReply` also every message of the unanswered run that asks
+  something (the request test of "Waiting on you": `?`, a request phrase or a
+  mention), read or not: reading "Can you call me in 20 min?" doesn't resolve it,
+  answering does (and so does a closing "ok thanks"). In groups only unread
+  messages are pending (a mention or reply already keeps it in Needs you until
+  the user answers). Both still expire: a time an hour after it passes or when
+  its window ends, everything after 3 days.
+- `time`: a pending message names a time that is still ahead, judged from the
+  message's own timestamp in the Mac's time zone:
   - in N min/mins/minutes/hr/hrs/hours → `at` = sent + N, label = that clock
     time ("Today 7:42 PM"; the UI shows a live "In 12 min" when it's close);
-  - a clock time: "7pm", "7:30 pm", "at 7", "at 7:30", "by 5", noon, midnight.
-    Bare numbers count only with am/pm or after at/by; without am/pm take the
-    next 7:00 or 19:00 after the message, skipping 1–6 am. A clock time attaches
-    to a day named in the same message ("tomorrow at 9", "Friday 7pm") → label
-    "Today 7 PM", "Tomorrow 9 AM", "Fri 7 PM";
+  - a clock time: "7pm", "7:30 pm", "at 7", "at 7:30", "by 5", "7:30", noon,
+    midnight. Bare hours count only with am/pm or after at/by; a bare H:MM
+    ("7:30?") counts on its own when the minutes are two digits 00–59 with no
+    digit right after, and it isn't a ratio, score, pace or race time ("3:1",
+    "won 2:10", "2:10 pace", "1:23:45"). Without am/pm: 12 means noon (unless
+    "am" or "midnight" is said); a morning word in the text means am and
+    tonight/evening/night pm; on a named day ("Friday at 7", "tomorrow at 8")
+    7–11 means pm; otherwise take the next 7:00 or 19:00 after the message,
+    skipping 1–6 am. A clock time attaches to a day named in the same message
+    ("tomorrow at 9am", "Friday 7pm") → label "Today 7 PM", "Tomorrow 9 AM",
+    "Fri 7 PM";
   - this morning / this afternoon / this evening / tonight → `at` null (they're
     vague), counting until 12:00, 17:00, 23:59, 23:59 that day; label "This
     morning", "This afternoon", "Tonight" (never urgent on their own);
   - today, eod / end of day → `at` null, label "Today", window ends 23:59;
   - tomorrow / tmrw (optionally + morning/afternoon/night or a clock time) →
     label "Tomorrow" or "Tomorrow 9 AM";
-  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri".
+  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri";
+    an explicit date ("Nov 3", "on 11/3") is a named day too, so "Tue Nov 3 at
+    10am" isn't read as the next 10 AM.
+  Also understood: "@ 7" like "at 7", "at 19:00", "in an hour", "in half an
+  hour", "20m"/"2h", "tonite", "tmr". URLs, emails, phone numbers and numbers
+  followed by a unit ("at 3 people", "by 5%") never count.
   It counts while the moment (or the day's 23:59 when `at` is null) is still
   ahead and within 36 hours, and for up to 1 hour after a named time passes.
   A message mentioning several times uses the soonest still ahead.
-- `urgent`: an unread message with urgent, asap, a.s.a.p, emergency, 911,
-  hospital, accident, "call me", "call asap", "pick up", "answer your phone",
-  "need you now", or "help!" (whole words, any case; `word` = the match,
-  lowercase).
+- `urgent`: a pending message with urgent, asap, a.s.a.p, emergency, 911,
+  hospital, accident, "call asap", "pick up the phone" / "pick up your phone",
+  "pick up!", "answer your phone", "need you now", or "help!", or "call me"
+  together with an immediacy word in the same message (asap / a.s.a.p, now /
+  right now, right away, immediately, urgent, emergency, "when you see this")
+  (whole words, any case; `word` = the first match, lowercase). A plain
+  "pick up" ("can you pick up milk") or "call me" ("call me when you get a
+  chance", "call me later": that's `asked`) doesn't count; "Can you call me in
+  20 min?" is urgent through its `time`, not the words.
 - `repeat`: 3 or more unread messages in a row from the same person, each
   within 30 minutes of the one before (`count` = how many).
 - `vip`: the sender is close: the other person in a starred DM, in Chief's
@@ -165,13 +188,16 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
 Level is `urgent` when there's an `urgent` or `repeat` reason, or a `time` whose
 `at` is within the next 3 hours (or passed less than an hour ago); otherwise
 `high`. `score` orders within a level: start at 300 (urgent) or 100 (high),
-add urgent +80, repeat +40 per message past 2, time-in-3h +80, time +30,
-asked +60, mention +50, reply +40, vip +25, then subtract the hours since the
-newest counting message (at most 72). `messageId` is the counting message with
-the most weight (newest on ties). `until` is when the earliest time-based reason
-stops counting, or null. Priorities are recomputed whenever the conversation
-changes and every 5 minutes for those with an `until`; a change emits the
-usual `conversation` event, and new messages arrive with `importance` set.
+add urgent +80, repeat +40 per message past 2, time +80 when it's within 3
+hours (else +30), asked +60, mention +50, reply +40, vip +25 (each reason in
+`priority.reasons` once: for `repeat` the longest streak, for the others the
+newest), then subtract the hours since the newest counting message (at most
+72), rounded. `messageId` is the counting message with the most weight (the
+same weights over its own reasons; newest on ties). `until` is when the earliest
+time-based reason stops counting (a moment + 1 h, or the window's end), or null.
+Priorities are recomputed whenever the conversation changes and at least every
+5 minutes (the server re-checks every conversation each minute); a change emits
+the usual `conversation` event, and new messages arrive with `importance` set.
 
 **Automated.** `isAutomated` when the sender is a short code (3–6 digits) or a
 non-contact who the user has never written to and whose texts look automated

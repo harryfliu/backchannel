@@ -1,9 +1,14 @@
 // "Needs you" for the mock: a compact version of the server's rules (docs/api.md, "Needs you").
 import type { Conversation, Message, Priority, PriorityReason } from '../types'
 
+/** Asks something of the user: a "?" or a request phrase (the "Waiting on you" rule). */
+export const ASK_RE = /\?|\b(can you|could you|would you|will you|are you|do you|did you|have you|lmk|let me know|call me|text me|send me|wanna|want to|down to|thoughts|when you get a chance)\b/i
+
 const HOUR = 3600000
 const DAY = 24 * HOUR
-const URGENT_RE = /\b(urgent|asap|a\.s\.a\.p|emergency|911|hospital|accident|call me|call asap|pick up|answer your phone|need you now)\b|\bhelp!/i
+// "call me" alone is just a request ("call me when you get a chance"); it's urgent next to now/asap/…
+const URGENT_RE =
+  /\b(urgent|asap|a\.s\.a\.p|emergency|911|hospital|accident|call asap|answer your phone|need you now|pick up (?:the|your) phone)\b|\bhelp!|\bpick up!|\bcall me\b(?=.*\b(?:asap|now|right away|immediately|urgent|emergency|when you see this)\b)|\b(?:asap|now|right away|immediately|urgent|emergency|when you see this)\b(?=.*\bcall me\b)/i
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 const ORDER: PriorityReason['kind'][] = ['urgent', 'repeat', 'time', 'asked', 'mention', 'reply', 'vip']
 const WEIGHT: Record<PriorityReason['kind'], number> = { urgent: 80, repeat: 40, time: 30, asked: 60, mention: 50, reply: 40, vip: 25 }
@@ -109,11 +114,12 @@ export function prioritize(c: Conversation, items: Message[], awaitingSince: str
     if (!recent(m) || !(unread.has(m.id) || run.has(m.id))) continue
     if (c.kind === 'group' && m.mentionsMe) add(m, { kind: 'mention' })
     if (m.threadRootId && mine.has(m.threadRootId)) add(m, { kind: 'reply' })
-    if (unread.has(m.id) || (c.kind === 'dm' && m === asking)) {
+    // Time and urgency count while unread; in a DM, a question you haven't answered keeps them
+    // even after you've read it ("Can you call me in 20 min?").
+    const openAsk = c.kind === 'dm' && run.has(m.id) && ASK_RE.test(m.text)
+    if (unread.has(m.id) || openAsk) {
       const hit = findTime(m.text, new Date(m.sentAt), now)
       if (hit) add(m, { kind: 'time', label: hit.label, at: hit.at ? hit.at.toISOString() : null })
-    }
-    if (unread.has(m.id)) {
       const u = m.text.match(URGENT_RE)
       if (u) add(m, { kind: 'urgent', word: u[0].toLowerCase() })
     }

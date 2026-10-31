@@ -189,6 +189,45 @@ variables override both — mostly for dev and tests:
 - **Server settings** (`GET/PATCH /api/settings`) are stored in state.db;
   unknown keys are ignored and missing ones keep their value.
 
+## Needs you (priority)
+
+What needs Harry first, worked out on the Mac with no AI (rules: docs/api.md,
+"Needs you"). Code: `server/timephrases.py` (times named in a text),
+`server/priority.py` (the rules), `server/vips.py` (who's close), wired into
+`ConversationService` (`Conversation.priority`, `Message.importance`).
+
+- **What counts:** real messages from others in the last 3 days, in
+  conversations that aren't muted or automated. A message counts when it asks
+  Harry something (DMs: the first asking message of the unanswered run),
+  mentions him or replies inline to him (unread or unanswered), names a time
+  that's coming up or uses urgent words (unread, or in a DM waiting on him any
+  unanswered message that asks something — reading "call me in 20 min" doesn't
+  resolve it), or is the third+ unread text in a row from one person within 30
+  minutes. Answered messages stop counting; times stop counting an hour after
+  they pass.
+- **VIPs** (only ever added to a message that already counts): the other person
+  in a starred DM; anyone in Chief's people (matched by name like the Chief
+  card: full name or nickname, else a first name only one Chief person has —
+  Chief has no phone numbers); and the 8 people Harry sent the most texts to in
+  the last 90 days (DMs; one query, cached 10 minutes).
+- **When it's recomputed:** a conversation's priority is cached until its own
+  messages, read mark, mute/star, or the VIP set change, and at most 5 minutes;
+  the watcher re-checks every summary once a minute and emits `conversation`
+  only when something actually changed. Conversations with nothing in the last
+  3 days, or with no unread or unanswered message, cost nothing.
+- **Seeing why:** each message's `importance` lists its reasons, and the
+  conversation's `priority.reasons` is their union (with `messageId` to jump to).
+  `curl -s localhost:5556/api/conversations | jq '.conversations[] |
+  select(.priority) | {title, priority}'` shows them (after `GET /api/session`
+  for the cookie); `python tests/check_live.py` prints how many there are.
+- **Time zone:** times like "7pm" use the Mac's zone (`/etc/localtime`, or `TZ`).
+- **Dev fixtures** (`./backchannel dev`) have one of each: Dad ("Can you call me in
+  20 min?", starred: urgent), Nina Shah (three texts in a row: urgent), Climbing
+  Crew 🧗 (7 unread, an @mention with "by tonight", an inline reply), Bay
+  Plumbing ("confirm today"), and Theo Grant (a time that already passed:
+  nothing). "In 20 min" stops counting about 75 minutes after the fixtures are
+  made: `./backchannel dev --fresh` regenerates them.
+
 ## Messages helpers (experimental)
 
 Three things Apple gives other apps no way to do, done by driving the Messages

@@ -73,6 +73,7 @@ class _Context:
     local_roots: dict[str, str] = field(default_factory=dict)
     client_ids: dict[str, str] = field(default_factory=dict)
     automated: dict[str, bool] = field(default_factory=dict)
+    importance: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
 
 
 class MessageBuilder:
@@ -210,6 +211,13 @@ class MessageBuilder:
                 out.append(message)
         return out
 
+    def _importance(self, conv: Conv | None, ctx: _Context) -> dict[str, list[dict[str, Any]]]:
+        if conv is None:
+            return {}
+        if conv.id not in ctx.importance:
+            ctx.importance[conv.id] = self.convs.importance_map(conv)
+        return ctx.importance[conv.id]
+
     def _automated(self, conv: Conv | None, ctx: _Context) -> bool:
         if conv is None:
             return False
@@ -295,7 +303,7 @@ class MessageBuilder:
             "effect": H.effect_name(row["expressive_send_style_id"]),
             "isAudioMessage": bool(row["is_audio_message"]),
             "otpCode": otp,
-            "importance": None,  # "Needs you" (round 6 contract): not computed yet
+            "importance": None if from_me or event is not None else self._importance(conv, ctx).get(guid),
             "event": event,
             "clientId": ctx.client_ids.get(guid),
         }

@@ -61,6 +61,9 @@ CONTACTS: list[dict[str, Any]] = [
     dict(key="aisha", first="Aisha", last="Bello", phones=["(415) 555-0139"]),
     dict(key="ben", first="Ben", last="Carter", phones=["(415) 555-0143"], source="local"),
     dict(key="sunset", org="Sunset Auto Repair", phones=["(415) 555-0170"], source="local"),
+    dict(key="plumbing", org="Bay Plumbing", phones=["(415) 555-0157"]),
+    dict(key="nina", first="Nina", last="Shah", phones=["(415) 555-0163"]),
+    dict(key="theo", first="Theo", last="Grant", phones=["(415) 555-0166"]),
     dict(key="me", first="Harry", last="Liu", phones=["(510) 555-0100"], emails=[ME_EMAIL], source="root",
          photo="thumb_png"),
 ]
@@ -72,6 +75,7 @@ HANDLES = {
     "ellie": "+16505550147", "sam": "+14155550112", "tomas": "+14155550118", "kevin": "+14155550126",
     "aisha": "+14155550139", "ben": "+14155550143", "sunset": "+14155550170", "nate": "+14155550155",
     "vet": "+14155550199", "bank": "24273", "ups": "69525", "dental": "36320", "me": ME_PHONE,
+    "plumbing": "+14155550157", "nina": "+14155550163", "theo": "+14155550166",
 }
 
 TAPBACK_VERBS = {2000: "Loved", 2001: "Liked", 2002: "Disliked", 2003: "Laughed at", 2004: "Emphasized",
@@ -212,6 +216,16 @@ class ChatBuilder:
 
     def ago(self, hours: float = 0, minutes: float = 0) -> float:
         return (self.now - timedelta(hours=hours, minutes=minutes)).timestamp()
+
+    def ago_today(self, minutes: float) -> float:
+        """`minutes` ago, but never before today's midnight (squeezed, order kept), so a text
+        saying "tonight" or "today" still means today when the fixtures are made just after midnight."""
+        moment = self.now - timedelta(minutes=minutes)
+        midnight = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if moment >= midnight + timedelta(minutes=1):
+            return moment.timestamp()
+        span = (self.now - midnight).total_seconds()
+        return (midnight + timedelta(seconds=span * max(0.05, 1 - minutes / 120))).timestamp()
 
     # rows ------------------------------------------------------------------------
 
@@ -443,11 +457,16 @@ def build_story(b: ChatBuilder) -> None:
     b.chat("ups", "SMS;-;69525", ["ups"])
     b.chat("dental", "SMS;-;36320", ["dental"])
     b.chat("self", "iMessage;-;+15105550100", ["me"])
+    b.chat("plumbing", "SMS;-;+14155550157", ["plumbing"])
+    b.chat("nina", "iMessage;-;+14155550163", ["nina"])
+    b.chat("theo", "iMessage;-;+14155550166", ["theo"])
     b.chat("family", "iMessage;+;chat100000000000000001", ["mom", "dad", "grace"], name="Liu Family 🏡", group=True)
     b.chat("soccer", "iMessage;+;chat100000000000000002", ["jordan", "tomas", "kevin", "aisha", "ben", "nate"],
            name="Sunday Soccer ⚽", group=True)
     b.chat("dinner", "iMessage;+;chat100000000000000003", ["priya", "ellie", "sam", "jordan"], name="Dinner Club 🍜", group=True)
     b.chat("trio", "iMessage;+;chat100000000000000004", ["jordan", "sam", "ellie"], group=True)
+    b.chat("climbing", "iMessage;+;chat100000000000000005", ["jordan", "priya", "sam", "aisha"],
+           name="Climbing Crew 🧗", group=True)
 
     # -- Jordan: phone, SMS and email chats that merge into one DM ------------------------------
     old = b.msg("jordan_sms", "jordan", "it's jordan, new number!", time.time(), label="j_2015", store_text=True,
@@ -501,6 +520,10 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("dad", "me", "sure, sunday afternoon?", b.day(12, 17, 45))
     b.msg("dad", "dad", "Sunday works.", b.day(12, 17, 50))
     b.msg("dad", "dad", "call me when you get a chance", b.ago(hours=5), label="d_call")
+    # "Needs you": a time in 20 min (urgent level) + asked (on d_call) + vip (Dad is starred in dev).
+    # "call me" alone isn't an urgent word.
+    b.msg("dad", "dad", "Can you call me in 20 min? Need to go over the insurance forms", b.ago(minutes=5),
+          label="d_call_soon", unread=True)
 
     # -- Grace ----------------------------------------------------------------------------------
     b.msg("grace", "grace", "can you pick up the pie from Tartine on Wednesday?", b.day(5, 20, 0))
@@ -647,6 +670,44 @@ def build_story(b: ChatBuilder) -> None:
                          "emoji_image_short_description": "dog wearing sunglasses"})])
 
 
+def build_needs_you(b: ChatBuilder) -> None:
+    """Conversations for "Needs you" (docs/api.md): one or more of each reason, relative to now."""
+    # A busy group: 7 unread, one mentions Harry with a deadline, one is an inline reply to him.
+    b.msg("climbing", "me", "I'm in for the trip", b.ago(hours=3), label="cc_mine")
+    b.msg("climbing", "jordan", "who's driving?", b.ago_today(50), unread=True)
+    b.msg("climbing", "sam", "I can take 3", b.ago_today(48), unread=True)
+    b.msg("climbing", "priya", "yay! can you bring the rope?", b.ago_today(45), thread="cc_mine", label="cc_reply",
+          unread=True)
+    b.msg("climbing", "aisha", "gym first or straight to the crag?", b.ago_today(42), unread=True)
+    b.msg("climbing", "jordan", "crag", b.ago_today(40), unread=True)
+    b.msg("climbing", "aisha", "Harry need a head count by tonight", b.ago_today(35), label="cc_headcount",
+          unread=True, mentions=[(0, 5, ME_PHONE)])
+    b.msg("climbing", "sam", "lol same", b.ago_today(30), unread=True)
+    # A contractor who needs an answer today.
+    b.msg("plumbing", "me", "Hi, do you have anything this week for the water heater?", b.day(2, 10, 0))
+    b.msg("plumbing", "plumbing", "We have one opening coming up, I'll check the schedule", b.day(2, 10, 30))
+    b.msg("plumbing", "plumbing", "Hi Harry, this is Bay Plumbing. Can you confirm today to hold the slot?",
+          b.ago_today(25), label="bp_confirm", unread=True)
+    # Three texts in a row within minutes.
+    b.msg("nina", "nina", "hey", b.ago(minutes=12), label="n_1", unread=True)
+    b.msg("nina", "nina", "are you around?", b.ago(minutes=10), label="n_2", unread=True)
+    b.msg("nina", "nina", "need to ask you something about the trip", b.ago(minutes=8), label="n_3", unread=True)
+    # A time that already passed: doesn't count.
+    b.msg("theo", "me", "what time are you getting here?", b.ago(hours=4))
+    b.msg("theo", "theo", "running late, be there in 15 min", b.ago(hours=3), label="t_late", unread=True)
+
+
+def write_dev_state(out: Path) -> None:
+    """Dev prefs for the fixtures: Dad's DM is starred (so he's a VIP in "Needs you")."""
+    from server.state import State
+
+    state = State(out / "state" / "state.db")
+    try:
+        state.set_prefs("dm:" + HANDLES["dad"], {"starred": True})
+    finally:
+        state.close()
+
+
 def write_chief(out: Path) -> None:
     """A small chief.db (Harry's chief-of-staff app) with people, loops and facts."""
     path = out / "chief.db"
@@ -697,7 +758,7 @@ def generate(out: Path = DEFAULT_OUT, now: datetime | None = None) -> dict[str, 
     out.mkdir(parents=True, exist_ok=True)
     for name in ("chat.db", "chat.db-wal", "chat.db-shm", "manifest.json"):
         (out / name).unlink(missing_ok=True)
-    for folder in ("AddressBook", "Attachments"):
+    for folder in ("AddressBook", "Attachments", "StickerCache", "Containers"):
         shutil.rmtree(out / folder, ignore_errors=True)
     for stale in (out / "state").glob("search.db*") if (out / "state").exists() else []:
         stale.unlink()  # row ids change between generations
@@ -707,7 +768,9 @@ def generate(out: Path = DEFAULT_OUT, now: datetime | None = None) -> dict[str, 
     write_chief(out)
     builder = ChatBuilder(out, now)
     build_story(builder)
+    build_needs_you(builder)
     builder.finish()
+    write_dev_state(out)
 
     (out / "texting_style.json").write_text(json.dumps({
         "profile": ("Harry texts casually and mostly in lowercase, with short one-line messages and little "

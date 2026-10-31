@@ -58,7 +58,8 @@ def test_thread_404s(ro):
 
 def test_thread_roots_list(ro):
     items = ro.get("/api/threads")["items"]
-    assert [m["id"] for m in items] == [ro.guid("f_root"), ro.guid("soc_ball"), ro.guid("soc_root")]
+    assert {m["id"] for m in items} == {ro.guid(label) for label in ("f_root", "cc_mine", "soc_ball", "soc_root")}
+    assert [m["id"] for m in items][-2:] == [ro.guid("soc_ball"), ro.guid("soc_root")]
     stamps = [m["thread"]["lastReplyAt"] for m in items]
     assert stamps == sorted(stamps, reverse=True)
 
