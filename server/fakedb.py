@@ -208,6 +208,33 @@ def send_as_messages_app(
         conn.close()
 
 
+def write_as_messages_app(db_path: Path, chat_rowid: int | None, *, text: str | None,
+                          my_handle: str | None = None, **columns: Any) -> tuple[int, str]:
+    """Insert an outgoing row into an existing chat (a tapback, a thread reply…) as Messages.app would."""
+    if chat_rowid is None:
+        raise LookupError("That message isn't in a chat.")
+    conn = connect(db_path)
+    try:
+        chat = conn.execute("SELECT * FROM chat WHERE ROWID = ?", (chat_rowid,)).fetchone()
+        if chat is None:
+            raise LookupError(f"No chat {chat_rowid} in the fake chat.db.")
+        handles = chat_handles(conn, chat_rowid)
+        handle_rowid = handles[0] if chat["style"] == 45 and handles else 0
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = insert_message(
+                conn, chat_rowid=chat_rowid, text=text, is_from_me=True, handle_rowid=handle_rowid,
+                service=chat["service_name"] or "iMessage", my_handle=my_handle, **columns,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return result
+    finally:
+        conn.close()
+
+
 def start_chat_as_messages_app(db_path: Path, handle: str, *, text: str, my_handle: str | None = None) -> tuple[int, str]:
     """Messages.app sending to a new handle: create handle + 1:1 chat (if needed) and the message."""
     conn = connect(db_path)

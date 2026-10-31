@@ -10,7 +10,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -27,7 +27,7 @@ from .config import Settings, load_dotenv, load_settings, system_full_name
 from .contacts import ContactBook
 from .conversations import ConversationService, NotFound, build_me, conv_title, my_handles
 from .emoji import EmojiError, EmojiStore, clean_name
-from .messages_ui import Job, MessagesUI, Runner, candidate_names, osascript_runner
+from .messages_ui import HELPER_SETTINGS, TAPBACKS_OFF, MessagesUI, Runner, Simulator, osascript_runner
 from .stickers import StickerLibrary
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
@@ -102,6 +102,14 @@ class NewConversationBody(BaseModel):
 class SettingsBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
     markReadInMessages: bool | None = None
+    tapbacksViaMessages: bool | None = None
+    threadRepliesViaMessages: bool | None = None
+
+
+class TapbackBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["love", "like", "dislike", "laugh", "emphasize", "question"]
+    remove: bool = False
 
 
 class EmojiLinkBody(BaseModel):
@@ -162,10 +170,17 @@ class Services:
         self.emoji = EmojiStore(self.state, settings.state_dir / "emoji",
                                 convert_heic=lambda data: self.media.png_bytes(data, uuid.uuid4().hex))
         self.stickers = StickerLibrary(self.db, self.tracker, self.state, self.media)
-        # The real Messages UI script only runs when sends are real (never in dry-run / fake DB).
+        # The Messages helpers only drive the real app when sends are real; with the fake chat.db they
+        # write the rows the app would have written instead (tests inject a fake runner).
+        simulator = None
         if messages_ui_runner is None and settings.send_mode == "applescript" and not settings.fake_db:
             messages_ui_runner = osascript_runner
-        self.messages_ui = MessagesUI(self.db, self.state, messages_ui_runner)
+        elif messages_ui_runner is None and settings.fake_db:
+            simulator = Simulator(settings.chat_db, my_handle=self.sending._my_handle)
+        self.messages_ui = MessagesUI(self.db, self.state, messages_ui_runner, publish=self.hub.publish,
+                                      simulator=simulator, convs=self.convs, builder=self.builder,
+                                      contacts=self.contacts)
+        self.sending.helpers = self.messages_ui
         self.ai = AIService(settings, self.convs, self.builder, self.state, client_factory=ai_client_factory)
 
     def _me(self):
@@ -356,29 +371,24 @@ def create_app(
     def media(conv_id: str, before: str | None = None, limit: int = Query(60, ge=1, le=200)):
         return s.builder.media_page(s.convs.get(conv_id), before, limit)
 
-    def _messages_ui_job(conv, title: str) -> Job:
-        """What to look for in Messages' sidebar for this conversation."""
-        if conv.kind == "dm" and conv.persons:
-            person = conv.persons[0]
-            contact = s.contacts.lookup(person.handle)
-            names, loose = candidate_names(
-                title,
-                full_name=" ".join(p for p in (contact.first, contact.last) if p) if contact else None,
-                nickname=contact.nickname if contact else None,
-                organization=contact.organization if contact else None,
-                person_name=person.name, handle=person.handle, short_name=person.short_name)
-        else:
-            names, loose = candidate_names(title)
-        return Job(conv.id, title, names, list(conv.chat_ids), loose)
-
     @app.post("/api/conversations/{conv_id}/read")
     def mark_read(conv_id: str):
         conv = s.convs.get(conv_id)
         summary = s.convs.mark_read(conv)
         s.watcher.note_state_change(summary["id"])
-        if s.messages_ui.enabled:  # experimental: also mark it read in Messages, in the background
-            s.messages_ui.request(_messages_ui_job(conv, summary["title"]))
+        if s.messages_ui.mark_read_on:  # experimental: also mark it read in Messages, in the background
+            s.messages_ui.request(s.messages_ui.mark_read_job(conv, summary["title"]))
         return summary
+
+    @app.post("/api/conversations/{conv_id}/messages/{message_id}/tapback", status_code=202)
+    def send_tapback(conv_id: str, message_id: str, body: TapbackBody):
+        """Add or remove one of your tapbacks by driving the Messages app (experimental)."""
+        if not s.messages_ui.tapbacks_on:
+            raise ApiError(409, TAPBACKS_OFF)
+        conv = s.convs.get(conv_id)
+        job = s.messages_ui.tapback_job(conv, message_id, body.kind, body.remove)  # 404 / 400
+        s.messages_ui.request(job)
+        return JSONResponse({"status": "queued"}, status_code=202)
 
     # ------------------------------------------------------------------ server settings
 
@@ -389,9 +399,16 @@ def create_app(
     @app.patch("/api/settings")
     def patch_settings(body: SettingsBody):
         patch: dict[str, Any] = {}
-        if "markReadInMessages" in body.model_fields_set and body.markReadInMessages is not None:
-            patch["markReadInMessages"] = bool(body.markReadInMessages)
-        return s.state.update_settings(patch)
+        for key in HELPER_SETTINGS:
+            value = getattr(body, key)
+            if key in body.model_fields_set and value is not None:
+                patch[key] = bool(value)
+        before = s.state.get_settings()
+        after = s.state.update_settings(patch)
+        if any(after[key] and not before[key] for key in HELPER_SETTINGS):
+            # Ask for "control System Events" now, not in the middle of the first real action.
+            s.messages_ui.probe()
+        return after
 
     # ------------------------------------------------------------------ custom emoji
 

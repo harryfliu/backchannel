@@ -4,7 +4,10 @@ A send is "pending" until the watcher sees a matching row (same
 conversation, from me, same text or file name, within 2 minutes); then it
 emits `send-status: sent` with the real message id, and the `message` event
 carries the clientId. Thread replies are remembered locally (sent GUID →
-thread root) because AppleScript can't send real inline replies.
+thread root) because AppleScript can't send real inline replies; with
+`threadRepliesViaMessages` on, they're typed into Messages' own Reply field
+instead (messages_ui), falling back to the normal send only when nothing was
+typed there.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ log = logging.getLogger("backchannel.sending")
 
 MATCH_WINDOW = 120  # seconds after dispatch during which a chat.db row can confirm a send
 OVERDUE_GRACE = 15 * 60  # scheduled sends older than this when we wake up are not sent
+REPLY_DONE = "Sent as a reply in Messages."
+REPLY_FALLBACK = "Messages couldn't make it a reply, so it went out as a regular text."
+REPLY_REGULAR = "Messages sent it as a regular text instead of a reply."
+REPLY_UNCONFIRMED = "Messages didn't confirm your reply. Check Messages before you try again."
 
 
 def _norm(text: str | None) -> str:
@@ -64,6 +71,7 @@ class SendService:
         self.sender = sender
         self.publish = publish
         self.attachments_for = attachments_for
+        self.helpers: Any = None  # messages_ui.MessagesUI, set by the app: real thread replies
         self._tasks: set[asyncio.Task] = set()
 
     def _spawn(self, coro) -> asyncio.Task:
@@ -121,7 +129,7 @@ class SendService:
             return {"clientId": client_id, "status": "queued"}  # same clientId twice: don't double-send
         chat = self.convs.newest_chat(conv)
         self.state.add_pending(client_id, conv.id, conv.chat_ids, "text", text, None, thread_root_id)
-        self._spawn(self.dispatch_text(conv, chat, text, client_id))
+        self._spawn(self.dispatch_text(conv, chat, text, client_id, thread_root_id))
         return {"clientId": client_id, "status": "queued"}
 
     def start_conversation(self, handle: str, text: str, client_id: str) -> dict[str, Any]:
@@ -161,17 +169,69 @@ class SendService:
 
     # ------------------------------------------------------------------ dispatch
 
-    async def dispatch_text(self, conv: Conv, chat: ChatInfo, text: str, client_id: str) -> SendResult:
+    async def dispatch_text(self, conv: Conv, chat: ChatInfo, text: str, client_id: str,
+                            thread_root_id: str | None = None) -> SendResult:
+        via_messages = bool(thread_root_id) and self._replies_via_messages()
+        if via_messages:
+            handled = await self._reply_in_messages(conv, chat, text, client_id, thread_root_id)  # type: ignore[arg-type]
+            if handled is not None:
+                return handled
+            # Nothing was typed into Messages: send it the normal way (it stays threaded locally).
         result = await asyncio.to_thread(
             self.sender.send_text, chat.guid, text,
             dm_handle=self._fallback_handle(conv, chat), service=chat.service,
         )
         if not result.ok:
             self._fail(client_id, conv.id, result.error or "Couldn't send the message.")
+            if via_messages:
+                self._reply_action(conv.id, thread_root_id, client_id, "failed", result.error or "Couldn't send the message.")
             return result
         self.state.update_pending(client_id, status="dispatched", dispatched_at=time.time())
+        if via_messages:
+            self._reply_action(conv.id, thread_root_id, client_id, "fallback", REPLY_FALLBACK)
         await self._after_dispatch(conv, chat, client_id, text=text)
         return result
+
+    # ------------------------------------------------------------------ real thread replies (Messages app)
+
+    def _replies_via_messages(self) -> bool:
+        helpers = self.helpers
+        return helpers is not None and helpers.replies_on and helpers.can_act
+
+    def _reply_action(self, conversation_id: str, root_id: str | None, client_id: str, result: str, detail: str) -> None:
+        self.publish({"type": "ui-action", "action": "reply", "conversationId": conversation_id, "messageId": root_id,
+                      "clientId": client_id, "result": result, "detail": detail})
+
+    async def _reply_in_messages(self, conv: Conv, chat: ChatInfo, text: str, client_id: str,
+                                 root_id: str) -> SendResult | None:
+        """Type the reply into Messages' Reply field. None = nothing was typed: send it normally."""
+        job = await asyncio.to_thread(self.helpers.reply_job, conv, root_id, text, client_id)
+        if job is None:  # the root isn't a message Messages can show (unknown, an event, unsent…)
+            return None
+        outcome = await asyncio.to_thread(self.helpers.run_and_wait, job)
+        if outcome.kind == "nothing":
+            return None
+        timer = self._spawn(self._expire(client_id, conv.id))
+        timer._bc_timer = True  # type: ignore[attr-defined]
+        if outcome.kind in ("done", "regular"):
+            self.state.update_pending_if(client_id, ("sending",), status="dispatched", dispatched_at=time.time())
+            if outcome.kind == "done":
+                self._reply_action(conv.id, root_id, client_id, "done", REPLY_DONE)
+            else:
+                self._reply_action(conv.id, root_id, client_id, "fallback", REPLY_REGULAR)
+            if self.settings.send_mode == "dry-run" and self.settings.fake_db and outcome.message_guid:
+                self._spawn(self._fake_receipts(outcome.message_guid, read=chat.service == "iMessage" and not chat.is_group))
+            return SendResult(True)
+        # Text may be in Messages but nothing confirmed it: never send a second copy. If the row
+        # shows up later the watcher still matches it (and reports it sent).
+        if self.state.update_pending_if(client_id, ("sending", "dispatched"), status="unconfirmed",
+                                        error=REPLY_UNCONFIRMED, dispatched_at=time.time()):
+            self.publish({"type": "send-status", "clientId": client_id, "conversationId": conv.id,
+                          "status": "failed", "error": REPLY_UNCONFIRMED})
+            self._reply_action(conv.id, root_id, client_id, "failed", REPLY_UNCONFIRMED)
+            return SendResult(False, REPLY_UNCONFIRMED)
+        self._reply_action(conv.id, root_id, client_id, "done", REPLY_DONE)  # the watcher matched it meanwhile
+        return SendResult(True)
 
     async def dispatch_new(self, handle: str, text: str, client_id: str, conversation_id: str) -> SendResult:
         result = await asyncio.to_thread(self.sender.send_to_handle, handle, text)
@@ -247,6 +307,8 @@ class SendService:
         if row and row["status"] == "dispatched":
             self._fail(client_id, conversation_id,
                        "Messages accepted the message but it never appeared in chat.db. Check Messages to see if it went out.")
+        elif row and row["status"] == "unconfirmed":  # already reported as failed; stop matching it
+            self.state.update_pending_if(client_id, ("unconfirmed",), status="failed")
 
     # ------------------------------------------------------------------ reconciliation (called by the watcher)
 
@@ -326,7 +388,7 @@ class SendService:
             client_id = item["client_id"] or f"scheduled-{item['id']}"
             chat = self.convs.newest_chat(conv)
             self.state.add_pending(client_id, conv.id, conv.chat_ids, "text", item["text"], None, item["thread_root_id"])
-            result = await self.dispatch_text(conv, chat, item["text"], client_id)
+            result = await self.dispatch_text(conv, chat, item["text"], client_id, item["thread_root_id"])
             row = self.state.set_scheduled_status(item["id"], "sent" if result.ok else "failed", result.error)
             self.publish({"type": "scheduled", "scheduled": scheduled_json(row)})
 

@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS pending_sends (
     thread_root_id TEXT,
     created_at REAL NOT NULL,
     dispatched_at REAL,
-    status TEXT NOT NULL,              -- sending | dispatched | sent | failed
+    status TEXT NOT NULL,              -- sending | dispatched | unconfirmed | sent | failed
     error TEXT,
     message_guid TEXT,
     handle TEXT                        -- set for new conversations (no chat row yet)
@@ -112,7 +112,8 @@ UNSET: Any = object()
 
 
 # `ServerSettings` (web/src/api/types.ts) and their defaults.
-SERVER_SETTINGS: dict[str, bool] = {"markReadInMessages": False}
+SERVER_SETTINGS: dict[str, bool] = {"markReadInMessages": False, "tapbacksViaMessages": False,
+                                    "threadRepliesViaMessages": False}
 
 
 class State:
@@ -369,8 +370,20 @@ class State:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._exec(f"UPDATE pending_sends SET {cols} WHERE client_id = ?", (*fields.values(), client_id))
 
+    def update_pending_if(self, client_id: str, statuses: Sequence[str], **fields: Any) -> bool:
+        """Update only while the send is still in one of `statuses` (e.g. not already confirmed)."""
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        marks = ",".join("?" * len(statuses))
+        return self._exec(
+            f"UPDATE pending_sends SET {cols} WHERE client_id = ? AND status IN ({marks})",
+            (*fields.values(), client_id, *statuses),
+        ).rowcount == 1
+
     def open_pending(self) -> list[sqlite3.Row]:
-        return self._all("SELECT * FROM pending_sends WHERE status IN ('sending', 'dispatched') ORDER BY created_at")
+        """Sends a chat.db row can still confirm. 'unconfirmed' is a thread reply typed into Messages that
+        wasn't confirmed in time: reported as failed, but still matched if its row shows up."""
+        return self._all(
+            "SELECT * FROM pending_sends WHERE status IN ('sending', 'dispatched', 'unconfirmed') ORDER BY created_at")
 
     def client_ids_for(self, guids: Sequence[str]) -> dict[str, str]:
         out: dict[str, str] = {}

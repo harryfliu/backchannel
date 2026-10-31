@@ -285,6 +285,11 @@ const paths: Record<string, ReactNode> = {
       <path d="M18.5 13.5v5.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2h5.5" />
     </>
   ),
+  cloud: (
+    <>
+      <path d="M17.5 19H8a5.5 5.5 0 1 1 1.06-10.9A6 6 0 0 1 20.5 11 4 4 0 0 1 17.5 19Z" />
+    </>
+  ),
   download: (
     <>
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />

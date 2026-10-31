@@ -246,12 +246,18 @@ def check_chief(report: Report, services: Any) -> None:
 
 
 def check_messages_ui(report: Report, services: Any) -> None:
-    """Accessibility structure of Messages, for tuning the mark-read script. No names or text."""
+    """Accessibility structure of Messages, for tuning the Messages helper scripts. No names or text.
+
+    It opens the newest bubble's context menu, the Tapback picker and the Reply
+    field (choosing and typing nothing), and closes each with Escape.
+    """
     from . import messages_ui
 
     report.section("Messages UI (Accessibility)")
+    settings = services.state.get_settings()
+    for key in messages_ui.HELPER_SETTINGS:
+        report.item(f"{key} setting", "on" if settings.get(key) else "off")
     health = services.messages_ui.health()
-    report.item("markReadInMessages setting", "on" if health["enabled"] else "off")
     report.item("last result", "(none)" if not health["lastAt"] else f"at {health['lastAt']}, permission {health['permission']}")
     start = time.perf_counter()
     private = services.contacts.private_names()
@@ -285,7 +291,9 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
     parser = argparse.ArgumentParser(prog="backchannel doctor", description=__doc__)
     parser.add_argument("--ai", action="store_true", help="also make one tiny real Claude call")
     parser.add_argument("--messages-ui", action="store_true",
-                        help="describe the Messages window's accessibility structure (roles and counts only)")
+                        help="describe the Messages window's accessibility structure (roles, counts and menu "
+                             "titles only); opens the newest bubble's menu, Tapback picker and Reply field and "
+                             "closes them again without choosing or typing anything")
     args = parser.parse_args(argv)
     if dotenv:
         load_dotenv()

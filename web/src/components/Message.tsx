@@ -226,11 +226,11 @@ function OtpChip({ code }: { code: string }) {
 function AttachmentView({ a, isAudioMessage }: { a: Attachment; isAudioMessage: boolean }) {
   if (a.missing) {
     return (
-      <div className="file-card is-missing">
-        <Icon name="alert" size={20} />
+      <div className="file-card is-missing" title="Messages keeps older attachments in iCloud and downloads them when you view them there.">
+        <Icon name="cloud" size={20} />
         <span className="file-meta">
-          <span className="file-name">{a.name}</span>
-          <span className="file-sub">Not downloaded on this Mac. Open it on your phone, or turn on “Download attachments” in Messages.</span>
+          <span className="file-name">{a.kind === 'image' ? 'Photo in iCloud' : a.kind === 'video' ? 'Video in iCloud' : a.name}</span>
+          <span className="file-sub">Not on this Mac yet. Opening this conversation in Messages downloads it.</span>
         </span>
       </div>
     )

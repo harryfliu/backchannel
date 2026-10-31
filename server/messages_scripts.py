@@ -53,8 +53,8 @@ ARGS = """
 on tagged(argv, tagName)
     set out to {}
     set prefix to tagName & ":"
-    repeat with a in argv
-        set s to a as text
+    repeat with arg in argv
+        set s to arg as text
         if (length of s) > (length of prefix) and s starts with prefix then
             set end of out to text ((length of prefix) + 1) thru -1 of s
         end if
@@ -118,17 +118,17 @@ on rightEdge(el)
     return (item 1 of fr) + (item 3 of fr)
 end rightEdge
 
-on frameInside(a, b)
-    set x1 to item 1 of a
-    set y1 to item 2 of a
-    set x2 to item 1 of b
-    set y2 to item 2 of b
-    return x1 >= x2 - 2 and y1 >= y2 - 2 and x1 + (item 3 of a) <= x2 + (item 3 of b) + 2 and y1 + (item 4 of a) <= y2 + (item 4 of b) + 2
+on frameInside(innerFrame, outerFrame)
+    set x1 to item 1 of innerFrame
+    set y1 to item 2 of innerFrame
+    set x2 to item 1 of outerFrame
+    set y2 to item 2 of outerFrame
+    return x1 >= x2 - 2 and y1 >= y2 - 2 and x1 + (item 3 of innerFrame) <= x2 + (item 3 of outerFrame) + 2 and y1 + (item 4 of innerFrame) <= y2 + (item 4 of outerFrame) + 2
 end frameInside
 
-on sameBubble(a, b)
-    if a is missing value or b is missing value then return false
-    return my frameInside(a, b) or my frameInside(b, a)
+on sameBubble(f1, f2)
+    if f1 is missing value or f2 is missing value then return false
+    return my frameInside(f1, f2) or my frameInside(f2, f1)
 end sameBubble
 
 on lineMatches(lbl, s)
@@ -515,11 +515,6 @@ on setClip(t)
 end setClip
 """
 
-FIND_CONVERSATION = """
-    set looseNames to my tagged(argv, "L")
-    set strictNames to my tagged(argv, "N")
-"""
-
 # --------------------------------------------------------------------------- mark read
 
 MARK_READ_ACT = """
@@ -702,11 +697,11 @@ on act(argv)
     delay 0.1
     set f to my focusedTextField()
     if f is missing value then return "typed-not-sent"
-    set ready to false
+    set isReady to false
     considering case
-        if (my fieldText(f)) is replyText then set ready to true
+        if (my fieldText(f)) is replyText then set isReady to true
     end considering
-    if not ready then return "typed-not-sent"
+    if not isReady then return "typed-not-sent"
     tell application "System Events" to key code 36
     delay 0.6
     if (my fieldText(f)) is "" then return "sent-" & how
