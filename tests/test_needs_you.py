@@ -39,9 +39,8 @@ def test_fixture_conversations(rw):
     rw.client.patch(f"/api/conversations/{q(DAD)}/prefs", json={"starred": True})
     found = priorities(rw)
     dad = found[DAD]
-    assert dad["level"] == "urgent" and kinds(dad["reasons"]) == ["urgent", "time", "asked", "vip"]
-    assert dad["reasons"][0] == {"kind": "urgent", "word": "call me"}
-    assert dad["reasons"][3] == {"kind": "vip", "name": "Dad"}
+    assert dad["level"] == "urgent" and kinds(dad["reasons"]) == ["time", "asked", "vip"]  # urgent through the time
+    assert dad["reasons"][0]["at"] and dad["reasons"][2] == {"kind": "vip", "name": "Dad"}
     assert dad["messageId"] == rw.guid("d_call_soon") and dad["until"]
     nina = found[NINA]
     assert nina["level"] == "urgent" and nina["reasons"] == [{"kind": "repeat", "count": 3}, {"kind": "asked"}]
@@ -64,9 +63,9 @@ def test_fixture_conversations(rw):
 def test_messages_carry_their_importance(rw):
     dad = page(rw, DAD)
     soon, earlier = dad[rw.guid("d_call_soon")], dad[rw.guid("d_call")]
-    assert kinds(soon["importance"]) == ["urgent", "time", "vip"]
-    assert earlier["importance"] == [{"kind": "urgent", "word": "call me"}, {"kind": "asked"},
-                                     {"kind": "vip", "name": "Dad"}]  # read, but still unanswered
+    assert kinds(soon["importance"]) == ["time", "vip"]
+    # "call me when you get a chance": a request (asked), not urgent
+    assert earlier["importance"] == [{"kind": "asked"}, {"kind": "vip", "name": "Dad"}]
     assert all(m["importance"] is None for m in dad.values() if m["fromMe"])
     climbing = page(rw, CLIMBING)
     assert kinds(climbing[rw.guid("cc_headcount")]["importance"]) == ["time", "mention"]
@@ -79,7 +78,7 @@ def test_messages_carry_their_importance(rw):
     assert nina[rw.guid("n_2")]["importance"] == [{"kind": "asked"}]
     assert nina[rw.guid("n_1")]["importance"] is None
     results = rw.get("/api/search", params={"q": "insurance forms"})["results"]
-    assert kinds(results[0]["message"]["importance"])[:2] == ["urgent", "time"]
+    assert kinds(results[0]["message"]["importance"]) == ["time", "vip"]
     thread = rw.get(f"/api/conversations/{q(CLIMBING)}/threads/{q(rw.guid('cc_mine'))}")
     assert kinds(thread["replies"][0]["importance"]) == ["reply", "vip"]
     for message in [*dad.values(), *climbing.values(), *nina.values()]:
@@ -90,9 +89,10 @@ def test_reading_dads_text_keeps_it_urgent(rw):
     summary = rw.post(f"/api/conversations/{q(DAD)}/read")  # Harry opened it, didn't answer
     assert summary["unreadCount"] == 0
     priority = summary["priority"]
-    assert priority["level"] == "urgent" and kinds(priority["reasons"])[:3] == ["urgent", "time", "asked"]
+    assert priority["level"] == "urgent" and kinds(priority["reasons"])[:2] == ["time", "asked"]
     assert priority["messageId"] == rw.guid("d_call_soon")
-    assert kinds(page(rw, DAD)[rw.guid("d_call_soon")]["importance"])[:2] == ["urgent", "time"]
+    assert kinds(page(rw, DAD)[rw.guid("d_call_soon")]["importance"])[:1] == ["time"]
+    assert "urgent" not in kinds(page(rw, DAD)[rw.guid("d_call")]["importance"])
     rw.post(f"/api/conversations/{q(DAD)}/messages", {"text": "calling now", "clientId": "dad-1"})
     events = rw.events_until(lambda e: any(x["type"] == "send-status" for x in e))
     dad = [e["conversation"] for e in events if e["type"] == "conversation" and e["conversation"]["id"] == DAD]
@@ -146,7 +146,7 @@ def test_time_passing_refreshes_priorities(rw):
     events = watcher.tick()
     changed = {e["conversation"]["id"]: e["conversation"]["priority"] for e in events}
     assert DAD in changed and "time" not in kinds(changed[DAD]["reasons"])
-    assert changed[DAD]["level"] == "urgent"  # "call me" is still urgent while unread
+    assert changed[DAD]["level"] == "high"  # without the time it's a plain "can you call me"
     assert watcher.tick() == []  # and only once
 
 

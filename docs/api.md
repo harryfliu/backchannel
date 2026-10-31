@@ -171,10 +171,14 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
   ahead and within 36 hours, and for up to 1 hour after a named time passes.
   A message mentioning several times uses the soonest still ahead.
 - `urgent`: a pending message with urgent, asap, a.s.a.p, emergency, 911,
-  hospital, accident, "call me", "call asap", "pick up the phone" / "pick up
-  your phone", "pick up!", "answer your phone", "need you now", or "help!"
-  (whole words, any case; `word` = the match, lowercase). A plain "pick up"
-  ("can you pick up milk") doesn't count.
+  hospital, accident, "call asap", "pick up the phone" / "pick up your phone",
+  "pick up!", "answer your phone", "need you now", or "help!", or "call me"
+  together with an immediacy word in the same message (asap / a.s.a.p, now /
+  right now, right away, immediately, urgent, emergency, "when you see this")
+  (whole words, any case; `word` = the first match, lowercase). A plain
+  "pick up" ("can you pick up milk") or "call me" ("call me when you get a
+  chance", "call me later": that's `asked`) doesn't count; "Can you call me in
+  20 min?" is urgent through its `time`, not the words.
 - `repeat`: 3 or more unread messages in a row from the same person, each
   within 30 minutes of the one before (`count` = how many).
 - `vip`: the sender is close: the other person in a starred DM, in Chief's

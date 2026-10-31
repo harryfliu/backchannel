@@ -520,7 +520,8 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("dad", "me", "sure, sunday afternoon?", b.day(12, 17, 45))
     b.msg("dad", "dad", "Sunday works.", b.day(12, 17, 50))
     b.msg("dad", "dad", "call me when you get a chance", b.ago(hours=5), label="d_call")
-    # "Needs you": urgent ("call me") + a time in 20 min + asked (on d_call) + vip (Dad is starred in dev)
+    # "Needs you": a time in 20 min (urgent level) + asked (on d_call) + vip (Dad is starred in dev).
+    # "call me" alone isn't an urgent word.
     b.msg("dad", "dad", "Can you call me in 20 min? Need to go over the insurance forms", b.ago(minutes=5),
           label="d_call_soon", unread=True)
 

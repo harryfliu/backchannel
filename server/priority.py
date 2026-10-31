@@ -22,8 +22,16 @@ GRACE = timedelta(hours=1)
 ORDER = ("urgent", "repeat", "time", "asked", "mention", "reply", "vip")
 WEIGHTS = {"urgent": 80, "repeat": 40, "time": 30, "time_soon": 80, "asked": 60, "mention": 50, "reply": 40, "vip": 25}
 URGENT = re.compile(
-    r"(?<![\w.])(urgent|asap|a\.s\.a\.p\.?|emergency|911|hospital|accident|call me|call asap|"
+    r"(?<![\w.])(urgent|asap|a\.s\.a\.p\.?|emergency|911|hospital|accident|call asap|"
     r"pick up (?:the|your) phone|answer your phone|need you now)(?![\w])|(?<![\w])(help!|pick up!)",
+    re.IGNORECASE,
+)
+# "call me" alone is a request ("call me when you get a chance" is `asked`); it's urgent only with an
+# immediacy word in the same message.
+CALL_ME = re.compile(r"(?<![\w.])call me(?![\w])", re.IGNORECASE)
+IMMEDIATE = re.compile(
+    r"(?<![\w.])(?:asap|a\.s\.a\.p\.?|now|right now|right away|immediately|urgent|urgently|emergency)(?![\w])"
+    r"|\bwhen you see this\b",
     re.IGNORECASE,
 )
 
@@ -50,12 +58,17 @@ class Result:
 
 
 def urgent_word(text: str) -> str | None:
-    """The urgent word or phrase in a text (lowercase), or None."""
-    match = URGENT.search(text or "")
-    if not match:
-        return None
-    word = (match.group(1) or match.group(2)).lower()
-    return word.rstrip(".") if word.startswith("a.s.a.p") else word
+    """The first urgent word or phrase in a text (lowercase), or None."""
+    text = text or ""
+    found: list[tuple[int, str]] = []
+    match = URGENT.search(text)
+    if match:
+        word = (match.group(1) or match.group(2)).lower()
+        found.append((match.start(), word.rstrip(".") if word.startswith("a.s.a.p") else word))
+    call = CALL_ME.search(text)
+    if call and IMMEDIATE.search(text):
+        found.append((call.start(), "call me"))
+    return min(found)[1] if found else None
 
 
 def _soon(hit_at: datetime | None, now: datetime) -> bool:

@@ -78,7 +78,10 @@ def test_time_needs_an_unread_message_or_the_asking_one():
 
 
 def test_urgent_words():
-    for text, word in [("URGENT pls", "urgent"), ("asap!", "asap"), ("a.s.a.p.", "a.s.a.p"), ("call me", "call me"),
+    for text, word in [("URGENT pls", "urgent"), ("asap!", "asap"), ("a.s.a.p.", "a.s.a.p"),
+                       ("call me asap", "call me"), ("please call me now", "call me"),
+                       ("call me when you see this", "call me"), ("Call me right away", "call me"),
+                       ("call me immediately", "call me"), ("urgent: call me", "urgent"),
                        ("Call ASAP", "call asap"), ("pick up the phone", "pick up the phone"),
                        ("PICK UP YOUR PHONE", "pick up your phone"), ("pick up!", "pick up!"),
                        ("answer your phone", "answer your phone"),
@@ -86,12 +89,14 @@ def test_urgent_words():
                        ("911", "911"), ("there was an accident", "accident"), ("emergency", "emergency")]:
         assert urgent_word(text) == word, text
     for text in ("helpful", "the urgency", "callme", "911x", "4155550911", "help me with this", "pickup truck",
-                 "can you pick up milk?", "I'll pick up the kids", "can you pick up?"):
+                 "can you pick up milk?", "I'll pick up the kids", "can you pick up?",
+                 "call me", "call me later", "call me when you get a chance", "can you call me in 20 min?"):
         assert urgent_word(text) is None, text
     result = run("dm", [them("a", 5, "call me asap")])
     assert result.importance["a"] == [{"kind": "urgent", "word": "call me"}]
     assert result.priority["level"] == "urgent"
     assert run("dm", [them("a", 5, "call me asap", unread=False)]).priority is None  # read: not urgent any more
+    assert run("dm", [them("a", 5, "call me later")]).priority is None  # a request, not urgent
 
 
 def test_repeat_three_in_a_row_within_30_minutes():
@@ -116,7 +121,7 @@ def test_repeat_three_in_a_row_within_30_minutes():
 def test_vip_only_alongside_another_reason():
     vips = {"p:mom": "Mom"}
     assert run("dm", [them("a", 5, "hi", sender="p:mom")], vips=vips).priority is None
-    result = run("dm", [them("a", 5, "call me", sender="p:mom")], vips=vips)
+    result = run("dm", [them("a", 5, "call me now", sender="p:mom")], vips=vips)
     assert result.importance["a"] == [{"kind": "urgent", "word": "call me"}, {"kind": "vip", "name": "Mom"}]
 
 
@@ -127,15 +132,15 @@ def test_level_score_message_and_until():
     ]
     result = run("dm", items, asking="a", vips={"p:dad": "Dad"})
     priority = result.priority
-    assert kinds(priority["reasons"]) == ["urgent", "time", "asked", "vip"]
-    assert priority["level"] == "urgent"
-    # 300 + urgent 80 + time within 3 h 80 + asked 60 + vip 25 − 5 min
-    assert priority["score"] == round(300 + 80 + 80 + 60 + 25 - 5 / 60)
+    assert kinds(priority["reasons"]) == ["time", "asked", "vip"]  # "call me" alone isn't urgent…
+    assert priority["level"] == "urgent"  # …but a time 15 minutes away is
+    # 300 + time within 3 h 80 + asked 60 + vip 25 − 5 min
+    assert priority["score"] == round(300 + 80 + 60 + 25 - 5 / 60)
     assert priority["messageId"] == "b"  # the most weight
-    assert priority["reasons"][1] == {"kind": "time", "label": "Today 3:15 PM", "at": "2026-10-28T15:15:00-07:00"}
+    assert priority["reasons"][0] == {"kind": "time", "label": "Today 3:15 PM", "at": "2026-10-28T15:15:00-07:00"}
     assert priority["until"] == "2026-10-28T16:15:00-07:00"  # an hour after 3:15 PM
-    # The read asking message still says "call me" (it's unanswered); its own time (10:20 AM) passed.
-    assert kinds(result.importance["a"]) == ["urgent", "asked", "vip"]
+    assert kinds(result.importance["a"]) == ["asked", "vip"]  # its own time (10:20 AM) passed
+    assert kinds(result.importance["b"]) == ["time", "vip"]
     assert not validate(priority, "Priority")
     for reasons in result.importance.values():
         for reason in reasons:
@@ -146,13 +151,15 @@ def test_reading_a_dm_doesnt_resolve_what_it_asks():
     """DMs: time and urgent words also count on read messages of the unanswered run that ask something."""
     asking = them("a", 5, "Can you call me in 20 min?", unread=False, asks=True)
     result = run("dm", [asking], asking="a")
-    assert kinds(result.importance["a"]) == ["urgent", "time", "asked"] and result.priority["level"] == "urgent"
+    assert kinds(result.importance["a"]) == ["time", "asked"] and result.priority["level"] == "urgent"
     remark = them("b", 4, "call me in 20 min, lol", unread=False)  # doesn't ask: read means seen
     assert run("dm", [asking, remark], asking="a").importance.get("b") is None
     answered = [asking, mine("m", 1)]
     assert run("dm", answered, asking=None).priority is None  # Harry answered
     expired = them("a", 120, "Can you call me in 20 min?", unread=False, asks=True)
-    assert kinds(run("dm", [expired], asking="a").importance["a"]) == ["urgent", "asked"]  # the time passed
+    assert kinds(run("dm", [expired], asking="a").importance["a"]) == ["asked"]  # the time passed
+    now_please = them("a", 5, "can you call me now?", unread=False, asks=True)
+    assert kinds(run("dm", [now_please], asking="a").importance["a"]) == ["urgent", "asked"]  # read, still urgent
     group = [them("a", 5, "can you call me in 20 min?", unread=False, asks=True)]
     assert run("group", group).priority is None  # groups: unread only (a mention or reply would keep it)
     closed = [them("a", 5, "can you call me in 20 min?", unread=False, asks=True)]
@@ -177,6 +184,6 @@ def test_ties_pick_the_newest_message_and_age_lowers_the_score():
 
 
 def test_only_the_last_three_days_count():
-    old = [them("a", 60 * 24 * 3 + 1, "call me")]
+    old = [them("a", 60 * 24 * 3 + 1, "call me asap")]
     assert run("dm", old).priority is None
-    assert run("dm", [them("a", 60 * 24 * 3 - 1, "call me")]).priority is not None
+    assert run("dm", [them("a", 60 * 24 * 3 - 1, "call me asap")]).priority is not None
