@@ -1,0 +1,32 @@
+{
+  "port": 5556,
+  "sidebar_days": 180,
+  "sidebar_max": 400,
+  "chat_db": "~/Library/Messages/chat.db",
+  "addressbook_glob": [
+    "~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb",
+    "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
+  ],
+  "attachments_root": "~/Library/Messages/Attachments",
+  "state_dir": "~/Library/Application Support/Backchannel",
+  "cache_dir": "~/Library/Caches/Backchannel",
+  "style_profile_path": "~/Documents/claude_projects/imessage-checker/.texting_style.json",
+  "chief_db": "~/Documents/claude_projects/chief/db/chief.db",
+  "send_mode": "applescript",
+  "me": {
+    "name": null,
+    "handles": []
+  },
+  "models": {
+    "draft": "claude-haiku-5-5",
+    "catchup": "claude-sonnet-5-5"
+  },
+  "ai": {
+    "draft_effort": "low",
+    "catchup_effort": "medium",
+    "timeout_seconds": 90,
+    "catchup_cache_minutes": 10,
+    "style_cache_hours": 72,
+    "server_side_fallbacks": true
+  }
+}

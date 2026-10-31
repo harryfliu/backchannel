@@ -1,0 +1,9 @@
+{
+  "name": "Backchannel",
+  "short_name": "Backchannel",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#3a1340",
+  "theme_color": "#3a1340",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

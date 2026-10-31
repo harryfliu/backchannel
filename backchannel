@@ -1,0 +1,149 @@
+#!/bin/bash
+# Control script for Backchannel (mirrors imessage_summary's tmux pattern).
+#   backchannel on | off | status | logs | open | dev [--fresh] | simulate | setup
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SESSION="backchannel"
+LOG_DIR="$SCRIPT_DIR/logs"
+LOG_FILE="$LOG_DIR/backchannel.log"
+FIXTURES="$SCRIPT_DIR/tests/fixtures"
+
+if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+  PY="$SCRIPT_DIR/.venv/bin/python"
+else
+  PY="$(command -v python3)"
+fi
+
+port() {
+  if [[ -n "$BACKCHANNEL_PORT" ]]; then echo "$BACKCHANNEL_PORT"; return; fi
+  "$PY" -c "import json,sys; print(json.load(open(sys.argv[1])).get('port', 5556))" "$SCRIPT_DIR/config.json" 2>/dev/null || echo 5556
+}
+
+load_env() {
+  # Optional KEY=value lines (e.g. ANTHROPIC_API_KEY) kept out of git.
+  if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+  fi
+}
+
+fixture_env() {
+  export BACKCHANNEL_CHAT_DB="$FIXTURES/chat.db"
+  export BACKCHANNEL_ADDRESSBOOK_GLOB="$FIXTURES/AddressBook/Sources/*/AddressBook-v22.abcddb:$FIXTURES/AddressBook/AddressBook-v22.abcddb"
+  export BACKCHANNEL_ATTACHMENTS_ROOT="$FIXTURES/Attachments"
+  export BACKCHANNEL_STATE_DIR="$FIXTURES/state"
+  export BACKCHANNEL_CACHE_DIR="$FIXTURES/cache"
+  export BACKCHANNEL_STYLE_PROFILE="$FIXTURES/texting_style.json"
+  export BACKCHANNEL_CHIEF_DB="$FIXTURES/chief.db"
+  export BACKCHANNEL_SEND_MODE=dry-run
+  export BACKCHANNEL_FAKE_DB=1
+  export BACKCHANNEL_ME_NAME="Harry Liu"
+  export BACKCHANNEL_ME_HANDLES="+15105550100,harry.liu@icloud.example"
+  export BACKCHANNEL_DEV_ORIGINS="${BACKCHANNEL_DEV_ORIGINS:-http://localhost:5173}"
+}
+
+case "${1:-status}" in
+  on)
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      echo "Backchannel is already running (tmux session: $SESSION)"
+      exit 0
+    fi
+    mkdir -p "$LOG_DIR"
+    # A running tmux server doesn't inherit this shell's environment, so pass our settings along.
+    ENV_ARGS=""
+    for name in $(compgen -e); do
+      if [[ "$name" == BACKCHANNEL_* || "$name" == ANTHROPIC_API_KEY ]]; then
+        ENV_ARGS+="$(printf '%q=%q ' "$name" "${!name}")"
+      fi
+    done
+    tmux new-session -d -s "$SESSION" \
+      "cd $(printf %q "$SCRIPT_DIR") && { [ -f .env ] && set -a && . ./.env && set +a; }; env $ENV_ARGS $(printf %q "$PY") -m server 2>&1 | tee -a $(printf %q "$LOG_FILE")"
+    echo "Started Backchannel on http://127.0.0.1:$(port) (tmux session: $SESSION)"
+    echo "  Logs:   backchannel logs"
+    echo "  Attach: tmux attach -t $SESSION"
+    ;;
+
+  off)
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      tmux kill-session -t "$SESSION"
+      echo "Stopped Backchannel (killed tmux session: $SESSION)"
+    else
+      echo "Backchannel is not running."
+    fi
+    ;;
+
+  status)
+    P="$(port)"
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+      echo "● Backchannel is running (tmux session: $SESSION)"
+    else
+      echo "○ Backchannel is not running in tmux"
+    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$P/api/health" 2>/dev/null)"
+    case "$code" in
+      200|401) echo "  Answering on http://127.0.0.1:$P" ;;
+      *)       echo "  Nothing answering on http://127.0.0.1:$P" ;;
+    esac
+    ;;
+
+  logs)
+    if [[ -f "$LOG_FILE" ]]; then
+      tail -n 100 -f "$LOG_FILE"
+    else
+      echo "No log yet at $LOG_FILE (start with: backchannel on)"
+    fi
+    ;;
+
+  open)
+    URL="http://127.0.0.1:$(port)"
+    if command -v open >/dev/null 2>&1; then open "$URL"
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL"
+    else echo "$URL"; fi
+    ;;
+
+  dev)
+    # Fixtures + dry-run sends in the foreground. Regenerates fixtures if missing,
+    # older than 6 hours (timestamps are relative), or with --fresh.
+    cd "$SCRIPT_DIR" || exit 1
+    if [[ "$2" == "--fresh" || ! -f "$FIXTURES/chat.db" || -n "$(find "$FIXTURES/chat.db" -mmin +360 2>/dev/null)" ]]; then
+      "$PY" tests/make_fixtures.py --out "$FIXTURES" || exit 1
+    fi
+    load_env
+    fixture_env
+    echo "Dev server on http://127.0.0.1:$(port) — fixtures in $FIXTURES, dry-run sends into the fake chat.db"
+    echo "  Simulate incoming messages: ./backchannel simulate"
+    exec "$PY" -m server
+    ;;
+
+  simulate)
+    cd "$SCRIPT_DIR" || exit 1
+    shift
+    exec "$PY" tests/simulate.py --db "$FIXTURES/chat.db" "$@"
+    ;;
+
+  setup)
+    cd "$SCRIPT_DIR" || exit 1
+    python3 -m venv .venv && .venv/bin/pip install -q --upgrade pip && .venv/bin/pip install -q -r requirements.txt \
+      && echo "Installed. Dev/test extras: .venv/bin/pip install -r requirements-dev.txt"
+    ;;
+
+  app)
+    # Build the Mac app (mac/Backchannel.swift) and install it in /Applications.
+    exec "$SCRIPT_DIR/mac/build.sh"
+    ;;
+
+  *)
+    echo "Usage: backchannel {on|off|status|logs|open|app|dev [--fresh]|simulate|setup}"
+    echo "  on        Start the server in a tmux session"
+    echo "  off       Stop it"
+    echo "  status    Is it running?"
+    echo "  logs      Follow the log"
+    echo "  open      Open http://127.0.0.1:$(port)"
+    echo "  dev       Run against fixtures in dry-run mode (foreground)"
+    echo "  simulate  Append incoming messages to the fixture chat.db every few seconds"
+    echo "  app       Build the Mac app and install it in /Applications"
+    echo "  setup     Create .venv and install requirements"
+    ;;
+esac

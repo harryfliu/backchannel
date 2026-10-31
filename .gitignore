@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Local config and secrets
+.env
+config.local.json
+
+# Generated fixtures, dev state and caches
+tests/fixtures/
+.fixtures/
+logs/
+*.log
+
+# macOS
+.DS_Store
+
+# Web build tooling (web/dist is committed so the Mac needs no Node)
+node_modules/
+web/dist-mock/
+*.tsbuildinfo
+
+# Mac app build output
+mac/build/
