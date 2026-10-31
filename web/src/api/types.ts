@@ -64,7 +64,10 @@ export interface Conversation {
   /** Service of the most recent message. */
   service: Service
   lastMessage: MessagePreview | null
+  /** Unread incoming messages; at least 1 while `markedUnread`. */
   unreadCount: number
+  /** "Mark as unread" was used here (kept by Backchannel until the conversation is read). */
+  markedUnread: boolean
   /** Unread messages that mention the user. */
   mentionCount: number
   /** Short codes, no-reply senders, verification codes and the like. */
@@ -317,7 +320,8 @@ export interface Health {
 
 /** Server-side preferences (they change what the Mac does, so they live on the server). */
 export interface ServerSettings {
-  /** When you open a conversation here that Messages still shows as unread, mark it read in Messages too. */
+  /** When you open a conversation here that Messages still shows as unread, mark it read in Messages too
+   *  (and "Mark as unread" here marks it unread there). */
   markReadInMessages: boolean
   /** Send tapbacks by driving the Messages app (right-click the message › Tapback). Experimental. */
   tapbacksViaMessages: boolean
@@ -413,11 +417,11 @@ export type ServerEvent =
   | { type: 'scheduled'; scheduled: ScheduledMessage }
   /** A saved item changed: its reminder fired (firedAt set), or a reply resolved it. */
   | { type: 'later'; item: LaterItem }
-  /** How a Messages-app action went (tapback, thread reply, mark read). Tapbacks and replies
+  /** How a Messages-app action went (tapback, thread reply, mark read/unread). Tapbacks and replies
    *  themselves arrive as normal message updates once they're in chat.db. */
   | {
       type: 'ui-action'
-      action: 'tapback' | 'reply' | 'mark-read'
+      action: 'tapback' | 'reply' | 'mark-read' | 'mark-unread'
       conversationId: string
       /** The tapback's target, or the thread root for a reply. */
       messageId: string | null
@@ -443,6 +447,8 @@ export interface Api {
   /** Text someone you haven't texted from this Mac yet (or by number/email). */
   startConversation(handle: string, text: string, clientId: string): Promise<{ conversationId: string }>
   markRead(conversationId: string): Promise<Conversation>
+  /** Mark as unread from `messageId` on (default: the newest incoming message). Reading clears it. */
+  markUnread(conversationId: string, messageId?: string | null): Promise<Conversation>
   setPrefs(conversationId: string, prefs: Partial<ConversationPrefs>): Promise<Conversation>
   later(): Promise<LaterItem[]>
   saveForLater(conversationId: string, messageId: string, remindAt: string | null, ifNoReply?: boolean): Promise<LaterItem>

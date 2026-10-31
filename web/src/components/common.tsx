@@ -123,15 +123,18 @@ export interface MenuItem {
   divider?: boolean
 }
 
-/** A popover menu anchored to an element. Closes on outside click or Escape. */
+/** A popover menu anchored to an element, or at a point (`at`, for right-click menus). Closes on
+ *  outside click or Escape. */
 export function Menu({
   anchor,
+  at,
   items,
   onClose,
   align = 'left',
   header,
 }: {
   anchor: HTMLElement | null
+  at?: { x: number; y: number } | null
   items: MenuItem[]
   onClose: () => void
   align?: 'left' | 'right'
@@ -139,17 +142,27 @@ export function Menu({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const atX = at?.x
+  const atY = at?.y
 
   useLayoutEffect(() => {
-    if (!anchor || !ref.current) return
-    const r = anchor.getBoundingClientRect()
+    if (!ref.current) return
     const m = ref.current.getBoundingClientRect()
+    if (atX !== undefined && atY !== undefined) {
+      // At the pointer, flipped left/up when it would run off the window.
+      const left = atX + m.width > window.innerWidth - 8 ? atX - m.width : atX
+      const top = atY + m.height > window.innerHeight - 8 ? atY - m.height : atY
+      setPos({ top: Math.max(8, top), left: Math.max(8, left) })
+      return
+    }
+    if (!anchor) return
+    const r = anchor.getBoundingClientRect()
     let left = align === 'right' ? r.right - m.width : r.left
     left = Math.max(8, Math.min(left, window.innerWidth - m.width - 8))
     let top = r.bottom + 6
     if (top + m.height > window.innerHeight - 8) top = Math.max(8, r.top - m.height - 6)
     setPos({ top, left })
-  }, [anchor, align])
+  }, [anchor, align, atX, atY])
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {

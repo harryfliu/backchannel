@@ -125,6 +125,8 @@ export interface State {
   serverSettings: ServerSettings | null
   /** Tapbacks you just sent, shown right away until Messages confirms them. Keyed by message id. */
   pendingTapbacks: Record<string, PendingTapback>
+  /** The sidebar's right-click menu: which conversation, at which point. */
+  rowMenu: { cid: string; x: number; y: number } | null
   /** Why a send failed, by local message id (shown under the message). */
   failReasons: Record<string, string>
 }
@@ -214,6 +216,7 @@ let state: State = {
   serverSettings: null,
   pendingTapbacks: {},
   failReasons: {},
+  rowMenu: null,
 }
 // Keep the first run's "now", so a restart doesn't count old activity as new.
 if (!local.activitySeenAt) saveLocal(state)
@@ -372,7 +375,7 @@ function onEvent(e: ServerEvent) {
         openConversation(e.conversation.id)
       }
       const v = state.view
-      if (v?.kind === 'conversation' && v.id === e.conversation.id && e.conversation.unreadCount > 0 && document.visibilityState === 'visible') {
+      if (v?.kind === 'conversation' && v.id === e.conversation.id && e.conversation.unreadCount > 0 && document.visibilityState === 'visible' && !keepUnread.has(v.id)) {
         scheduleMarkRead(e.conversation.id)
       }
       break
@@ -560,7 +563,7 @@ export async function boot(initial?: string) {
       if (first) void loadMessages(first)
       if (first) setState({ view: { kind: 'conversation', id: first }, history: [{ kind: 'conversation', id: first }], historyIndex: 0 })
     } else if (first) {
-      openConversation(first)
+      openConversation(first, undefined, { auto: true })
     }
     void loadCustomEmoji()
     void api.serverSettings().then((ss) => setState({ serverSettings: ss })).catch(() => {})
@@ -632,18 +635,28 @@ export async function loadMessages(cid: string) {
   }
 }
 
-function enterConversation(cid: string) {
+/** Conversations marked unread while on screen: no automatic mark-read until they're opened again
+ *  (or you go elsewhere and come back), like Slack. */
+const keepUnread = new Set<string>()
+
+function enterConversation(cid: string, opts: { auto?: boolean } = {}) {
+  keepUnread.clear()
   const loaded = state.messages[cid]?.items.length
   setState((s) => ({
     newMarker: { ...s.newMarker, [cid]: loaded ? firstUnreadId(cid, s.messages[cid].items) : null },
   }))
   void loadMessages(cid)
-  if ((state.conversations[cid]?.unreadCount ?? 0) > 0) scheduleMarkRead(cid, 1200)
+  const c = state.conversations[cid]
+  if (opts.auto && c?.markedUnread) {
+    keepUnread.add(cid) // opened for you at startup: it stays the way you left it
+    return
+  }
+  if ((c?.unreadCount ?? 0) > 0) scheduleMarkRead(cid, 1200)
 }
 
-export function openConversation(cid: string, highlightId?: string) {
+export function openConversation(cid: string, highlightId?: string, opts: { auto?: boolean } = {}) {
   if (!state.conversations[cid]) return
-  enterConversation(cid)
+  enterConversation(cid, opts)
   pushView({ kind: 'conversation', id: cid })
   setState((s) => ({
     mobilePane: 'main',
@@ -1335,8 +1348,34 @@ export function unreadMessages(c: Conversation, items: Message[]) {
   return items.filter((m) => !m.fromMe && !m.event).slice(-c.unreadCount)
 }
 
+/** Mark as unread: from `messageId` on, or the conversation (its newest incoming message). It stays
+ *  unread here (and in Messages, with read sync on) until it's opened again. */
+export async function markUnread(cid: string, messageId?: string | null) {
+  window.clearTimeout(readTimers[cid])
+  keepUnread.add(cid)
+  try {
+    const c = await api.markUnread(cid, messageId ?? null)
+    upsertConversation(c)
+    const items = state.messages[cid]?.items
+    setState((s) => ({ newMarker: { ...s.newMarker, [cid]: messageId ?? (items ? firstUnreadId(cid, items) : null) } }))
+    toast('Marked as unread')
+  } catch (err) {
+    keepUnread.delete(cid)
+    toast(err instanceof Error ? err.message : "Couldn't mark that unread.", 'error')
+  }
+}
+
+export function openRowMenu(cid: string, x: number, y: number) {
+  setState({ rowMenu: { cid, x, y } })
+}
+
+export function closeRowMenu() {
+  setState({ rowMenu: null })
+}
+
 export async function markConversationRead(cid: string) {
   window.clearTimeout(readTimers[cid])
+  keepUnread.delete(cid)
   try {
     upsertConversation(await api.markRead(cid))
   } catch (err) {

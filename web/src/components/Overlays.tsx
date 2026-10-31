@@ -501,6 +501,7 @@ export function ShortcutsModal() {
     ['⌥ ↑ / ⌥ ↓', 'Previous / next conversation'],
     ['⌥ ⇧ ↑ / ⌥ ⇧ ↓', 'Previous / next unread'],
     [`${mod} ⇧ A`, 'All unreads'],
+    ['⌥ click a message', 'Mark unread from there'],
     ['Enter', 'Send'],
     ['⇧ Enter', 'New line'],
     ['Esc', 'Close the side panel'],

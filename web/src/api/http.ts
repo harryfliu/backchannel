@@ -103,6 +103,8 @@ export function createHttpApi(): Api {
     startConversation: (handle, text, clientId) =>
       send<{ conversationId: string }>('POST', '/api/conversations', { handle, text, clientId }),
     markRead: (cid) => send<Conversation>('POST', `/api/conversations/${enc(cid)}/read`, {}),
+    markUnread: (cid, messageId) =>
+      send<Conversation>('POST', `/api/conversations/${enc(cid)}/unread`, messageId ? { messageId } : {}),
     setPrefs: (cid, prefs: Partial<ConversationPrefs>) => send<Conversation>('PATCH', `/api/conversations/${enc(cid)}/prefs`, prefs),
     later: async () => (await get<{ items: LaterItem[] }>('/api/later')).items,
     saveForLater: (cid, mid, remindAt, ifNoReply) =>

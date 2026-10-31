@@ -526,6 +526,7 @@ export function buildMockDb() {
         ? { id: last.id, text: previewText(last, people), senderHandle: last.senderHandle, fromMe: last.fromMe, sentAt: last.sentAt }
         : null,
       unreadCount: unread.length,
+      markedUnread: false,
       mentionCount: unread.filter((m) => m.mentionsMe).length,
       isAutomated: !!d.automated,
       awaitingReply: !!awaitingSince,

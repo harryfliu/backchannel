@@ -3,20 +3,26 @@ import type { Conversation } from '../api/types'
 import { ageShort, timeShort } from '../lib/format'
 import { Icon, Logo } from '../lib/icons'
 import {
+  closeRowMenu,
   displayName,
   getState,
+  markConversationRead,
+  markUnread,
   openConversation,
+  openRowMenu,
   openView,
   setLaterDone,
   setRail,
   setState,
+  toggleMute,
   toggleSection,
+  toggleStar,
   useStore,
   type RailTab,
   unreadConversations,
 } from '../state/store'
 import type { LaterItem } from '../api/types'
-import { Avatar, ConversationGlyph } from './common'
+import { Avatar, ConversationGlyph, Menu } from './common'
 import { byNeed, SidebarChip } from './Priority'
 
 export interface SidebarSections {
@@ -100,10 +106,40 @@ export function Rail() {
 
 export function SidebarColumn() {
   const rail = useStore((s) => s.rail)
-  if (rail === 'dms') return <DmList />
-  if (rail === 'activity') return <ActivityList />
-  if (rail === 'later') return <LaterList />
-  return <HomeSidebar />
+  const list = rail === 'dms' ? <DmList /> : rail === 'activity' ? <ActivityList /> : rail === 'later' ? <LaterList /> : <HomeSidebar />
+  return (
+    <>
+      {list}
+      <RowMenu />
+    </>
+  )
+}
+
+/** Right-click on a conversation in the sidebar. */
+function onRowContextMenu(e: React.MouseEvent, cid: string) {
+  e.preventDefault()
+  openRowMenu(cid, e.clientX, e.clientY)
+}
+
+function RowMenu() {
+  const menu = useStore((s) => s.rowMenu)
+  const c = useStore((s) => (s.rowMenu ? s.conversations[s.rowMenu.cid] : undefined))
+  if (!menu || !c) return null
+  return (
+    <Menu
+      anchor={null}
+      at={{ x: menu.x, y: menu.y }}
+      onClose={closeRowMenu}
+      items={[
+        c.unreadCount > 0
+          ? { label: 'Mark as read', icon: 'check', onSelect: () => void markConversationRead(c.id) }
+          : { label: 'Mark as unread', icon: 'dot', onSelect: () => void markUnread(c.id) },
+        { divider: true, label: '' },
+        { label: c.prefs.starred ? 'Unstar' : 'Star', icon: 'star', onSelect: () => toggleStar(c.id) },
+        { label: c.prefs.muted ? 'Unmute' : 'Mute', icon: 'bellOff', onSelect: () => toggleMute(c.id) },
+      ]}
+    />
+  )
 }
 
 function HomeSidebar() {
@@ -249,6 +285,7 @@ function Row({ c, trailing }: { c: Conversation; trailing?: React.ReactNode }) {
       type="button"
       className={`side-row ${active ? 'is-active' : ''} ${unread ? 'is-unread' : ''} ${c.prefs.muted ? 'is-muted' : ''}`}
       onClick={() => openConversation(c.id)}
+      onContextMenu={(e) => onRowContextMenu(e, c.id)}
       title={c.title}
     >
       <span className="side-glyph">
@@ -291,6 +328,7 @@ function DmList() {
               type="button"
               className={`dm-card ${activeId === c.id ? 'is-active' : ''} ${c.unreadCount > 0 ? 'is-unread' : ''}`}
               onClick={() => openConversation(c.id)}
+              onContextMenu={(e) => onRowContextMenu(e, c.id)}
             >
               <ConversationGlyph c={c} size={36} />
               <span className="dm-card-body">

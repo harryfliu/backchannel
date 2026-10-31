@@ -2,7 +2,7 @@
 
 Every script is passed to `osascript` one line per `-e`, and everything that
 comes from the user (names, message text, the reply) arrives as *argv*, never
-in the source. argv[1] names the action ("mark-read", "tapback", "reply", …)
+in the source. argv[1] names the action ("mark-read", "mark-unread", "tapback", "reply", …)
 so osascript never mistakes a value for an option; the rest are tagged values:
 
     L:<name>   a conversation name that may match the start of a sidebar label
@@ -836,6 +836,37 @@ on act(argv)
 end act
 """
 
+# --------------------------------------------------------------------------- mark unread
+# The row's own "Mark as Unread" action, like Mark read (works with Messages in the background).
+
+MARK_UNREAD_ACT = """
+on act(argv)
+    set bcLooseNames to my tagged(argv, "L")
+    set bcStrictNames to my tagged(argv, "N")
+    set bcState to my messagesState()
+    if bcState is not "ok" then return bcState
+    tell application "System Events" to set bcWin to window 1 of process "Messages"
+    set bcList to my spotList(bcWin)
+    if bcList is missing value then return "no-list"
+    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
+    set bcAt to item 1 of bcFound
+    set bcTrail to "row" & (bcAt as text) & "/" & ((item 2 of bcFound) as text)
+    if bcAt is 0 then
+        my listHome(bcList, 12)
+        return "row-not-found"
+    end if
+    set bcRowEl to my atPath(bcList, {bcAt})
+    set bcAnswer to "no-mark-item"
+    if my customAction(bcRowEl, {"Mark as Unread"}) then
+        set bcAnswer to "ok-action"
+    else if my hasAction(bcRowEl, {"Mark as Read"}) then
+        set bcAnswer to "already-unread"
+    end if
+    if (item 2 of bcFound) > 0 then my listHome(bcList, 12)
+    return bcAnswer
+end act
+"""
+
 # --------------------------------------------------------------------------- tapback
 
 TAPBACK_ACT = """
@@ -1452,6 +1483,7 @@ for _name, _path in SPOTS.items():
 assert "__SPOT_" not in SIDEBAR
 
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
+MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
 REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
 INSPECT_SCRIPT = lines(INSPECT_RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES)

@@ -12,7 +12,8 @@ from server.messages_ui import Outcome
 
 
 class FakeMessages:
-    """Answers each helper script by its argv[0] ("mark-read", "tapback", "reply", "probe"; [] = inspect).
+    """Answers each helper script by its argv[0] ("mark-read", "mark-unread", "tapback", "reply", "probe";
+    [] = inspect).
 
     `answers` holds the Outcome per script; `effects` run first (e.g. write the
     row Messages would have written). Non-probe calls are recorded in `calls`
@@ -22,6 +23,7 @@ class FakeMessages:
     def __init__(self, **answers: Outcome):
         self.answers: dict[str, Outcome] = {
             "mark-read": Outcome(0, "ok-menu", ""),
+            "mark-unread": Outcome(0, "ok-action", ""),
             "tapback": Outcome(0, "chosen-overlay", ""),
             "reply": Outcome(0, "sent-axvalue", ""),
             "probe": Outcome(0, "ready", ""),
