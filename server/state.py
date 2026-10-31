@@ -111,6 +111,10 @@ MIGRATIONS = (
 UNSET: Any = object()
 
 
+# `ServerSettings` (web/src/api/types.ts) and their defaults.
+SERVER_SETTINGS: dict[str, bool] = {"markReadInMessages": False}
+
+
 class State:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -453,7 +457,9 @@ class State:
     # ------------------------------------------------------------------ server settings
 
     def get_settings(self) -> dict[str, Any]:
-        return {"markReadInMessages": False, **(self.get_kv("server_settings") or {})}
+        """`ServerSettings`: the known keys only, with their defaults."""
+        stored = self.get_kv("server_settings") or {}
+        return {key: bool(stored.get(key, default)) for key, default in SERVER_SETTINGS.items()}
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

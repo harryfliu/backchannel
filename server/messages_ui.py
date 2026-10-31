@@ -292,6 +292,16 @@ class Job:
     chat_ids: list[int] = field(default_factory=list)
 
 
+def outcome_code(outcome: Outcome) -> str:
+    """A short code for the log: never names or UI text."""
+    if outcome.timed_out:
+        return "timed out"
+    if outcome.returncode != 0:
+        return "not allowed (Accessibility)" if DENIED.search(outcome.stderr) else f"failed (exit {outcome.returncode})"
+    answer = outcome.stdout.strip()
+    return answer if re.fullmatch(r"[a-z-]{1,20}", answer) else "unexpected answer"
+
+
 def interpret(outcome: Outcome, title: str) -> tuple[str | None, str, bool]:
     """(permission or None for unchanged, lastResult sentence, succeeded)."""
     if outcome.timed_out:
@@ -340,7 +350,7 @@ class MessagesUI:
             "lastAt": iso(status["lastAt"]) if status["lastAt"] else None,
         }
 
-    def _record(self, permission: str | None, result: str) -> None:
+    def _record(self, permission: str | None, result: str, code: str) -> None:
         with self._lock:
             if permission:
                 self._status["permission"] = permission
@@ -348,7 +358,7 @@ class MessagesUI:
             self._status["lastAt"] = time.time()
             snapshot = dict(self._status)
         self.state.set_kv(STATUS_KEY, snapshot)
-        log.info("Mark read in Messages: %s", result)
+        log.info("Mark read in Messages: %s", code)  # a code, not the sentence: that names the conversation
 
     def newest_unread(self, chat_ids: list[int], upto: int | None = None) -> int | None:
         """ROWID of the newest unread incoming message in these chats (at or below `upto`), else None."""
@@ -410,15 +420,16 @@ class MessagesUI:
         assert self.runner is not None
         outcome = self.runner(MARK_READ_SCRIPT, ["names", *job.candidates], TIMEOUT)
         permission, result, succeeded = interpret(outcome, job.title)
+        code = outcome_code(outcome)
         if succeeded:
             time.sleep(self.check_after)
             try:  # only the messages that were unread when we started (new ones may have arrived since)
                 if self.newest_unread(job.chat_ids, upto=newest) is not None:
                     result = result[:-1] + ", but chat.db still shows unread messages there."
-                    log.info("Messages accepted Mark as Read for %s but chat.db still has unread rows", job.conversation_id)
+                    code += ", still unread in chat.db"
             except ChatDBError:
                 pass
-        self._record(permission, result)
+        self._record(permission, result, code)
 
     def wait_idle(self, timeout: float = 15.0) -> bool:
         """For tests: wait until the queue is empty and nothing is running."""
@@ -435,17 +446,38 @@ class MessagesUI:
 # --------------------------------------------------------------------------- doctor --messages-ui
 
 _ROLE = re.compile(r"^(AX[A-Za-z]+|\?)$")
+_ERROR_NUMBER = re.compile(r"\((-?\d{1,6})\)\s*$")
+_LOOKS_PRIVATE = re.compile(r"[0-9@+]")
 
 
-def inspect(runner: Runner = osascript_runner, timeout: float = 30.0) -> list[str]:
-    """Report lines about Messages' accessibility structure: roles, counts and menu titles only."""
+def safe_titles(raw: str, private: set[str] | frozenset[str] = frozenset()) -> str:
+    """Menu titles, each hidden if it has digits, "@" or "+", or contains a contact's name."""
+    out = []
+    for title in raw.split(" | ")[:60]:
+        title = title.strip()[:60]
+        lowered = title.lower()
+        if _LOOKS_PRIVATE.search(title) or any(len(name) >= 3 and name in lowered for name in private):
+            title = "(hidden)"
+        out.append(title or "-")
+    return " | ".join(out)
+
+
+def inspect(runner: Runner = osascript_runner, timeout: float = 30.0,
+            private: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """Report lines about Messages' accessibility structure: roles, counts and menu titles only.
+
+    Everything else the script prints is dropped; menu titles that look like
+    they carry a name, number or address (see `private`) are hidden.
+    """
     outcome = runner(INSPECT_SCRIPT, [], timeout)
     if outcome.timed_out:
         return ["- inspection: timed out"]
     if outcome.returncode != 0:
         if DENIED.search(outcome.stderr):
             return ["- Accessibility: NOT allowed for this app (System Settings › Privacy & Security › Accessibility)"]
-        return [f"- inspection: failed ({(outcome.stderr.splitlines() or ['no output'])[-1][:120]})"]
+        last = (outcome.stderr.splitlines() or [""])[-1]
+        number = _ERROR_NUMBER.search(last)  # the error number only: AppleScript errors can quote UI text
+        return [f"- inspection: failed (exit {outcome.returncode}" + (f", error {number.group(1)})" if number else ")")]
     lines: list[str] = []
     tree: list[str] = []
     for raw in outcome.stdout.splitlines():
@@ -458,9 +490,9 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 30.0) -> list[st
             lines.append("- Messages running: " + ("yes" if parts[1] == "yes" else "no"))
         elif key == "windows" and len(parts) >= 2 and parts[1].isdigit():
             lines.append(f"- windows: {parts[1]}")
-        elif key in ("menu_bar", "conversation_menu") and len(parts) >= 2:
+        elif key in ("menu_bar", "conversation_menu") and len(parts) == 2:
             label = "menu bar" if key == "menu_bar" else "Conversation menu"
-            lines.append(f"- {label}: {parts[1][:400]}")  # app UI strings
+            lines.append(f"- {label}: {safe_titles(parts[1], private)}")
         elif key == "tree" and len(parts) == 4 and parts[1].isdigit() and parts[3].isdigit():
             role = parts[2] if _ROLE.match(parts[2]) else "(other)"
             tree.append(f"    {'  ' * min(int(parts[1]), 12)}{role} ({parts[3]})")

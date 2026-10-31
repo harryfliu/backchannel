@@ -272,6 +272,17 @@ class ContactBook:
                 out[contact.photo_status] = out.get(contact.photo_status, 0) + 1
         return out
 
+    def private_names(self) -> set[str]:
+        """Every contact's full name, nickname and organization, lowercased (for redacting reports)."""
+        names: set[str] = set()
+        with self._lock:
+            for contact in self._contacts:
+                full = " ".join(p for p in (contact.first, contact.last) if p)
+                for name in (full, contact.nickname, contact.organization):
+                    if name and len(name.strip()) >= 3:
+                        names.add(name.strip().lower())
+        return names
+
     # ------------------------------------------------------------------ lookups
 
     @property

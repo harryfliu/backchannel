@@ -254,7 +254,14 @@ def check_messages_ui(report: Report, services: Any) -> None:
     report.item("markReadInMessages setting", "on" if health["enabled"] else "off")
     report.item("last result", "(none)" if not health["lastAt"] else f"at {health['lastAt']}, permission {health['permission']}")
     start = time.perf_counter()
-    for line in messages_ui.inspect(runner=messages_ui.osascript_runner):
+    private = services.contacts.private_names()
+    try:
+        me = services.convs.me().name.strip().lower()
+        if len(me) >= 3:
+            private.add(me)
+    except ChatDBError:
+        pass
+    for line in messages_ui.inspect(runner=messages_ui.osascript_runner, private=private):
         report.lines.append(line)
     report.item("inspection took", _ms(start))
 
