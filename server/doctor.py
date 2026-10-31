@@ -274,6 +274,74 @@ def check_messages_ui(report: Report, services: Any, tree: bool = False) -> None
     report.item("inspection took", _ms(start))
 
 
+def check_messages_try(report: Report, services: Any) -> None:
+    """Live check of the helpers, in your own chat only: press Heart on its newest message with Messages in
+    the background (then in front if that didn't take), confirm it in chat.db and take it off again; press
+    Reply both ways and see where the focus goes, then Escape. Nothing is typed or sent."""
+    from . import messages_ui
+
+    report.section("Messages helpers, live try (your own chat only)")
+    try:
+        me = services.convs.me()
+    except ChatDBError:
+        report.item("result", "skipped: chat.db isn't readable")
+        return
+    private = services.contacts.private_names()
+    if len(me.name.strip()) >= 3:
+        private.add(me.name.strip().lower())
+    title = messages_ui.inspect_mode(["title"])
+    open_title = ""
+    for line in title.stdout.splitlines():
+        if line.startswith("title_text\t"):
+            open_title = line.split("\t", 1)[1].strip().lower()
+    mine = {me.name.strip().lower(), me.short_name.strip().lower()} - {""}
+    if not open_title or open_title not in mine:
+        report.item("result", "skipped: open your own chat in Messages first (your name at the top), then run this again")
+        return
+    report.item("open chat", "yours")
+    db = services.db
+
+    def newest_rowid() -> int:
+        rows = db.query("SELECT MAX(ROWID) AS m FROM message")
+        return int(rows[0]["m"] or 0) if rows else 0
+
+    def wait_for(after: int, kinds: tuple[int, ...], seconds: float = 5.0) -> int | None:
+        marks = ",".join("?" * len(kinds))
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            rows = db.query(f"SELECT associated_message_type AS t FROM message WHERE ROWID > ? AND is_from_me = 1"
+                            f" AND associated_message_type IN ({marks}) ORDER BY ROWID DESC LIMIT 1", (after, *kinds))
+            if rows:
+                return int(rows[0]["t"])
+            time.sleep(0.4)
+        return None
+
+    def show(outcome: Any) -> None:
+        for line in messages_ui.inspect(private=private, raw=outcome):
+            if not line.startswith(("- Accessibility", "- Messages running", "- windows", "- menu bar", "- Conversation menu")):
+                report.lines.append(line)
+
+    landed_where = None
+    for where in ("back", "front"):
+        before = newest_rowid()
+        outcome = messages_ui.inspect_mode(["try-tapback", where, "R:Heart"])
+        if where == "back":
+            show(outcome)
+        landed = wait_for(before, (2000,))
+        report.item(f"Heart with Messages in the {'background' if where == 'back' else 'front'}",
+                    "landed in chat.db" if landed else "didn't land")
+        if landed:
+            landed_where = where
+            break
+    if landed_where:
+        before = newest_rowid()
+        messages_ui.inspect_mode(["try-tapback", landed_where, "R:Heart"])
+        report.item("took the heart off again", "yes" if wait_for(before, (3000,)) else "no: remove it by hand")
+    for where in ("back", "front"):
+        report.lines.append(f"- Reply with Messages in the {'background' if where == 'back' else 'front'}:")
+        show(messages_ui.inspect_mode(["try-reply", where]))
+
+
 def check_system(report: Report, services: Any) -> None:
     settings = services.settings
     report.section("Backchannel")
@@ -292,6 +360,8 @@ def check_system(report: Report, services: Any) -> None:
 def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str]:
     parser = argparse.ArgumentParser(prog="backchannel doctor", description=__doc__)
     parser.add_argument("--ai", action="store_true", help="also make one tiny real Claude call")
+    parser.add_argument("--messages-try", action="store_true",
+                        help="live check in your own chat: press Heart (then take it off) and Reply (then Escape)")
     parser.add_argument("--messages-tree", action="store_true",
                         help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
     parser.add_argument("--messages-ui", action="store_true",
@@ -316,6 +386,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
         check_chief(report, services)
         if args.messages_ui or args.messages_tree:
             check_messages_ui(report, services, tree=args.messages_tree)
+        if args.messages_try:
+            check_messages_try(report, services)
     finally:
         services.close()
     report.section("Result")

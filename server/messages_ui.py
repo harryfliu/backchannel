@@ -997,7 +997,7 @@ def _shape(raw: str) -> str:
     return ",".join(t if (t.isdigit() or t in _SHAPE_WORDS) else "?" for t in raw.split(",") if t) or "-"
 
 
-def _actions(raw: str) -> str:
+def _actions(raw: str, private: set[str] | frozenset[str] = frozenset()) -> str:
     """Accessibility action names. Custom actions arrive as "Name:Reply<newline>Target:…"; keep the name."""
     out = []
     for action in raw.split(","):
@@ -1006,7 +1006,8 @@ def _actions(raw: str) -> str:
             out.append(action)
         elif action.startswith("Name:"):
             name = action[5:].split("Target:")[0].strip()
-            out.append(f"custom:{name}" if re.fullmatch(r"[A-Za-z][A-Za-z &'-]{0,30}", name) else "custom:(hidden)")
+            shown = safe_titles(name, private) if name else "(hidden)"
+            out.append(f"custom:{shown}" if shown not in ("---", "-") else "custom:(hidden)")
         elif action:
             out.append("(other)")
     return ", ".join(out) or "none"
@@ -1017,14 +1018,21 @@ def _actions(raw: str) -> str:
 _SAFE_IDENT = re.compile(r"[A-Za-z][A-Za-z._-]{0,59}")
 
 
+def inspect_mode(args: list[str], runner: Runner = osascript_runner, timeout: float = 60.0) -> Outcome:
+    """Run one of the inspect script's modes ("title", "try-tapback", "try-reply") and return its raw output.
+    The caller decides what is safe to print (the "title" mode returns the open chat's name)."""
+    return runner(INSPECT_SCRIPT, args, timeout)
+
+
 def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
-            private: set[str] | frozenset[str] = frozenset(), tree: bool = False) -> list[str]:
+            private: set[str] | frozenset[str] = frozenset(), tree: bool = False,
+            raw: Outcome | None = None) -> list[str]:
     """Report lines about Messages' accessibility structure: roles, counts and menu/button titles only.
 
     Everything else the script prints is dropped; titles that look like they
     carry a name, number, address or quoted text (see `private`) are hidden.
     """
-    outcome = runner(INSPECT_SCRIPT, ["tree"] if tree else [], timeout)
+    outcome = raw if raw is not None else runner(INSPECT_SCRIPT, ["tree"] if tree else [], timeout)
     if outcome.timed_out:
         return ["- inspection: timed out"]
     if outcome.returncode == 127:
@@ -1077,7 +1085,7 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
             selected = parts[4] if parts[4] in ("true", "false") else "?"
             lines.append(f"    item {parts[1]}: {role}, label {parts[3]} chars [{_shape(parts[5])}], selected {selected}")
         elif key == "row_actions" and len(parts) == 3:
-            lines.append(f"- actions on a {parts[1] if parts[1] in ('short-label', 'long-label') else '?'} item: {_actions(parts[2])}")
+            lines.append(f"- actions on a {parts[1] if parts[1] in ('short-label', 'long-label') else '?'} item: {_actions(parts[2], private)}")
         elif key == "row_selected_settable" and len(parts) == 2:
             lines.append(f"- can set AXSelected on a row: {parts[1] if parts[1] in ('true', 'false') else 'unknown'}")
         elif key == "bubbles" and len(parts) == 2 and parts[1].isdigit():
@@ -1087,7 +1095,7 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
         elif key == "bubble_actions" and len(parts) == 4:
             ident = parts[3] if _SAFE_IDENT.fullmatch(parts[3] or "") else ("(hidden)" if parts[3] else "-")
             lines.append(f"- newest message, {parts[1] if parts[1] in ('row', 'balloon', 'text') else '?'}: id {ident};"
-                         f" actions {_actions(parts[2])}")
+                         f" actions {_actions(parts[2], private)}")
         elif key in ("top_before", "top_after") and len(parts) == 2:
             roles = [r if _ROLE.match(r) else "(other)" for r in parts[1].split(",") if r]
             lines.append(f"- Messages' top-level elements {'before' if key == 'top_before' else 'after'} the right-click: "
@@ -1101,6 +1109,21 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
             ident = parts[2] if _SAFE_IDENT.fullmatch(parts[2] or "") else ("(hidden)" if parts[2] else "-")
             sub = parts[3] if _ROLE.match(parts[3] or "") else "-"
             lines.append(f"    window {parts[1]}: id {ident}, subrole {sub}")
+        elif key == "try_actions" and len(parts) == 2:
+            lines.append(f"- newest message's actions: {_actions(parts[1], private)}")
+        elif key == "try" and len(parts) == 2:
+            lines.append(f"- pressed: {parts[1] if parts[1] in ('true', 'false', 'no-message') else '?'}")
+        elif key == "focus" and len(parts) == 7 and parts[1] in ("before", "after"):
+            role, ident, dlen, vlen, hint = parts[2:]
+            role = role if _ROLE.match(role) else "(other)"
+            ident = ident if _SAFE_IDENT.fullmatch(ident or "") else ("(hidden)" if ident else "-")
+            hint = safe_titles(hint, private) if hint else "-"
+            lines.append(f"- focus {parts[1]} Reply: {role}, id {ident}, label {dlen if dlen.isdigit() else '?'} chars,"
+                         f" text {vlen if vlen.isdigit() else '?'} chars, placeholder {hint}")
+        elif key == "focus" and len(parts) == 3 and parts[2] == "none":
+            lines.append(f"- focus {parts[1] if parts[1] in ('before', 'after') else '?'} Reply: nothing focused")
+        elif key == "section" and len(parts) == 2:
+            tree.append(f"    [{parts[1] if parts[1] in ('entry-before', 'entry-after') else '?'}]")
         elif key == "picker_buttons" and len(parts) == 3:
             lines.append(f"- tapback picker buttons ({parts[1] if parts[1] in ('window', 'popover') else '?'}): "
                          + (safe_titles(parts[2], private) if parts[2] else "none found"))

@@ -740,12 +740,20 @@ on run argv
     if bcConvNames is not missing value then set bcReport to bcReport & {"conversation_menu" & tab & my joinWith(my cleanNames(bcConvNames), " | ")}
     if bcWinCount > 0 then
         tell application "System Events" to set bcWin to window 1 of process "Messages"
-        set bcWantTree to false
-        if (count of argv) > 0 then
-            if item 1 of argv is "tree" then set bcWantTree to true
+        set bcMode to ""
+        if (count of argv) > 0 then set bcMode to item 1 of argv
+        set bcFront to false
+        if (count of argv) > 1 then
+            if item 2 of argv is "front" then set bcFront to true
         end if
-        if bcWantTree then
+        if bcMode is "tree" then
             set bcReport to bcReport & {my walk(bcWin, 0, 16)}
+        else if bcMode is "title" then
+            set bcReport to bcReport & {"title_text" & tab & my titleText(bcWin)}
+        else if bcMode is "try-tapback" then
+            set bcReport to bcReport & my tryTapback(bcWin, bcFront, my tagged(argv, "R"))
+        else if bcMode is "try-reply" then
+            set bcReport to bcReport & my tryReply(bcWin, bcFront)
         else
             set bcReport to bcReport & my probeAll(bcWin)
         end if
@@ -771,21 +779,6 @@ on probeAll(bcWin)
     if bcTransId is "TranscriptCollectionView" then set bcOut to bcOut & my bubbleReport(bcTranscript, bcWin)
     return bcOut
 end probeAll
-
-on atPath(bcRoot, bcPath)
-    if bcRoot is missing value then return missing value
-    set bcEl to bcRoot
-    repeat with bcStep in bcPath
-        set bcNum to contents of bcStep
-        set bcNext to missing value
-        try
-            tell application "System Events" to set bcNext to UI element bcNum of bcEl
-        end try
-        if bcNext is missing value then return missing value
-        set bcEl to bcNext
-    end repeat
-    return bcEl
-end atPath
 
 -- A label's shape without its words: the length of each ", "-separated part, with a few
 -- status words and clock times named.
@@ -1018,14 +1011,6 @@ on bubbleReport(bcTranscript, bcWin)
     return bcOut
 end bubbleReport
 
-on attrText(bcEl, bcName)
-    set bcValue to missing value
-    try
-        tell application "System Events" to set bcValue to value of attribute bcName of bcEl
-    end try
-    return my asText(bcValue)
-end attrText
-
 on actionsOf(bcEl)
     set bcActs to {}
     try
@@ -1083,9 +1068,80 @@ on walk(bcEl, bcDepth, bcMaxDepth)
     end if
     return my joinWith(bcReport, linefeed)
 end walk
+
+-- ---- live tries (doctor --messages-try; it checks first that your own chat is the open one)
+
+on titleText(bcWin)
+    set bcTitle to my atPath(bcWin, {1, 1, 1, 1, 1, 1, 3, 1, 2})
+    if my attrText(bcTitle, "AXIdentifier") is not "ConversationTitle" then set bcTitle to my searchId(bcWin, "ConversationTitle")
+    return my attrText(bcTitle, "AXDescription")
+end titleText
+
+on newestBalloon(bcWin)
+    set bcTranscript to my spotTranscript(bcWin)
+    if bcTranscript is missing value then return missing value
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
+    end try
+    set bcNewest to 0
+    repeat with i from 1 to count of bcDescs
+        if (length of (my asText(item i of bcDescs))) > 20 then set bcNewest to i
+    end repeat
+    if bcNewest is 0 then return missing value
+    return my balloonOf(my atPath(bcTranscript, {bcNewest}))
+end newestBalloon
+
+on tryTapback(bcWin, bcFront, bcSyns)
+    set bcOut to {}
+    set bcBalloon to my newestBalloon(bcWin)
+    if bcBalloon is missing value then return {"try" & tab & "no-message"}
+    set bcOut to bcOut & {"try_actions" & tab & my joinWith(my actionsOf(bcBalloon), ",")}
+    set bcPrevApp to my frontBundle()
+    if bcFront then my bringForward()
+    set bcDid to my customAction(bcBalloon, bcSyns)
+    delay 0.5
+    if bcFront then my restoreFront(bcPrevApp)
+    return bcOut & {"try" & tab & (bcDid as text)}
+end tryTapback
+
+on focusInfo()
+    set bcF to missing value
+    try
+        tell application "System Events" to set bcF to value of attribute "AXFocusedUIElement" of process "Messages"
+    end try
+    if bcF is missing value then return "none"
+    set bcRole to my roleOf(bcF)
+    set bcId to my attrText(bcF, "AXIdentifier")
+    set bcDescLen to length of (my attrText(bcF, "AXDescription"))
+    set bcValLen to length of (my attrText(bcF, "AXValue"))
+    set bcHint to my attrText(bcF, "AXPlaceholderValue")
+    return bcRole & tab & bcId & tab & (bcDescLen as text) & tab & (bcValLen as text) & tab & bcHint
+end focusInfo
+
+on tryReply(bcWin, bcFront)
+    set bcOut to {}
+    set bcBalloon to my newestBalloon(bcWin)
+    if bcBalloon is missing value then return {"try" & tab & "no-message"}
+    set bcPrevApp to my frontBundle()
+    set bcOut to bcOut & {"focus" & tab & "before" & tab & my focusInfo()}
+    set bcBudget to 30
+    set bcOut to bcOut & {"section" & tab & "entry-before", my walk(my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1}), 0, 7)}
+    if bcFront then my bringForward()
+    set bcDid to my customAction(bcBalloon, {"Reply"})
+    delay 0.9
+    set bcOut to bcOut & {"try" & tab & (bcDid as text)}
+    set bcOut to bcOut & {"focus" & tab & "after" & tab & my focusInfo()}
+    set bcOut to bcOut & {"top_after" & tab & my joinWith(my topRoles(), ",")}
+    set bcBudget to 30
+    set bcOut to bcOut & {"section" & tab & "entry-after", my walk(my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1}), 0, 7)}
+    my pressEscape()
+    my restoreFront(bcPrevApp)
+    return bcOut
+end tryReply
 """
 
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
 REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
-INSPECT_SCRIPT = lines(INSPECT_RUN + ELEMENTS)
+INSPECT_SCRIPT = lines(INSPECT_RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES)
