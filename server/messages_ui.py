@@ -468,6 +468,7 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-menu": ("granted", "Messages didn't open a menu for that message.", "nothing"),
     "no-reply-item": ("granted", "Messages didn't offer Reply for that message.", "nothing"),
     "no-reply-field": ("granted", "Messages didn't open its reply field.", "nothing"),
+    "no-reply-mode": ("granted", "Messages didn't switch to replying to that message.", "nothing"),
     "field-busy": ("granted", "Messages' reply field already had text in it.", "nothing"),
     "clipboard-busy": ("granted", "The clipboard holds more than text, so Backchannel didn't paste.", "nothing"),
     "nothing-typed": ("granted", "Couldn't put the text in Messages' reply field.", "nothing"),

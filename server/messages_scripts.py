@@ -359,14 +359,43 @@ on findRow(bcList, bcStrictNames, bcLooseNames)
     return my atPath(bcList, {bcBestAt})
 end findRow
 
--- Open the conversation (pressing its list item selects it), then give the chat a moment to load.
+-- Open the conversation and make sure it's the selected one, so the chat on screen is the right
+-- one (pressing a list item in the background may not switch it; then try again in front).
 on openRow(bcRowEl)
+    if my isSelected(bcRowEl) then return true
+    try
+        tell application "System Events" to perform action "AXPress" of bcRowEl
+    end try
+    delay 0.8
+    if my isSelected(bcRowEl) then return true
+    my bringForward()
     try
         tell application "System Events" to perform action "AXPress" of bcRowEl
     end try
     delay 0.8
     return my isSelected(bcRowEl)
 end openRow
+
+-- The message entry area at the bottom of the chat. In reply mode Messages adds a preview of the
+-- message being answered inside it, so its element count goes up.
+on spotEntry(bcWin)
+    set bcEl to my atPath(bcWin, {1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1})
+    if my attrText(bcEl, "AXIdentifier") is "MessageEntryView" then return bcEl
+    return my searchId(bcWin, "MessageEntryView")
+end spotEntry
+
+on countUnder(bcEl, bcDepth)
+    if bcEl is missing value or bcDepth > 8 then return 0
+    set bcKids to {}
+    try
+        tell application "System Events" to set bcKids to UI elements of bcEl
+    end try
+    set bcN to count of bcKids
+    repeat with bcK in bcKids
+        set bcN to bcN + (my countUnder(contents of bcK, bcDepth + 1))
+    end repeat
+    return bcN
+end countUnder
 
 -- An element's own accessibility shortcut by title ("Heart", "Reply", "Mark as Read"). Custom
 -- actions describe themselves by title; their names read "Name:<title>" plus a target.
@@ -585,7 +614,7 @@ on act(argv)
         if bcList is missing value then return "no-list"
         set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
         if bcRowEl is missing value then return "row-not-found"
-        my openRow(bcRowEl)
+        if not my openRow(bcRowEl) then return "not-selected"
         set bcTranscript to my spotTranscript(bcWin)
         if bcTranscript is missing value then return "no-transcript"
         set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
@@ -623,16 +652,30 @@ on act(argv)
         if bcList is missing value then return "no-list"
         set bcRowEl to my findRow(bcList, bcStrictNames, bcLooseNames)
         if bcRowEl is missing value then return "row-not-found"
-        my openRow(bcRowEl)
+        if not my openRow(bcRowEl) then return "not-selected"
         set bcTranscript to my spotTranscript(bcWin)
         if bcTranscript is missing value then return "no-transcript"
         set bcBubble to my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
         if bcBubble is missing value then return "bubble-not-found"
+        set bcEntry to my spotEntry(bcWin)
+        if bcEntry is missing value then return "no-reply-field"
+        set bcShapeBefore to my countUnder(bcEntry, 0)
+        my bringForward()
         if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
-        delay 0.7
+        delay 0.8
+        if my countUnder(bcEntry, 0) is not greater than bcShapeBefore then
+            my pressEscape()
+            return "no-reply-mode"
+        end if
         set bcBox to my focusedTextField()
-        if bcBox is missing value then return "no-reply-field"
-        if (my fieldText(bcBox)) is not "" then return "field-busy"
+        if bcBox is missing value then
+            my pressEscape()
+            return "no-reply-field"
+        end if
+        if (my fieldText(bcBox)) is not "" then
+            my pressEscape()
+            return "field-busy"
+        end if
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
