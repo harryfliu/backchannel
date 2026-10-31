@@ -24,6 +24,7 @@ import {
 import { Avatar, ConversationGlyph, Spinner } from './common'
 import { Composer } from './Composer'
 import { MessageContent, MessageRow } from './Message'
+import { byNeed, ReasonChips } from './Priority'
 
 function ViewHeader({ icon, title, sub, right }: { icon: 'sparkles' | 'thread' | 'send' | 'inbox'; title: string; sub?: string; right?: React.ReactNode }) {
   return (
@@ -280,6 +281,8 @@ export function UnreadsView() {
   const convs = useStore((s) => s.conversations)
   const list = useMemo(() => unreadConversations(convs), [convs])
   const people = list.filter((c) => !c.isAutomated)
+  const needs = people.filter((c) => c.priority).sort(byNeed)
+  const rest = people.filter((c) => !c.priority)
   const automated = list.filter((c) => c.isAutomated)
   const ids = list.map((c) => c.id).join('|')
   useEffect(() => {
@@ -311,7 +314,18 @@ export function UnreadsView() {
               <p className="empty-sub">New texts from every conversation show up here.</p>
             </div>
           )}
-          {people.map((c) => (
+          {needs.length > 0 && (
+            <>
+              <h2 className="unreads-group is-needs">
+                <Icon name="alert" size={14} strokeWidth={2.2} /> Needs you first
+              </h2>
+              {needs.map((c) => (
+                <UnreadCard key={c.id} c={c} />
+              ))}
+            </>
+          )}
+          {rest.length > 0 && needs.length > 0 && <h2 className="unreads-group">Everything else</h2>}
+          {rest.map((c) => (
             <UnreadCard key={c.id} c={c} />
           ))}
           {automated.length > 0 && (
@@ -341,7 +355,11 @@ function UnreadCard({ c }: { c: Conversation }) {
   }, [replying])
 
   return (
-    <article ref={card} className="unread-card" aria-label={`${c.title}, ${plural(c.unreadCount, 'new message')}`}>
+    <article
+      ref={card}
+      className={`unread-card ${c.priority?.level === 'urgent' ? 'is-urgent' : c.priority ? 'is-needs' : ''}`}
+      aria-label={`${c.title}, ${plural(c.unreadCount, 'new message')}`}
+    >
       <header className="unread-card-head">
         <button type="button" className="unread-card-title" onClick={() => openConversation(c.id)} title="Open the conversation">
           <ConversationGlyph c={c} size={20} />
@@ -349,6 +367,7 @@ function UnreadCard({ c }: { c: Conversation }) {
           <span className="unread-card-count">{c.unreadCount} new</span>
         </button>
         <span className="unread-card-time">{c.lastMessage ? ageShort(c.lastMessage.sentAt) : ''}</span>
+        {c.priority && <ReasonChips reasons={c.priority.reasons} />}
         <div className="unread-card-actions">
           <button type="button" className={`btn is-quiet ${replying ? 'is-on' : ''}`} aria-expanded={replying} onClick={() => setReplying((r) => !r)}>
             <Icon name="reply" size={15} /> Reply

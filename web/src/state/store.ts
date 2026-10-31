@@ -48,6 +48,8 @@ export interface Settings {
   compact: boolean
   /** Mac app only: show a notification for new texts. */
   notify: boolean
+  /** Which texts notify: every one, DMs plus anything that needs you, or only what needs you. */
+  notifyLevel: 'all' | 'dms' | 'important'
 }
 
 export interface Toast {
@@ -158,6 +160,7 @@ const defaultSettings: Settings = {
   threadReplies: 'thread-only',
   compact: false,
   notify: false,
+  notifyLevel: 'all',
 }
 
 let state: State = {
@@ -474,6 +477,12 @@ function maybeNotify(m: Message) {
   if (document.hasFocus()) return
   const c = state.conversations[m.conversationId]
   if (c?.prefs.muted) return
+  const needsYou = !!m.importance?.some((r) => r.kind !== 'vip')
+  const level = state.settings.notifyLevel ?? 'all'
+  if (level === 'important' && !needsYou) return
+  if (level === 'dms' && !needsYou && (c?.kind !== 'dm' || c.isAutomated)) return
+  // Urgent texts also bounce the Dock icon.
+  if (m.importance?.some((r) => r.kind === 'urgent' || r.kind === 'repeat')) postNative({ type: 'attention' })
   postNative({
     type: 'notify',
     title: displayName(m.senderHandle),
@@ -738,6 +747,7 @@ export async function sendMessage(cid: string, text: string, opts: { threadRootI
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId,
     }
@@ -854,6 +864,7 @@ export async function sendFiles(cid: string, files: File[]) {
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId,
     }

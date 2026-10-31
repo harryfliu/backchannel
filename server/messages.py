@@ -295,6 +295,7 @@ class MessageBuilder:
             "effect": H.effect_name(row["expressive_send_style_id"]),
             "isAudioMessage": bool(row["is_audio_message"]),
             "otpCode": otp,
+            "importance": None,  # "Needs you" (round 6 contract): not computed yet
             "event": event,
             "clientId": ctx.client_ids.get(guid),
         }

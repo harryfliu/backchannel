@@ -9,7 +9,9 @@ import {
   openDetails,
   openProfile,
   openSearch,
+  openThread,
   openView,
+  setState,
   snooze,
   toggleMute,
   toggleStar,
@@ -244,6 +246,27 @@ function MessageList({ c }: { c: Conversation }) {
   const [jump, setJump] = useState(0)
   const loaded = !!ms && !ms.loading
 
+  // In a busy conversation, the new messages that need you (asked, mentioned, time-sensitive…).
+  const { forYou, freshCount } = useMemo(() => {
+    const i = marker ? items.findIndex((m) => m.id === marker) : -1
+    if (i < 0) return { forYou: [] as Message[], freshCount: 0 }
+    const fresh = items.slice(i).filter((m) => !m.fromMe && !m.event)
+    const important = fresh.filter((m) => m.importance?.some((r) => r.kind !== 'vip'))
+    return { forYou: fresh.length >= 4 ? important : [], freshCount: fresh.length }
+  }, [items, marker])
+  const [forYouStep, setForYouStep] = useState(0)
+  const [forYouHidden, setForYouHidden] = useState(false)
+  useEffect(() => {
+    setForYouStep(0)
+    setForYouHidden(false)
+  }, [c.id, marker])
+  const showNextForYou = () => {
+    const m = forYou[forYouStep % forYou.length]
+    setForYouStep((n) => n + 1)
+    if (m.threadRootId && mode === 'thread-only') void openThread(c.id, m.threadRootId)
+    else setState({ highlight: { id: m.id, at: Date.now() } })
+  }
+
   // Opening a conversation: land on the "New" line, or the bottom.
   useLayoutEffect(() => {
     const el = scroller.current
@@ -348,6 +371,18 @@ function MessageList({ c }: { c: Conversation }) {
           <div className="msg-list-end" />
         </div>
       </div>
+      {forYou.length > 0 && !forYouHidden && (
+        <div className="for-you" role="status">
+          <button type="button" className="for-you-pill" onClick={showNextForYou} title="Jump to the messages that need you">
+            <Icon name="at" size={14} strokeWidth={2.2} />
+            {forYou.length} for you in {freshCount} new
+            <span className="for-you-go">{forYouStep === 0 ? 'Show' : forYou.length > 1 ? 'Next' : 'Again'}</span>
+          </button>
+          <button type="button" className="for-you-x" aria-label="Hide" onClick={() => setForYouHidden(true)}>
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      )}
       {jump > 0 && (
         <button
           type="button"

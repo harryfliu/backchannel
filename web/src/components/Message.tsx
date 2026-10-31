@@ -22,6 +22,7 @@ import {
 import { Avatar, Menu, myNames, remindPresets, useMenu } from './common'
 import { Lightbox } from './Lightbox'
 import { TapbackPicker } from './TapbackPicker'
+import { ReasonChips } from './Priority'
 
 export interface RowOptions {
   /** First message of a run from the same sender: show avatar + name. */
@@ -51,8 +52,15 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
   const sender = m.fromMe ? null : personFor(m.senderHandle)
   const name = displayName(m.senderHandle)
   const head = opts.head || !!opts.inlineReplyContext
+  // Why it needs you. In a DM "asked you" goes without saying, so only time and urgency show there.
+  const reasons = !m.fromMe && m.importance ? m.importance.filter((r) => r.kind !== 'vip' && (opts.isGroup || (r.kind !== 'asked' && r.kind !== 'mention'))) : []
+  const urgent = reasons.some((r) => r.kind === 'urgent' || r.kind === 'repeat')
   return (
-    <div ref={ref} className={`msg ${head ? 'is-head' : 'is-cont'} ${m.status === 'sending' ? 'is-sending' : ''}`} data-mid={m.id}>
+    <div
+      ref={ref}
+      className={`msg ${head ? 'is-head' : 'is-cont'} ${m.status === 'sending' ? 'is-sending' : ''} ${reasons.length ? 'is-important' : ''} ${urgent ? 'is-urgent' : ''}`}
+      data-mid={m.id}
+    >
       <div className="msg-gutter">
         {head ? (
           m.fromMe ? (
@@ -89,6 +97,7 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
           </div>
         )}
         <MessageContent m={m} />
+        {reasons.length > 0 && <ReasonChips reasons={reasons} />}
         <Reactions m={m} />
         {!opts.inThread && m.thread && <ThreadSummary m={m} />}
         {opts.showStatus && m.fromMe && <StatusLine m={m} />}

@@ -177,7 +177,7 @@ def test_tapback_failures(fake_rw):
     rw.client.post(tapback_url(JORDAN, rw.guid("j_carpool")), json={"kind": "like"})
     missing = wait_for(rw, ui_action("tapback", messageId=rw.guid("j_carpool")))
     assert missing["detail"] == "Couldn't find that message in Messages. Tapbacks work on recent messages."
-    fake.answers["tapback"] = Outcome(0, "error\t-25211", "")
+    fake.answers["tapback"] = Outcome(0, "error:-25211", "")
     rw.client.post(tapback_url(JORDAN, rw.guid("j_drill")), json={"kind": "question"})
     denied = wait_for(rw, ui_action("tapback", messageId=rw.guid("j_drill")))
     assert denied["result"] == "failed" and denied["detail"] == DENIED_TEXT
@@ -285,7 +285,7 @@ def test_typed_but_unconfirmed_reply_is_never_sent_twice(fake_rw, sends):
 def test_typing_errors_count_as_maybe_sent(fake_rw, sends):
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
-    for i, outcome in enumerate([Outcome(-1, "", "", timed_out=True), Outcome(0, "error-late\t-1728", ""),
+    for i, outcome in enumerate([Outcome(-1, "", "", timed_out=True), Outcome(0, "error-late:-1728", ""),
                                  Outcome(1, "", "osascript: something odd"), Outcome(0, "typed-unknown", "")]):
         fake.answers["reply"] = outcome
         rw.post(send_url(SOCCER), {"text": f"maybe {i}", "clientId": f"m-{i}", "threadRootId": root})
@@ -298,7 +298,7 @@ def test_nothing_typed_answers_all_fall_back(fake_rw, sends):
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
     answers = ["not-running", "row-not-found", "not-selected", "bubble-not-found", "no-menu", "no-reply-field",
-               "field-busy", "clipboard-busy", "nothing-typed", "error\t-1719"]
+               "field-busy", "clipboard-busy", "nothing-typed", "error:-1719"]
     for i, answer in enumerate(answers):
         fake.answers["reply"] = Outcome(0, answer, "")
         rw.post(send_url(SOCCER), {"text": f"plain {i}", "clientId": f"p-{i}", "threadRootId": root})

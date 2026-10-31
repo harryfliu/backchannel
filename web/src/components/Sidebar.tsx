@@ -17,6 +17,7 @@ import {
 } from '../state/store'
 import type { LaterItem } from '../api/types'
 import { Avatar, ConversationGlyph } from './common'
+import { byNeed, SidebarChip } from './Priority'
 
 export interface SidebarSections {
   waiting: Conversation[]
@@ -35,9 +36,8 @@ export function buildSections(convs: Record<string, Conversation>, now = Date.no
   const visible = Object.values(convs).filter((c) => !c.prefs.snoozedUntil || new Date(c.prefs.snoozedUntil).getTime() <= now)
   const automated = visible.filter((c) => c.isAutomated).sort(byRecent)
   const people = visible.filter((c) => !c.isAutomated)
-  const waiting = people
-    .filter((c) => c.awaitingReply && !c.prefs.muted)
-    .sort((a, b) => (b.awaitingSince ?? '').localeCompare(a.awaitingSince ?? ''))
+  // "Needs you": they asked you something, mentioned you, or it's time-sensitive. Most pressing first.
+  const waiting = people.filter((c) => (c.awaitingReply || c.priority) && !c.prefs.muted).sort(byNeed)
   const waitingIds = new Set(waiting.map((c) => c.id))
   const rest = people.filter((c) => !waitingIds.has(c.id))
   const starred = rest.filter((c) => c.prefs.starred).sort(byRecent)
@@ -133,9 +133,9 @@ function HomeSidebar() {
         </div>
 
         {s.waiting.length > 0 && (
-          <Section id="waiting" title="Waiting on you" count={s.waiting.length} hint="Their message is the last one and it needs an answer">
+          <Section id="waiting" title="Needs you" count={s.waiting.length} hint="They asked you something, mentioned you, or it's time-sensitive. Most pressing first.">
             {s.waiting.map((c) => (
-              <Row key={c.id} c={c} trailing={<span className="age-pill">{ageShort(c.awaitingSince!)}</span>} />
+              <Row key={c.id} c={c} trailing={<SidebarChip c={c} />} />
             ))}
           </Section>
         )}

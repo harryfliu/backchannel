@@ -121,6 +121,58 @@ non-automated conversations when:
 `awaitingSince` is the time of the first asking message in the run. The AI
 catch-up does the finer judging.
 
+**Needs you (priority).** What needs the user first, so important texts don't
+get buried in busy chats. Computed on the Mac, no AI, for every non-automated,
+non-muted conversation; `priority` is null when nothing applies. Only real
+messages from others in the last 3 days count (no tapbacks, events, unsent).
+Each message that counts gets `importance` (its reasons); the conversation's
+`priority.reasons` is the union, most important first (urgent, repeat, time,
+asked, mention, reply, vip), each kind once (for `time`, the soonest).
+- `asked`: a DM that is `awaitingReply` (rule above). Goes on the first asking
+  message. (In groups the `mention` / `reply` reasons already say it.)
+- `mention` / `reply`: a group message that mentions the user, or an inline
+  reply to one of the user's messages, that is unread or in the unanswered run.
+- `time`: an *unread* message (or an asking message in a DM's unanswered run)
+  names a time that is still ahead, judged from the message's own timestamp in
+  the Mac's time zone:
+  - in N min/mins/minutes/hr/hrs/hours → `at` = sent + N, label = that clock
+    time ("Today 7:42 PM"; the UI shows a live "In 12 min" when it's close);
+  - a clock time: "7pm", "7:30 pm", "at 7", "at 7:30", "by 5", noon, midnight.
+    Bare numbers count only with am/pm or after at/by; without am/pm take the
+    next 7:00 or 19:00 after the message, skipping 1–6 am. A clock time attaches
+    to a day named in the same message ("tomorrow at 9", "Friday 7pm") → label
+    "Today 7 PM", "Tomorrow 9 AM", "Fri 7 PM";
+  - this morning / this afternoon / this evening / tonight → `at` null (they're
+    vague), counting until 12:00, 17:00, 23:59, 23:59 that day; label "This
+    morning", "This afternoon", "Tonight" (never urgent on their own);
+  - today, eod / end of day → `at` null, label "Today", window ends 23:59;
+  - tomorrow / tmrw (optionally + morning/afternoon/night or a clock time) →
+    label "Tomorrow" or "Tomorrow 9 AM";
+  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri".
+  It counts while the moment (or the day's 23:59 when `at` is null) is still
+  ahead and within 36 hours, and for up to 1 hour after a named time passes.
+  A message mentioning several times uses the soonest still ahead.
+- `urgent`: an unread message with urgent, asap, a.s.a.p, emergency, 911,
+  hospital, accident, "call me", "call asap", "pick up", "answer your phone",
+  "need you now", or "help!" (whole words, any case; `word` = the match,
+  lowercase).
+- `repeat`: 3 or more unread messages in a row from the same person, each
+  within 30 minutes of the one before (`count` = how many).
+- `vip`: the sender is close: the other person in a starred DM, in Chief's
+  people, or one of the 8 people the user sent the most texts to in the last
+  90 days (`name` = short name). Added only to messages that already have
+  another reason; never creates priority alone.
+Level is `urgent` when there's an `urgent` or `repeat` reason, or a `time` whose
+`at` is within the next 3 hours (or passed less than an hour ago); otherwise
+`high`. `score` orders within a level: start at 300 (urgent) or 100 (high),
+add urgent +80, repeat +40 per message past 2, time-in-3h +80, time +30,
+asked +60, mention +50, reply +40, vip +25, then subtract the hours since the
+newest counting message (at most 72). `messageId` is the counting message with
+the most weight (newest on ties). `until` is when the earliest time-based reason
+stops counting, or null. Priorities are recomputed whenever the conversation
+changes and every 5 minutes for those with an `until`; a change emits the
+usual `conversation` event, and new messages arrive with `importance` set.
+
 **Automated.** `isAutomated` when the sender is a short code (3–6 digits) or a
 non-contact who the user has never written to and whose texts look automated
 (codes, deliveries, appointment reminders, bank alerts).

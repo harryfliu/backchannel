@@ -216,7 +216,12 @@ action got through, and the permission check alone only reports `lastResult:
 and the permission check share the queue), never blocking a request. Each
 action is one `osascript`: the script lines as `-e`, every name and text as
 argv (tagged values, see `server/messages_scripts.py`), never in the source.
-Timeouts: 8 s (mark read), 10 s (tapback), 12 s (reply). A repeated mark-read
+Timeouts: 8 s (mark read), 10 s (tapback), 12 s (reply). When editing the
+scripts: AppleScript names are case-insensitive and System Events' terms win
+inside its tell, so every script variable is `bc`-prefixed (a list called
+`outLines` *was* its `outlines` class: -10006 on every write), each tell is one
+line that gets a value or does one thing, and `on error` branches only record
+the error; tests enforce all three. A repeated mark-read
 for a conversation already in the queue is dropped; jobs whose setting was
 turned off while they waited are dropped. Nothing runs in dry-run or fake-DB
 mode (see below).

@@ -33,6 +33,7 @@ import {
 } from './data'
 import { emojiArt, stickerArt } from './art'
 import { applyTapback, tapbackEmoji } from '../../lib/tapbacks'
+import { prioritize } from './priority'
 
 const wait = (ms: number) => new Promise((res) => setTimeout(res, ms))
 const clone = <T,>(v: T): T => (typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v)))
@@ -95,6 +96,7 @@ export function createMockApi(): Api {
     const since = awaiting(c.kind, list, c.isAutomated)
     c.awaitingReply = !!since
     c.awaitingSince = since
+    prioritize(c, list, since, db.vips)
     emit({ type: 'conversation', conversation: c })
   }
 
@@ -140,11 +142,14 @@ export function createMockApi(): Api {
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId: null,
     }
-    addMessage(m)
     c.unreadCount += 1
+    const list = db.messages.get(cid) ?? []
+    prioritize(c, [...list, m], awaiting(c.kind, [...list, m], c.isAutomated), db.vips)
+    addMessage(m)
     refreshSummary(cid)
   }
 
@@ -180,6 +185,7 @@ export function createMockApi(): Api {
       effect: null,
       isAudioMessage: false,
       otpCode: null,
+      importance: null,
       event: null,
       clientId: req.clientId,
     }
@@ -308,6 +314,7 @@ export function createMockApi(): Api {
           effect: null,
           isAudioMessage: false,
           otpCode: null,
+          importance: null,
           event: null,
           clientId,
         }
@@ -343,6 +350,7 @@ export function createMockApi(): Api {
         isAutomated: false,
         awaitingReply: false,
         awaitingSince: null,
+        priority: null,
         prefs: { starred: false, muted: false, snoozedUntil: null, section: null },
       }
       db.conversations.set(id, c)
@@ -358,6 +366,8 @@ export function createMockApi(): Api {
       const c = convo(cid)
       c.unreadCount = 0
       c.mentionCount = 0
+      const list = db.messages.get(cid) ?? []
+      prioritize(c, list, c.awaitingSince, db.vips)
       return clone(c)
     },
     async setPrefs(cid, prefs) {

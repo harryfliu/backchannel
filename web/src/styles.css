@@ -24,6 +24,10 @@
   --mention-me-bg: #fcefc0;
   --mention-row: #fdf8e7;
   --mention-bar: #e8b923;
+  --urgent-row: #fdf0f0;
+  --urgent-bar: #d64545;
+  --urgent-chip: #fbe3e3;
+  --time-chip: #fdf1df;
   --flash: #fff3c4;
   --accent: #007a5a;
   --accent-fg: #ffffff;
@@ -96,6 +100,10 @@
     --mention-me-bg: rgba(242, 199, 68, 0.2);
     --mention-row: rgba(242, 199, 68, 0.07);
     --mention-bar: #d9ad2b;
+    --urgent-row: rgba(240, 90, 90, 0.08);
+    --urgent-bar: #f07070;
+    --urgent-chip: rgba(240, 90, 90, 0.18);
+    --time-chip: rgba(229, 161, 74, 0.16);
     --flash: rgba(242, 199, 68, 0.22);
     --accent: #148567;
     --badge: #d4325c;
@@ -143,6 +151,10 @@
   --mention-me-bg: rgba(242, 199, 68, 0.2);
   --mention-row: rgba(242, 199, 68, 0.07);
   --mention-bar: #d9ad2b;
+  --urgent-row: rgba(240, 90, 90, 0.08);
+  --urgent-bar: #f07070;
+  --urgent-chip: rgba(240, 90, 90, 0.18);
+  --time-chip: rgba(229, 161, 74, 0.16);
   --flash: rgba(242, 199, 68, 0.22);
   --accent: #148567;
   --badge: #d4325c;
@@ -863,6 +875,20 @@ button.avatar:hover {
   background: var(--sunk);
   color: var(--fg-3);
 }
+/* "Needs you": the reason chip on a sidebar row. */
+.side-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.side-reason.is-time {
+  background: rgba(240, 170, 70, 0.28);
+  color: #ffe2b8;
+}
+.side-reason.is-urgent {
+  background: #d64545;
+  color: #fff;
+}
 .side-section {
   margin-top: 10px;
 }
@@ -1300,6 +1326,53 @@ button.avatar:hover {
   font-size: 13px;
   font-weight: 700;
 }
+/* "2 for you in 9 new": jumps between the new messages that need you in a busy chat. */
+.for-you {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 5;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  border-radius: 16px;
+  background: var(--popover);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+}
+.for-you-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.for-you-pill svg {
+  color: var(--mention-bar);
+}
+.for-you-go {
+  margin-left: 4px;
+  color: var(--link);
+}
+.for-you-x {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--fg-3);
+}
+.for-you-x:hover {
+  background: var(--sunk);
+}
 .jump-latest {
   position: absolute;
   left: 50%;
@@ -1338,6 +1411,45 @@ button.avatar:hover {
 .msg:has(.mentions-me) {
   background: var(--mention-row);
   box-shadow: inset 2px 0 0 var(--mention-bar);
+}
+/* Messages that need you (time-sensitive, replies to you…) get the same treatment; urgent ones in red. */
+.msg.is-important {
+  background: var(--mention-row);
+  box-shadow: inset 2px 0 0 var(--mention-bar);
+}
+.msg.is-urgent {
+  background: var(--urgent-row);
+  box-shadow: inset 2px 0 0 var(--urgent-bar);
+}
+.reason-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.unread-card-head .reason-chips {
+  margin: 0;
+}
+.reason-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--sunk);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.reason-chip.is-time {
+  background: var(--time-chip);
+  color: var(--warn);
+}
+.reason-chip.is-urgent {
+  background: var(--urgent-chip);
+  color: var(--urgent-bar);
 }
 .msg.is-flash {
   animation: flash 2.2s ease-out;
@@ -2691,6 +2803,19 @@ button.member-row:hover {
 .unread-card-msgs {
   padding: 6px 0 8px;
 }
+.unread-card.is-needs {
+  box-shadow: inset 3px 0 0 var(--mention-bar);
+}
+.unread-card.is-urgent {
+  box-shadow: inset 3px 0 0 var(--urgent-bar);
+}
+.unreads-group.is-needs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--urgent-bar);
+}
 .unread-card-msgs .msg:first-child .hover-bar {
   top: 2px;
 }
@@ -3162,6 +3287,14 @@ button.member-row:hover {
 }
 .radio-row span {
   display: grid;
+}
+.notify-levels {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0 26px;
+}
+.notify-levels .radio-row {
+  font-size: 14px;
 }
 .health {
   list-style: none;

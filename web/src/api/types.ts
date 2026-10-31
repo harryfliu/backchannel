@@ -73,7 +73,40 @@ export interface Conversation {
   awaitingReply: boolean
   /** When the message the user hasn't answered arrived. */
   awaitingSince: string | null
+  /** Why this needs the user, and how soon (docs/api.md, "Needs you"). Null when nothing does. */
+  priority: Priority | null
   prefs: ConversationPrefs
+}
+
+/** Why something needs the user. Worked out on the Mac from the text, who sent it and when. */
+export type PriorityReason =
+  /** A question or request for the user (the "Waiting on you" rule). */
+  | { kind: 'asked' }
+  /** Their name, in a group. */
+  | { kind: 'mention' }
+  /** An inline reply to one of their messages. */
+  | { kind: 'reply' }
+  /** A time that's coming up. label: "In 20 min", "Today 7 PM", "Tonight", "Tomorrow 9 AM", "Fri".
+   *  at: when, if a clock time or "in N min" was named (ISO); null for a whole day. */
+  | { kind: 'time'; label: string; at: string | null }
+  /** Urgent wording, e.g. "urgent", "asap", "emergency", "call me" (the matched words, lowercase). */
+  | { kind: 'urgent'; word: string }
+  /** Several unread texts in a row from the same person. */
+  | { kind: 'repeat'; count: number }
+  /** Someone close (starred DM, in Chief, or among the people the user texts most). Only alongside another reason. */
+  | { kind: 'vip'; name: string }
+
+export interface Priority {
+  /** urgent: now (urgent words, repeated texts, a time within ~3 hours). high: soon. */
+  level: 'urgent' | 'high'
+  /** Higher first, within a level. */
+  score: number
+  /** Most important first. */
+  reasons: PriorityReason[]
+  /** The message that matters most (jump target). */
+  messageId: string | null
+  /** When the time-sensitive part stops mattering (ISO), or null. */
+  until: string | null
 }
 
 export type TapbackKind =
@@ -167,6 +200,8 @@ export interface Message {
   isAudioMessage: boolean
   /** One-time passcode found in the text, for the copy button. */
   otpCode: string | null
+  /** Why this message needs the user (only on messages that count toward the conversation's priority). */
+  importance: PriorityReason[] | null
   /** Group events (someone added, renamed the chat…). Render as a centered event line. */
   event: { type: MessageEventType; text: string } | null
   /** Echo of the client id when this message was sent from Backchannel. */

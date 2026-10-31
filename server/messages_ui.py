@@ -342,13 +342,18 @@ _STDERR_NUMBER = re.compile(r"\((-?\d{1,6})\)\s*$")
 
 
 def _answer(outcome: Outcome) -> tuple[str, int | None]:
-    """(code, error number) from what a script printed ("error\\t-1719" → ("error", -1719))."""
+    """(code, error number) from what a script printed ("error:-1719" → ("error", -1719))."""
     text = outcome.stdout.strip()
-    head, _, tail = text.partition("\t")
-    try:
-        number = int(tail.strip()) if tail.strip() else None
-    except ValueError:
-        number = None
+    head, number = text, None
+    for sep in (":", "\t"):
+        before, found, after = text.partition(sep)
+        if found and before in ("error", "error-late"):
+            head = before
+            try:
+                number = int(after.strip())
+            except ValueError:
+                number = None
+            break
     if number is None and outcome.returncode != 0:
         match = _STDERR_NUMBER.search((outcome.stderr.splitlines() or [""])[-1])
         number = int(match.group(1)) if match else None
@@ -963,7 +968,7 @@ def safe_titles(raw: str, private: set[str] | frozenset[str] = frozenset()) -> s
     out = []
     for title in raw.split(" | ")[:60]:
         title = title.strip()
-        if title in ("missing value", "-"):
+        if title in ("missing value", "-", ""):
             out.append("---")  # a separator
             continue
         lowered = title.lower()

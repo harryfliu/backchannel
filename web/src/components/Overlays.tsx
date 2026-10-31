@@ -426,6 +426,25 @@ export function SettingsModal() {
                 </span>
               </span>
             </label>
+            {settings.notify && (
+              <div className="notify-levels" role="radiogroup" aria-label="Which texts notify you">
+                {(
+                  [
+                    ['all', 'Every new text', null],
+                    ['dms', 'Direct messages, and anything that needs you', 'Group chatter stays quiet unless it mentions you, replies to you or is time-sensitive.'],
+                    ['important', 'Only what needs you', 'Questions for you, mentions, replies, time-sensitive and urgent texts.'],
+                  ] as const
+                ).map(([value, label, help]) => (
+                  <label key={value} className="radio-row">
+                    <input type="radio" name="notify-level" checked={(settings.notifyLevel ?? 'all') === value} onChange={() => setSettings({ notifyLevel: value })} />
+                    <span>
+                      <strong>{label}</strong>
+                      {help && <span className="field-help">{help}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
           </fieldset>
         )}
         <MessagesHelpers />

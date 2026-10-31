@@ -13,7 +13,7 @@ from urllib.parse import quote
 import pytest
 
 from fake_messages import FakeMessages, clear_unread
-from server import messages_scripts, messages_ui
+from server import messages_scripts, messages_ui, sender
 from server.messages_ui import (AUTOMATION_TEXT, DENIED_TEXT, INSPECT_SCRIPT, MARK_READ_SCRIPT, PROBE_SCRIPT,
                                 REPLY_SCRIPT, TAPBACK_SCRIPT, TIMEOUT, Job, Outcome, candidate_names, interpret,
                                 outcome_code)
@@ -212,55 +212,78 @@ def test_scripts_are_well_formed_and_harmless(name):
     assert set(re.findall(r"key code \d+(?: using command down)?", lowered)) <= KEYS[name]
     for user_text in ("jordan", "hike", "harry", "+1415"):
         assert user_text not in lowered  # names and text arrive as argv, never in the source
-    # Reserved words that would break the script if used as variable names.
-    assert not re.search(r"\bset (a|by|words|button|info|menu|field|ready|result|text) to\b", source)
 
 
-def _inside_tell(lines: tuple[str, ...]):
-    """Yield (line, inside a tell block?) for each line, counting `tell … to …` one-liners as inside."""
-    depth = 0
-    for line in lines:
-        text = line.strip()
-        one_liner = text.startswith("tell ") and " to " in text
-        if text.startswith("tell ") and not one_liner:
-            depth += 1
-        yield text, depth > 0 or one_liner
-        if text == "end tell":
-            depth -= 1
+SENDER_SCRIPTS = {name: getattr(sender, name) for name in
+                  ("SEND_TO_CHAT", "SEND_TO_PARTICIPANT", "SEND_TO_BUDDY", "SEND_FILE_TO_CHAT", "SEND_FILE_TO_PARTICIPANT")}
+LOCAL_NAMES = (re.compile(r"\bset (\w+) to\b"), re.compile(r"\brepeat with (\w+) (?:in|from)\b"),
+               re.compile(r"\bon error (\w+) number (\w+)"), re.compile(r"^property (\w+) :"))
+
+
+def _locals(script: tuple[str, ...]) -> set[str]:
+    names: set[str] = set()
+    for line in script:
+        for pattern in LOCAL_NAMES:
+            for match in pattern.finditer(line):
+                names.update(match.groups())
+        params = re.match(r"^on (?!error\b)\w+\(([^)]*)\)", line)
+        if params:
+            names.update(p.strip() for p in params.group(1).split(",") if p.strip())
+        run = re.match(r"^on run (\w+)$", line)
+        if run:
+            names.add(run.group(1))
+    return names
+
+
+@pytest.mark.parametrize("name", sorted(SCRIPTS) + sorted(SENDER_SCRIPTS))
+def test_script_locals_are_bc_prefixed(name):
+    """Harry's Mac: a local called `outLines` was System Events' `outlines` class (names are
+    case-insensitive and the app's terms win inside its tell), so every write failed with -10006.
+    Every multi-letter variable and parameter is `bc…`; single letters and argv are fine."""
+    script = SCRIPTS.get(name) or SENDER_SCRIPTS[name]
+    names = _locals(script)
+    assert names, name
+    bad = sorted(n for n in names if len(n) > 1 and n != "argv" and not re.match(r"^bc[A-Z]", n))
+    assert not bad, (name, bad)
 
 
 @pytest.mark.parametrize("name", sorted(SCRIPTS))
-def test_no_list_appends_inside_tell_blocks(name):
-    """AppleScript -10006 (errAEWriteDenied) on macOS 26: `set end of <local list>` inside a tell
-    block is sent to the target app and refused. Lists are built by concatenation instead."""
-    for text, inside in _inside_tell(SCRIPTS[name]):
-        if inside:
-            assert not re.search(r"\bset end of\b|\bcopy\b.*\bto end of\b|\bset beginning of\b", text), (name, text)
+def test_handlers_are_called_with_my(name):
+    """Handler names may collide with System Events terms too; `my` always means ours."""
+    lines = SCRIPTS[name]
+    defined = set(re.findall(r"^on (\w+)\(", "\n".join(lines), re.M))
+    for line in lines:
+        for match in re.finditer(r"(\w+)\(", line):
+            if match.group(1) in defined and not line.startswith(f"on {match.group(1)}("):
+                assert line[:match.start()].endswith("my "), (name, line)
+
+
+@pytest.mark.parametrize("name", sorted(SCRIPTS))
+def test_tells_are_one_line_gets_or_actions(name):
+    """No multi-line tell blocks; inside a tell only a plain get into a local or one action:
+    strings, lists and coercions are built outside, where System Events' terms can't interfere."""
+    for line in SCRIPTS[name]:
+        assert not (line.startswith("tell ") and " to " not in line), (name, line)
+        assert line != "end tell", (name, line)
+        if line.startswith("tell "):
+            inside = line.split(" to ", 1)[1]
+            assert not re.search(r"&|\bas (text|number|integer)\b|\btab\b|\blinefeed\b|\{", inside), (name, line)
 
 
 def test_on_error_branches_cant_fail_again():
-    """An `on error` branch must not repeat what just failed: it only returns, records the error in a
-    local, leaves the loop, or tries something else inside its own `try`."""
-    simple = re.compile(r'^(return\b.*|exit repeat|set \w+ to ("[^"]*"|-?\d+|true|false|errNum|missing value|'
-                        r'"[\w-]+" & tab & \(errNum as text\)|\w+ & \{"[^"]*"\}))$')
+    """An `on error` branch only records: returns a tagged string, sets a flag or the error number,
+    or leaves the loop. Nothing in it talks to System Events."""
+    simple = re.compile(r'^(return ("[\w?-]*"|"[\w-]+:" & \(bcErrNum as text\)|-?\d+|true|false|missing value)'
+                        r'|exit repeat'
+                        r'|set bc\w+ to ("[^"]*"|-?\d+|true|false|bcErrNum|"[\w-]+:" & \(bcErrNum as text\)))$')
     for name, script in SCRIPTS.items():
         lines = list(script)
         for i, line in enumerate(lines):
             if not line.startswith("on error"):
                 continue
-            body, depth = [], 0
             for follow in lines[i + 1:]:
-                if follow == "try":
-                    depth += 1
-                elif follow == "end try":
-                    if depth == 0:
-                        break
-                    depth -= 1
-                body.append(follow)
-            if body and body[0] == "try":
-                assert body[-1] == "end try", (name, body)  # guarded by its own try
-                continue
-            for follow in body:
+                if follow == "end try":
+                    break
                 assert simple.match(follow), (name, follow)
 
 
@@ -270,7 +293,7 @@ def test_only_the_reply_script_puts_text_into_messages():
         writes = re.findall(r"set value of (\w+) to", source)
         clipboard = "set the clipboard to" in source
         if name == "reply":
-            assert writes == ["replyBox"] and clipboard
+            assert writes == ["bcBox"] and clipboard
         else:
             assert writes == [] and not clipboard, name
 
@@ -278,14 +301,14 @@ def test_only_the_reply_script_puts_text_into_messages():
 def test_return_is_only_pressed_on_our_own_text():
     act = messages_scripts.REPLY_ACT
     before_return = act[:act.index("key code 36")]
-    assert "if not isReady then return" in before_return  # the focused field must hold exactly the reply
-    assert before_return.rindex("considering case") > before_return.rindex("set f to my focusedTextField()")
+    assert "if not bcReady then return" in before_return  # the focused field must hold exactly the reply
+    assert before_return.rindex("considering case") > before_return.rindex("set bcFocused to my focusedTextField()")
 
 
 def test_inspect_script_never_prints_text():
     printed = [line for line in INSPECT_SCRIPT
-               if re.search(r"set outLines to (outLines & )?\{", line) or line.startswith('return "')
-               or "joinWith(outLines" in line]
+               if re.search(r"set (bcReport|bcOut) to (bcReport & |bcOut & )?\{", line) or line.startswith('return "')
+               or re.search(r"joinWith\(bcReport", line)]
     assert len(printed) > 20
     for line in printed:
         assert not re.search(r"\b(description|value) of\b", line), line  # lengths only (textLength)
@@ -303,11 +326,13 @@ def test_inspect_script_never_prints_text():
     (Outcome(0, "no-window", ""), "granted", False, "no window"),
     (Outcome(0, "not-running", ""), None, False, "Messages isn't open"),
     (Outcome(1, "", DENIED_STDERR), "denied", False, "Privacy & Security › Accessibility"),
+    (Outcome(0, "error-late:-25211", ""), "denied", False, "Privacy & Security › Accessibility"),
     (Outcome(0, "error-late\t-25211", ""), "denied", False, "Privacy & Security › Accessibility"),
     (Outcome(1, "", AUTOMATION_STDERR), "denied", False, "Privacy & Security › Automation"),
-    (Outcome(0, "error-late\t-1743", ""), "denied", False, "Privacy & Security › Automation"),
+    (Outcome(0, "error-late:-1743", ""), "denied", False, "Privacy & Security › Automation"),
     (Outcome(1, "", "execution error: Can't get window 1. (-1728)"), None, False, "failed: execution error"),
-    (Outcome(0, "error-late\t-1728", ""), None, False, "failed (error -1728)"),
+    (Outcome(0, "error-late:-1728", ""), None, False, "failed (error -1728)"),
+    (Outcome(0, "error-late:unknown", ""), None, False, "failed (error None)"),
     (Outcome(1, "", "System Events got an error: Messages isn't allowed (-1719)"), "denied", False, "Accessibility"),
     (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 8 seconds"),
     (Outcome(0, "weird", ""), None, False, "unexpected"),
@@ -324,7 +349,7 @@ def test_outcome_codes_never_carry_text():
     assert outcome_code(Outcome(1, "", DENIED_STDERR)) == "not allowed (Accessibility)"
     assert outcome_code(Outcome(1, "", AUTOMATION_STDERR)) == "not allowed (Automation)"
     assert outcome_code(Outcome(1, "", 'Can\'t get row "Jordan Park". (-1728)')) == "failed (exit 1)"
-    assert outcome_code(Outcome(0, "error\t-1728", "")) == "error -1728"
+    assert outcome_code(Outcome(0, "error:-1728", "")) == "error -1728"
     assert outcome_code(Outcome(-1, "", "", timed_out=True)) == "timed out"
 
 

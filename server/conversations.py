@@ -505,6 +505,7 @@ class ConversationService:
                 "isAutomated": facts.automated,
                 "awaitingReply": awaiting,
                 "awaitingSince": iso_apple(facts.awaiting_since) if awaiting else None,
+                "priority": None,  # "Needs you" (round 6 contract): not computed yet
                 "prefs": {
                     "starred": bool(prefs.get("starred")),
                     "muted": bool(prefs.get("muted")),
