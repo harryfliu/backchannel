@@ -27,8 +27,11 @@ not be able to drive it.
 - `chat.db` and the AddressBook databases are opened read-only
   (`file:...?mode=ro`, never `immutable=1`, so new writes in the WAL are seen).
 - Attachments are served by GUID lookup only, never by a path from the
-  client, and only if the resolved file lives under
-  `~/Library/Messages/Attachments` (or the configured fixture dir).
+  client, and only if the resolved file (realpath) lives under
+  `~/Library/Messages/Attachments`, `~/Library/Messages/StickerCache` (where
+  Messages keeps stickers) or `~/Library/Containers/com.apple.MobileSMS` (or
+  the configured fixture dirs). Files in temp folders (`/var/folders/…`) are
+  never served: they show as `missing` (404).
 
 ## Routes
 
@@ -135,7 +138,9 @@ or chat.db `error != 0`, emit `send-status: failed`.
 **Thread replies.** AppleScript can't send a real inline reply. A reply sent
 with `threadRootId` goes out as a normal text; the server stores
 (sent message GUID → threadRootId) locally and reports the message with that
-`threadRootId`, so it stays in the thread in Backchannel.
+`threadRootId`, so it stays in the thread in Backchannel. With
+`threadRepliesViaMessages` on, it's sent as a real reply through the Messages
+app instead (see "Tapbacks and threaded replies via Messages" below).
 
 **Live updates.** A watcher polls `PRAGMA data_version` about once a second.
 On change it emits `message` for new rows, `message-updated` for messages whose
@@ -191,8 +196,8 @@ Messages app to do it through macOS Accessibility (System Events), but only when
 chat.db still has unread incoming messages in that conversation. It runs in the
 background, never blocks the request, at most one at a time, and gives up after
 ~8 s. Strategy, in order: (1) find the conversation's row in Messages' sidebar
-by its display name, select it, and use the menu bar's Conversation › Mark as
-Read when present; (2) the row's context menu (AXShowMenu) › Mark as Read. It
+by its display name, select it and, if the selection took, use Conversation ›
+Mark as Read; (2) the row's context menu (AXShowMenu) › Mark as Read. It
 never types into Messages and never sends anything. Results go to the log and to
 `Health.messagesUi` (permission granted/denied; denied = macOS error -1719/-25211,
 "not allowed assistive access"). `./backchannel doctor --messages-ui` prints the
@@ -209,25 +214,42 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   find the target bubble in the transcript (match sender + text, newest match
   first; attachments by their placeholder), open its context menu (AXShowMenu)
   and choose the tapback (Tapback submenu or reaction buttons, whatever the
-  user's macOS exposes); to remove, choose the same tapback again. Verify a new
-  row with `associated_message_guid` pointing at the target and the right
-  `associated_message_type` within ~5 s, then emit `ui-action` (`done` or
-  `failed`). The new reaction itself reaches the UI as the target's normal
-  `message-updated`, the same as anyone else's tapback. One tapback per person
-  per message, like iMessage: picking a different one replaces yours.
-- Thread reply (`threadRepliesViaMessages`): when a send has `threadRootId`,
-  find the root bubble the same way, choose Reply in its context menu, then put
-  the text in Messages' reply field via the clipboard (saved and restored) and
-  press Return. Typing needs Messages in front for about a second, then focus
-  returns to Backchannel. Verify the sent row has `thread_originator_guid` =
-  root and reconcile it to the clientId as usual (`ui-action` `done`). If the
+  user's macOS exposes); to remove, choose the same tapback again. Because
+  choosing a tapback toggles it, chat.db is checked first: adding one you
+  already have, or removing one you don't, is `done` without touching
+  Messages. Verify a new row with `associated_message_guid` pointing at the
+  target and the right `associated_message_type` within ~5 s, then emit
+  `ui-action` (`done` or `failed`). The new reaction itself reaches the UI as
+  the target's normal `message-updated`, the same as anyone else's tapback. One
+  tapback per person per message, like iMessage: picking a different one
+  replaces yours.
+- Thread reply (`threadRepliesViaMessages`): when a send (immediate or
+  scheduled) has `threadRootId`, find the root bubble the same way, choose
+  Reply in its context menu, then put the text in Messages' reply field: first
+  by setting the field's value (no clipboard), read back; only if that didn't
+  take, by pasting (the plain-text clipboard is saved and restored; if the
+  clipboard holds anything but text it isn't touched and nothing is typed).
+  Return is pressed only when the focused field holds exactly the reply.
+  Pasting and Return need Messages in front for about a second, then the app
+  that was in front gets focus back. Verify the sent row has
+  `thread_originator_guid` = root and reconcile it to the clientId as usual
+  (`ui-action` `done`; if the row arrived without a thread, `fallback`). If the
   reply field couldn't be opened (nothing typed), send it the normal AppleScript
   way and emit `fallback` ("went out as a regular text"). If text may have been
-  typed but nothing was verified, never send a second copy: emit `failed` and a
-  `send-status` failed whose error says to check Messages before retrying (the
-  row is still reconciled if it shows up later).
-- Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes don't.
-- At most one Messages action at a time (queue), ~10 s timeout each. Never in
+  typed but nothing was verified (including timeouts), never send a second
+  copy: emit `failed` and a `send-status` failed whose error says to check
+  Messages before retrying (the row is still reconciled if it shows up later).
+- Read sync failures also emit `ui-action` (`mark-read`, `failed`); successes
+  don't, and neither does "Messages isn't open / has no window" (it would come
+  with every conversation you open).
+- Turning any helper on (false → true in `PATCH /api/settings`) queues a
+  harmless System Events call (~90 s timeout, never touches Messages) so macOS
+  asks "Backchannel wants to control System Events" right then, not during the
+  first real action. Its result goes to `Health.messagesUi`: -1743 → `denied`,
+  success → `lastResult: "Ready"` (permission stays as it was: Accessibility
+  isn't proven until a real action works).
+- At most one Messages action at a time (queue: read sync, tapbacks, replies
+  and the permission check share it), ~10 s timeout each. Never in
   dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
   row it would have produced into the fake chat.db (like simulated sends), so
   the whole flow can be tried without a Mac. Tests use a fake runner.

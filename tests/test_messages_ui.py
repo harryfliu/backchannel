@@ -1,6 +1,6 @@
-"""Server settings and the experimental "mark read in Messages" (Accessibility) job.
+"""Server settings, the permission probe, the helper scripts and "mark read in Messages".
 
-osascript is never run here: every test injects a fake runner.
+osascript is never run here: every test injects a fake runner (tests/fake_messages.py).
 """
 
 from __future__ import annotations
@@ -8,13 +8,14 @@ from __future__ import annotations
 import re
 import threading
 import time
-from contextlib import closing
 from urllib.parse import quote
 
 import pytest
 
-from server import messages_ui
-from server.messages_ui import (INSPECT_SCRIPT, MARK_READ_SCRIPT, TIMEOUT, Job, Outcome, candidate_names, interpret,
+from fake_messages import FakeMessages, clear_unread
+from server import messages_scripts, messages_ui
+from server.messages_ui import (AUTOMATION_TEXT, DENIED_TEXT, INSPECT_SCRIPT, MARK_READ_SCRIPT, PROBE_SCRIPT,
+                                REPLY_SCRIPT, TAPBACK_SCRIPT, TIMEOUT, Job, Outcome, candidate_names, interpret,
                                 outcome_code)
 from server.state import State
 from ts_shapes import validate
@@ -23,38 +24,18 @@ JORDAN = "dm:+14155550134"
 MARCUS = "dm:+14155550161"
 FAMILY = "g:chat100000000000000001"
 DENIED_STDERR = "execution error: System Events got an error: osascript is not allowed assistive access. (-25211)"
+AUTOMATION_STDERR = "execution error: Not authorized to send Apple events to System Events. (-1743)"
+OFF = {"markReadInMessages": False, "tapbacksViaMessages": False, "threadRepliesViaMessages": False}
 
 
-class FakeRunner:
-    """Stands in for osascript: records calls, can block, can clear unread rows like Messages would."""
-
-    def __init__(self, stdout: str = "ok-menu", *, returncode: int = 0, stderr: str = "", timed_out: bool = False,
-                 clears: str | None = None, gate: threading.Event | None = None):
-        self.outcome = Outcome(returncode, stdout, stderr, timed_out)
-        self.clears = clears  # chat.db path whose unread rows "Messages" marks read
-        self.gate = gate
-        self.calls: list[tuple[tuple[str, ...], list[str], float]] = []
-        self.started = threading.Event()
-
-    def __call__(self, script, argv, timeout):
-        self.calls.append((script, list(argv), timeout))
-        self.started.set()
-        if self.gate is not None:
-            assert self.gate.wait(10)
-        if self.clears:
-            from server import fakedb
-            with closing(fakedb.connect(self.clears)) as conn:
-                conn.execute("UPDATE message SET is_read = 1, date_read = 1 WHERE is_from_me = 0 AND is_read = 0")
-        return self.outcome
-
-
-def harness(make_rw, runner, *, enabled: bool = True):
-    rw = make_rw(messages_ui_runner=runner)
+def harness(make_rw, fake: FakeMessages, *, enabled: bool = True, clears: bool = False):
+    rw = make_rw(messages_ui_runner=fake)
     rw.services.messages_ui.check_after = 0.05
+    if clears:
+        fake.effects["mark-read"] = lambda argv: clear_unread(rw.settings.chat_db)
     if enabled:
         assert rw.client.patch("/api/settings", json={"markReadInMessages": True}).status_code == 200
-    if isinstance(runner, FakeRunner) and runner.clears == "auto":
-        runner.clears = str(rw.settings.chat_db)
+        assert rw.services.messages_ui.wait_idle(5)  # the permission probe
     return rw
 
 
@@ -66,27 +47,34 @@ def ui_health(rw) -> dict:
     return rw.get("/api/health")["messagesUi"]
 
 
+def ui_actions(rw) -> list[dict]:
+    return [e for e in rw.services.hub.history if e["type"] == "ui-action"]
+
+
 # --------------------------------------------------------------------------- settings
 
 
 def test_settings_default_patch_and_persist(rw):
-    assert rw.get("/api/settings") == {"markReadInMessages": False}
-    # types.ts has since grown two settings for the next (not yet built) Messages automation round.
-    not_built_yet = {"ServerSettings.tapbacksViaMessages: missing", "ServerSettings.threadRepliesViaMessages: missing"}
-    assert set(validate(rw.get("/api/settings"), "ServerSettings")) <= not_built_yet
+    assert rw.get("/api/settings") == OFF
+    assert not validate(rw.get("/api/settings"), "ServerSettings")
     assert ui_health(rw) == {"enabled": False, "permission": "unknown", "lastResult": None, "lastAt": None}
-    response = rw.client.patch("/api/settings", json={"markReadInMessages": True, "somethingElse": 1})
-    assert response.status_code == 200 and response.json() == {"markReadInMessages": True}
-    assert rw.get("/api/settings") == {"markReadInMessages": True}
-    assert ui_health(rw)["enabled"] is True
-    assert rw.client.patch("/api/settings", json={}).json() == {"markReadInMessages": True}
+    response = rw.client.patch("/api/settings", json={"tapbacksViaMessages": True, "somethingElse": 1})
+    assert response.status_code == 200 and response.json() == {**OFF, "tapbacksViaMessages": True}
+    assert ui_health(rw)["enabled"] is True  # any helper counts
+    assert rw.client.patch("/api/settings", json={"threadRepliesViaMessages": True}).json() == {
+        **OFF, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
+    assert rw.client.patch("/api/settings", json={}).json()["tapbacksViaMessages"] is True
     assert rw.client.patch("/api/settings", json={"markReadInMessages": "maybe"}).status_code == 400
     other = State(rw.settings.state_dir / "state.db")  # it's in state.db, not memory
     try:
-        assert other.get_settings() == {"markReadInMessages": True}
+        assert other.get_settings() == {**OFF, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
     finally:
         other.close()
-    assert rw.client.patch("/api/settings", json={"markReadInMessages": False}).json() == {"markReadInMessages": False}
+    assert rw.client.patch("/api/settings", json={"tapbacksViaMessages": False, "threadRepliesViaMessages": False,
+                                                  "markReadInMessages": True}).json() == {**OFF, "markReadInMessages": True}
+    assert ui_health(rw)["enabled"] is True
+    rw.client.patch("/api/settings", json={"markReadInMessages": False})
+    assert ui_health(rw)["enabled"] is False
 
 
 def test_settings_need_a_session_and_json(rw):
@@ -102,6 +90,59 @@ def test_settings_need_a_session_and_json(rw):
     assert form.status_code == 415
 
 
+# --------------------------------------------------------------------------- the permission probe
+
+
+def test_probe_runs_when_a_helper_is_turned_on(make_rw):
+    fake = FakeMessages()
+    rw = make_rw(messages_ui_runner=fake)
+    ui = rw.services.messages_ui
+    rw.client.patch("/api/settings", json={"tapbacksViaMessages": True})
+    assert ui.wait_idle(5) and fake.probes == 1
+    rw.client.patch("/api/settings", json={"tapbacksViaMessages": True})  # on → on
+    rw.client.patch("/api/settings", json={"tapbacksViaMessages": False})  # turning off
+    assert ui.wait_idle(5) and fake.probes == 1
+    rw.client.patch("/api/settings", json={"threadRepliesViaMessages": True})  # another one off → on
+    assert ui.wait_idle(5) and fake.probes == 2
+    assert fake.calls == []  # it never touched Messages
+    health = ui_health(rw)
+    assert health["lastResult"] == "Ready" and health["permission"] == "unknown"  # Automation isn't Accessibility
+
+
+@pytest.mark.parametrize("outcome, permission, result", [
+    (Outcome(1, "", AUTOMATION_STDERR), "denied", AUTOMATION_TEXT),
+    (Outcome(1, "", DENIED_STDERR), "denied", DENIED_TEXT),
+    (Outcome(0, "ready", ""), "unknown", "Ready"),
+    (Outcome(-1, "", "", timed_out=True), "unknown", "macOS didn't answer within 90 seconds. If it asks whether "
+                                                      "Backchannel may control System Events, click OK."),
+])
+def test_probe_results(make_rw, outcome, permission, result):
+    fake = FakeMessages(probe=outcome)
+    rw = make_rw(messages_ui_runner=fake)
+    rw.client.patch("/api/settings", json={"markReadInMessages": True})
+    assert rw.services.messages_ui.wait_idle(5)
+    health = ui_health(rw)
+    assert (health["permission"], health["lastResult"]) == (permission, result)
+
+
+def test_probe_clears_an_automation_denial_but_never_grants(make_rw):
+    fake = FakeMessages(probe=Outcome(1, "", AUTOMATION_STDERR))
+    rw = make_rw(messages_ui_runner=fake)
+    rw.client.patch("/api/settings", json={"markReadInMessages": True})
+    assert rw.services.messages_ui.wait_idle(5) and ui_health(rw)["permission"] == "denied"
+    fake.answers["probe"] = Outcome(0, "ready", "")  # Harry allowed it in System Settings
+    rw.client.patch("/api/settings", json={"markReadInMessages": False})
+    rw.client.patch("/api/settings", json={"markReadInMessages": True})
+    assert rw.services.messages_ui.wait_idle(5)
+    assert ui_health(rw)["permission"] == "unknown" and ui_health(rw)["lastResult"] == "Ready"
+
+
+def test_no_probe_without_the_real_runner(rw):
+    rw.client.patch("/api/settings", json={"tapbacksViaMessages": True, "markReadInMessages": True})
+    assert rw.services.messages_ui.wait_idle(5)
+    assert ui_health(rw)["lastAt"] is None  # dry-run + fake DB: nothing asked of macOS
+
+
 # --------------------------------------------------------------------------- candidate names
 
 
@@ -114,10 +155,15 @@ def test_candidate_names():
     assert names == ["Jojo", "Joanna Lee", "Acme Labs", "jo@example.com"] and loose == 4
     assert candidate_names("Liu Family 🏡") == (["Liu Family 🏡"], 1)
     job = Job("dm:x", "Jordan Park", ["Jordan Park", "Jordan"], [1], loose=1)
-    assert job.argv() == ["names", "1", "Jordan Park", "Jordan"]
+    assert job.argv() == ["mark-read", "L:Jordan Park", "N:Jordan"]
 
 
 # --------------------------------------------------------------------------- the scripts
+
+SCRIPTS = {"mark-read": MARK_READ_SCRIPT, "tapback": TAPBACK_SCRIPT, "reply": REPLY_SCRIPT, "inspect": INSPECT_SCRIPT,
+           "probe": PROBE_SCRIPT}
+KEYS = {"mark-read": {"key code 53"}, "tapback": {"key code 53"}, "inspect": {"key code 53"}, "probe": set(),
+        "reply": {"key code 53", "key code 36", "key code 9 using command down"}}
 
 
 def _check_blocks(lines: tuple[str, ...]) -> None:
@@ -129,7 +175,7 @@ def _check_blocks(lines: tuple[str, ...]) -> None:
             assert stack, f"line {number}: {text!r} closes nothing"
             opened = stack.pop()
             if opened == "handler":
-                assert kind not in ("tell", "repeat", "if", "try"), f"line {number}: {text!r} closes a handler"
+                assert kind not in ("tell", "repeat", "if", "try", "considering"), f"line {number}: {text!r} closes a handler"
             else:
                 assert kind == opened, f"line {number}: {text!r} closes {opened!r}"
         elif text.startswith("on error"):
@@ -139,6 +185,8 @@ def _check_blocks(lines: tuple[str, ...]) -> None:
             stack.append("handler")
         elif text == "try":
             stack.append("try")
+        elif text.startswith("considering "):
+            stack.append("considering")
         elif text.startswith("repeat"):
             stack.append("repeat")
         elif text.startswith("tell ") and " to " not in text:
@@ -150,18 +198,95 @@ def _check_blocks(lines: tuple[str, ...]) -> None:
     assert not stack, f"unclosed blocks: {stack}"
 
 
-@pytest.mark.parametrize("script", [MARK_READ_SCRIPT, INSPECT_SCRIPT], ids=["mark-read", "inspect"])
-def test_scripts_are_well_formed_and_harmless(script):
+@pytest.mark.parametrize("name", sorted(SCRIPTS))
+def test_scripts_are_well_formed_and_harmless(name):
+    script = SCRIPTS[name]
     _check_blocks(script)
-    source = "\n".join(script).lower()
-    for forbidden in ("keystroke", "do shell script", "send ", "set value of text", "set focused", "click button"):
-        assert forbidden not in source, forbidden
-    assert "key code" not in source or source.count("key code") == source.count("key code 53")  # Escape only
-    assert "jordan" not in source  # names arrive as argv, never in the source
+    source = "\n".join(script)
+    defined = set(re.findall(r"^on (\w+)\(", source, re.M))
+    assert set(re.findall(r"\bmy (\w+)\(", source)) <= defined  # every handler it calls is there
+    lowered = source.lower()
+    for forbidden in ("keystroke", "do shell script", "send ", "set value of text", "click button", "delete ",
+                      "activate"):
+        assert forbidden not in lowered, (name, forbidden)
+    assert set(re.findall(r"key code \d+(?: using command down)?", lowered)) <= KEYS[name]
+    for user_text in ("jordan", "hike", "harry", "+1415"):
+        assert user_text not in lowered  # names and text arrive as argv, never in the source
+    # Reserved words that would break the script if used as variable names.
+    assert not re.search(r"\bset (a|by|words|button|info|menu|field|ready|result|text) to\b", source)
+
+
+def _inside_tell(lines: tuple[str, ...]):
+    """Yield (line, inside a tell block?) for each line, counting `tell … to …` one-liners as inside."""
+    depth = 0
+    for line in lines:
+        text = line.strip()
+        one_liner = text.startswith("tell ") and " to " in text
+        if text.startswith("tell ") and not one_liner:
+            depth += 1
+        yield text, depth > 0 or one_liner
+        if text == "end tell":
+            depth -= 1
+
+
+@pytest.mark.parametrize("name", sorted(SCRIPTS))
+def test_no_list_appends_inside_tell_blocks(name):
+    """AppleScript -10006 (errAEWriteDenied) on macOS 26: `set end of <local list>` inside a tell
+    block is sent to the target app and refused. Lists are built by concatenation instead."""
+    for text, inside in _inside_tell(SCRIPTS[name]):
+        if inside:
+            assert not re.search(r"\bset end of\b|\bcopy\b.*\bto end of\b|\bset beginning of\b", text), (name, text)
+
+
+def test_on_error_branches_cant_fail_again():
+    """An `on error` branch must not repeat what just failed: it only returns, records the error in a
+    local, leaves the loop, or tries something else inside its own `try`."""
+    simple = re.compile(r'^(return\b.*|exit repeat|set \w+ to ("[^"]*"|-?\d+|true|false|errNum|missing value|'
+                        r'"[\w-]+" & tab & \(errNum as text\)|\w+ & \{"[^"]*"\}))$')
+    for name, script in SCRIPTS.items():
+        lines = list(script)
+        for i, line in enumerate(lines):
+            if not line.startswith("on error"):
+                continue
+            body, depth = [], 0
+            for follow in lines[i + 1:]:
+                if follow == "try":
+                    depth += 1
+                elif follow == "end try":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                body.append(follow)
+            if body and body[0] == "try":
+                assert body[-1] == "end try", (name, body)  # guarded by its own try
+                continue
+            for follow in body:
+                assert simple.match(follow), (name, follow)
+
+
+def test_only_the_reply_script_puts_text_into_messages():
+    for name, script in SCRIPTS.items():
+        source = "\n".join(script)
+        writes = re.findall(r"set value of (\w+) to", source)
+        clipboard = "set the clipboard to" in source
+        if name == "reply":
+            assert writes == ["replyBox"] and clipboard
+        else:
+            assert writes == [] and not clipboard, name
+
+
+def test_return_is_only_pressed_on_our_own_text():
+    act = messages_scripts.REPLY_ACT
+    before_return = act[:act.index("key code 36")]
+    assert "if not isReady then return" in before_return  # the focused field must hold exactly the reply
+    assert before_return.rindex("considering case") > before_return.rindex("set f to my focusedTextField()")
 
 
 def test_inspect_script_never_prints_text():
-    printed = [line for line in INSPECT_SCRIPT if "set end of outLines to" in line]
+    printed = [line for line in INSPECT_SCRIPT
+               if re.search(r"set outLines to (outLines & )?\{", line) or line.startswith('return "')
+               or "joinWith(outLines" in line]
+    assert len(printed) > 20
     for line in printed:
         assert not re.search(r"\b(description|value) of\b", line), line  # lengths only (textLength)
         assert "name of" not in line or "menu" in line, line  # menu titles only
@@ -178,9 +303,11 @@ def test_inspect_script_never_prints_text():
     (Outcome(0, "no-window", ""), "granted", False, "no window"),
     (Outcome(0, "not-running", ""), None, False, "Messages isn't open"),
     (Outcome(1, "", DENIED_STDERR), "denied", False, "Privacy & Security › Accessibility"),
-    (Outcome(1, "", "execution error: Not authorized to send Apple events to System Events. (-1743)"), "denied",
-     False, "Privacy & Security › Automation"),
+    (Outcome(0, "error-late\t-25211", ""), "denied", False, "Privacy & Security › Accessibility"),
+    (Outcome(1, "", AUTOMATION_STDERR), "denied", False, "Privacy & Security › Automation"),
+    (Outcome(0, "error-late\t-1743", ""), "denied", False, "Privacy & Security › Automation"),
     (Outcome(1, "", "execution error: Can't get window 1. (-1728)"), None, False, "failed: execution error"),
+    (Outcome(0, "error-late\t-1728", ""), None, False, "failed (error -1728)"),
     (Outcome(1, "", "System Events got an error: Messages isn't allowed (-1719)"), "denied", False, "Accessibility"),
     (Outcome(-1, "", "", timed_out=True), None, False, "didn't respond within 8 seconds"),
     (Outcome(0, "weird", ""), None, False, "unexpected"),
@@ -195,102 +322,115 @@ def test_outcome_codes_never_carry_text():
     assert outcome_code(Outcome(0, "ok-menu", "")) == "ok-menu"
     assert outcome_code(Outcome(0, "Jordan Park, hey", "")) == "unexpected answer"
     assert outcome_code(Outcome(1, "", DENIED_STDERR)) == "not allowed (Accessibility)"
-    assert outcome_code(Outcome(1, "", "Not authorized to send Apple events to System Events. (-1743)")) == (
-        "not allowed (Automation)")
+    assert outcome_code(Outcome(1, "", AUTOMATION_STDERR)) == "not allowed (Automation)"
     assert outcome_code(Outcome(1, "", 'Can\'t get row "Jordan Park". (-1728)')) == "failed (exit 1)"
+    assert outcome_code(Outcome(0, "error\t-1728", "")) == "error -1728"
     assert outcome_code(Outcome(-1, "", "", timed_out=True)) == "timed out"
 
 
-# --------------------------------------------------------------------------- the job
+# --------------------------------------------------------------------------- mark read
 
 
 def test_read_marks_it_read_in_messages(make_rw, caplog):
-    runner = FakeRunner("ok-menu", clears="auto")
-    rw = harness(make_rw, runner)
+    fake = FakeMessages()
+    rw = harness(make_rw, fake, clears=True)
     with caplog.at_level("INFO", logger="backchannel.messages_ui"):
         read(rw, JORDAN)
         assert rw.services.messages_ui.wait_idle(5)
-    assert len(runner.calls) == 1
-    script, argv, timeout = runner.calls[0]
+    assert fake.names() == ["mark-read"]
+    _, script, argv, timeout = fake.calls[0]
     assert script is MARK_READ_SCRIPT and timeout == TIMEOUT
-    assert argv == ["names", "3", "Jordan Park", "(415) 555-0134", "+1 (415) 555-0134", "Jordan"]
+    assert argv == ["mark-read", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan"]
     health = ui_health(rw)
     assert health["permission"] == "granted" and health["lastResult"] == "Marked Jordan Park read in Messages."
     assert health["lastAt"] and not validate(rw.get("/api/health"), "Health")
     assert "Jordan" not in caplog.text and "ok-menu" in caplog.text  # the log gets a code, not the name
+    assert ui_actions(rw) == []  # successes stay quiet
     read(rw, JORDAN)  # Messages agrees now: nothing to do
-    assert rw.services.messages_ui.wait_idle(5) and len(runner.calls) == 1
+    assert rw.services.messages_ui.wait_idle(5) and len(fake.calls) == 1
 
 
 def test_reports_when_chat_db_still_shows_unread(make_rw):
-    runner = FakeRunner("ok-context")  # "succeeds" but nothing changes in chat.db
-    rw = harness(make_rw, runner)
+    fake = FakeMessages(mark_read=Outcome(0, "ok-context", ""))  # "succeeds" but nothing changes in chat.db
+    rw = harness(make_rw, fake)
     read(rw, JORDAN)
     assert rw.services.messages_ui.wait_idle(5)
-    assert ui_health(rw)["lastResult"] == ("Marked Jordan Park read in Messages (from its context menu), "
-                                           "but chat.db still shows unread messages there.")
+    sentence = ("Marked Jordan Park read in Messages (from its context menu), "
+                "but chat.db still shows unread messages there.")
+    assert ui_health(rw)["lastResult"] == sentence
+    assert ui_actions(rw) == [{"type": "ui-action", "action": "mark-read", "conversationId": JORDAN, "messageId": None,
+                               "clientId": None, "result": "failed", "detail": sentence}]
 
 
 def test_permission_denied_and_failures(make_rw):
-    runner = FakeRunner("", returncode=1, stderr=DENIED_STDERR)
-    rw = harness(make_rw, runner)
+    fake = FakeMessages(mark_read=Outcome(1, "", DENIED_STDERR))
+    rw = harness(make_rw, fake)
     read(rw, JORDAN)
     assert rw.services.messages_ui.wait_idle(5)
     health = ui_health(rw)
-    assert health["permission"] == "denied" and "System Settings › Privacy & Security › Accessibility" in health["lastResult"]
-    runner.outcome = Outcome(0, "not-running", "")
-    read(rw, JORDAN)
-    assert rw.services.messages_ui.wait_idle(5)
-    health = ui_health(rw)
-    assert health["permission"] == "denied"  # unchanged: Messages wasn't open, so we learned nothing
-    assert health["lastResult"] == "Messages isn't open, so nothing was marked read."
-    runner.outcome = Outcome(-1, "", "", timed_out=True)
-    read(rw, JORDAN)
-    assert rw.services.messages_ui.wait_idle(5)
-    assert "didn't respond" in ui_health(rw)["lastResult"]
+    assert health["permission"] == "denied" and health["lastResult"] == DENIED_TEXT
+    assert ui_actions(rw)[-1]["detail"] == DENIED_TEXT and ui_actions(rw)[-1]["result"] == "failed"
     status = State(rw.settings.state_dir / "state.db")  # remembered across restarts
     try:
         assert status.get_kv(messages_ui.STATUS_KEY)["permission"] == "denied"
     finally:
         status.close()
+    fake.answers["mark-read"] = Outcome(0, "not-running", "")
+    read(rw, JORDAN)
+    assert rw.services.messages_ui.wait_idle(5)
+    health = ui_health(rw)
+    assert health["permission"] == "denied"  # unchanged: Messages wasn't open, so we learned nothing
+    assert health["lastResult"] == "Messages isn't open, so nothing was marked read."
+    assert len(ui_actions(rw)) == 1  # "Messages isn't open" isn't worth a toast every time
+    fake.answers["mark-read"] = Outcome(0, "row-not-found", "")
+    read(rw, JORDAN)
+    assert rw.services.messages_ui.wait_idle(5)
+    assert ui_actions(rw)[-1]["detail"] == "Couldn't find Jordan Park in Messages' sidebar."
+    assert ui_health(rw)["permission"] == "granted"  # the script got that far, so Accessibility works now
+    fake.answers["mark-read"] = Outcome(-1, "", "", timed_out=True)
+    read(rw, JORDAN)
+    assert rw.services.messages_ui.wait_idle(5)
+    assert "didn't respond" in ui_health(rw)["lastResult"] and ui_health(rw)["permission"] == "granted"
+    for event in ui_actions(rw):
+        assert not validate(event, "ServerEvent"), event
 
 
 def test_only_when_on_and_unread(make_rw):
-    off = FakeRunner()
+    off = FakeMessages()
     rw = harness(make_rw, off, enabled=False)
     read(rw, JORDAN)
     assert rw.services.messages_ui.wait_idle(5) and off.calls == []
-    on = FakeRunner()
+    on = FakeMessages()
     rw = harness(make_rw, on)
     read(rw, MARCUS)  # nothing unread in chat.db
     assert rw.services.messages_ui.wait_idle(5) and on.calls == []
-    assert ui_health(rw)["lastAt"] is None
+    assert ui_health(rw)["lastResult"] == "Ready"  # only the probe ran
 
 
 def test_group_conversations_use_the_title(make_rw):
-    runner = FakeRunner(clears="auto")
-    rw = harness(make_rw, runner)
+    fake = FakeMessages()
+    rw = harness(make_rw, fake, clears=True)
     read(rw, FAMILY)
     assert rw.services.messages_ui.wait_idle(5)
-    assert runner.calls[0][1] == ["names", "1", "Liu Family 🏡"]
+    assert fake.argv("mark-read") == ["mark-read", "L:Liu Family 🏡"]
 
 
 def test_never_blocks_and_coalesces(make_rw):
-    gate = threading.Event()
-    runner = FakeRunner(gate=gate)
-    rw = harness(make_rw, runner)
+    fake = FakeMessages()
+    fake.gate = threading.Event()
+    rw = harness(make_rw, fake)
     started = time.monotonic()
     read(rw, JORDAN)
-    assert runner.started.wait(5)  # running, and stuck until the gate opens
+    assert fake.started.wait(5)  # running, and stuck until the gate opens
     read(rw, JORDAN)  # queued once more (new messages may arrive while it runs)
     read(rw, JORDAN)  # dropped: already queued
     read(rw, FAMILY)
     read(rw, JORDAN)  # dropped
     assert time.monotonic() - started < 3  # none of these waited for Messages
-    assert len(runner.calls) == 1
-    gate.set()
+    assert len(fake.calls) == 1
+    fake.gate.set()
     assert rw.services.messages_ui.wait_idle(10)
-    assert [call[1][2] for call in runner.calls] == ["Jordan Park", "Jordan Park", "Liu Family 🏡"]
+    assert [argv[1] for _, _, argv, _ in fake.calls] == ["L:Jordan Park", "L:Jordan Park", "L:Liu Family 🏡"]
 
 
 def test_dry_run_and_fake_db_never_get_osascript(fixture_src, tmp_path):
@@ -299,12 +439,19 @@ def test_dry_run_and_fake_db_never_get_osascript(fixture_src, tmp_path):
     for env in ({}, {"BACKCHANNEL_SEND_MODE": "applescript"}):
         with Harness(fixture_src, tmp_path / f"state-{len(env)}", **env) as h:
             assert h.services.messages_ui.runner is None
+            assert h.services.messages_ui.simulator is not None  # the fake DB stands in for Messages
             h.client.patch("/api/settings", json={"markReadInMessages": True})
             assert h.services.messages_ui.request(Job(JORDAN, "Jordan Park", ["Jordan Park"], [1])) is False
+    plain = Harness(fixture_src, tmp_path / "state-plain", BACKCHANNEL_FAKE_DB="0").services  # dry-run, real DB
+    try:
+        assert plain.messages_ui.runner is None and plain.messages_ui.simulator is None
+    finally:
+        plain.close()
     services = Harness(fixture_src, tmp_path / "state-real", BACKCHANNEL_SEND_MODE="applescript",
                        BACKCHANNEL_FAKE_DB="0").services  # the real thing: only with Messages' own chat.db
     try:
         assert services.messages_ui.runner is messages_ui.osascript_runner
+        assert services.messages_ui.simulator is None
     finally:
         services.close()
 
@@ -314,16 +461,18 @@ def test_menu_titles_hide_anything_personal():
     titles = "Delete Conversation… | Mark as Read | Mark as Unread | Call Jordan | Park Here | jo@x.example | +1 415 | Marky"
     assert messages_ui.safe_titles(titles, private) == (
         "Delete Conversation… | Mark as Read | Mark as Unread | (hidden) | (hidden) | (hidden) | (hidden) | Marky")
+    assert messages_ui.safe_titles("Reply | Tapback… | Copy | Look Up “hike” | Translate 'ok' | missing value") == (
+        "Reply | Tapback… | Copy | (hidden) | (hidden) | ---")
 
 
 def test_turning_it_off_drops_queued_jobs(make_rw):
-    gate = threading.Event()
-    runner = FakeRunner(gate=gate)
-    rw = harness(make_rw, runner)
+    fake = FakeMessages()
+    fake.gate = threading.Event()
+    rw = harness(make_rw, fake)
     read(rw, JORDAN)
-    assert runner.started.wait(5)
+    assert fake.started.wait(5)
     read(rw, FAMILY)  # queued behind Jordan's
     rw.client.patch("/api/settings", json={"markReadInMessages": False})
-    gate.set()
+    fake.gate.set()
     assert rw.services.messages_ui.wait_idle(10)
-    assert [call[1][2] for call in runner.calls] == ["Jordan Park"]
+    assert [argv[1] for _, _, argv, _ in fake.calls] == ["L:Jordan Park"]

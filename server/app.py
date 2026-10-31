@@ -148,7 +148,8 @@ class Services:
         self.token = new_token()
         self.db = ChatDB(settings.chat_db)
         self.tracker = ChangeTracker(self.db)
-        self.media = Media(settings.attachments_root, settings.cache_dir)
+        self.media = Media(settings.attachments_root, settings.cache_dir, sticker_cache_root=settings.sticker_cache_root,
+                           messages_container_root=settings.messages_container_root)
         self.contacts = ContactBook(settings.addressbook_globs, can_convert=self.media.sips is not None)
         self.state = State(settings.state_dir / "state.db")
         self.hub = EventHub()
@@ -680,8 +681,10 @@ def create_app(
         if row is None:
             raise ApiError(404, "No attachment with that id.")
         path = s.media.resolve(row["filename"])
+        if path is None and s.media.is_transient(row["filename"]):
+            raise ApiError(404, "That attachment was a temporary file and isn't on this Mac anymore.")
         if path is None:
-            raise ApiError(403, "That attachment is stored outside the Messages attachments folder, so it isn't served.")
+            raise ApiError(403, "That attachment is stored outside the Messages folders, so it isn't served.")
         if not path.is_file():
             raise ApiError(404, "This attachment isn't on this Mac (it may be in iCloud). Open it in Messages to download it.")
         name = row["transfer_name"] or path.name

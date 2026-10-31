@@ -27,6 +27,12 @@ from .imagetypes import BROWSER_IMAGES, MIME, sniff_file, sniff_format
 log = logging.getLogger("backchannel.media")
 
 MESSAGES_ATTACHMENTS_PREFIX = "~/Library/Messages/Attachments"
+# Messages also keeps stickers (and a few attachments) outside Attachments/. These are the only
+# other folders served, read-only; temp folders like /var/folders/… are never served (they show
+# as missing).
+STICKER_CACHE_PREFIX = "~/Library/Messages/StickerCache"
+MESSAGES_CONTAINER_PREFIX = "~/Library/Containers/com.apple.MobileSMS"
+TRANSIENT_PREFIXES = ("/var/folders/", "/private/var/folders/")
 CONVERT_TIMEOUT = 30
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".webp", ".tif", ".tiff", ".bmp"}
@@ -297,9 +303,16 @@ def sniff_dimensions(path: Path, kind: str) -> tuple[int | None, int | None]:
 
 
 class Media:
-    def __init__(self, attachments_root: Path, cache_dir: Path):
+    def __init__(self, attachments_root: Path, cache_dir: Path, *, sticker_cache_root: Path | None = None,
+                 messages_container_root: Path | None = None):
         self.attachments_root = Path(attachments_root)
         self.cache_dir = Path(cache_dir)
+        # chat.db path prefix → where those files are on this machine (fixtures point them elsewhere).
+        self.prefixes: list[tuple[str, Path]] = [
+            (MESSAGES_ATTACHMENTS_PREFIX, self.attachments_root),
+            (STICKER_CACHE_PREFIX, Path(sticker_cache_root or os.path.expanduser(STICKER_CACHE_PREFIX))),
+            (MESSAGES_CONTAINER_PREFIX, Path(messages_container_root or os.path.expanduser(MESSAGES_CONTAINER_PREFIX))),
+        ]
         self.is_mac = sys.platform == "darwin"
         self.sips = _which("sips") if self.is_mac else None
         self.afconvert = _which("afconvert") if self.is_mac else None
@@ -307,9 +320,11 @@ class Media:
         self._dims: dict[tuple[str, float], tuple[int | None, int | None]] = {}
         self._formats: dict[tuple[str, float, str], str | None] = {}
         self._lock = threading.Lock()
-        roots = {os.path.realpath(self.attachments_root),
-                 os.path.realpath(os.path.expanduser(MESSAGES_ATTACHMENTS_PREFIX))}
-        self._roots = [Path(r) for r in roots]
+        roots: set[str] = set()
+        for prefix, root in self.prefixes:
+            roots.add(os.path.realpath(root))
+            roots.add(os.path.realpath(os.path.expanduser(prefix)))
+        self._roots = [Path(r) for r in sorted(roots)]
 
     @property
     def video_thumbnails(self) -> bool:
@@ -321,14 +336,21 @@ class Media:
         """Real path for chat.db's `attachment.filename`, or None if it's outside the allowed roots."""
         if not filename:
             return None
-        if filename == MESSAGES_ATTACHMENTS_PREFIX or filename.startswith(MESSAGES_ATTACHMENTS_PREFIX + "/"):
-            path = self.attachments_root / filename[len(MESSAGES_ATTACHMENTS_PREFIX) + 1 :]
+        for prefix, root in self.prefixes:
+            if filename == prefix or filename.startswith(prefix + "/"):
+                path = root / filename[len(prefix) + 1 :]
+                break
         else:
             path = Path(os.path.expanduser(filename))
         real = Path(os.path.realpath(path))
         if any(real == root or root in real.parents for root in self._roots):
             return real
         return None
+
+    @staticmethod
+    def is_transient(filename: str | None) -> bool:
+        """A temp-folder path (e.g. /var/folders/…): never served, and long gone anyway."""
+        return bool(filename) and filename.startswith(TRANSIENT_PREFIXES)  # type: ignore[union-attr]
 
     def exists(self, filename: str | None) -> bool:
         path = self.resolve(filename)

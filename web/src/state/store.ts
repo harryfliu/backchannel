@@ -28,6 +28,7 @@ import { applyTapback, myTapback, tapbackEmoji } from '../lib/tapbacks'
 export type View =
   | { kind: 'conversation'; id: string }
   | { kind: 'catchup' }
+  | { kind: 'unreads' }
   | { kind: 'threads' }
   | { kind: 'scheduled' }
 
@@ -575,7 +576,7 @@ function firstUnreadId(cid: string, items: Message[]) {
   return first?.id ?? null
 }
 
-async function loadMessages(cid: string) {
+export async function loadMessages(cid: string) {
   const existing = state.messages[cid]
   if (existing && (existing.loading || existing.items.length)) return
   setState((s) => ({ messages: { ...s.messages, [cid]: { items: [], nextCursor: null, loading: true, loadingOlder: false, error: null } } }))
@@ -617,7 +618,7 @@ export function openConversation(cid: string, highlightId?: string) {
   }))
 }
 
-export function openView(kind: 'catchup' | 'threads' | 'scheduled') {
+export function openView(kind: 'catchup' | 'unreads' | 'threads' | 'scheduled') {
   pushView({ kind })
   setState({ mobilePane: 'main', panel: null })
   if (kind === 'catchup' && !state.catchUp.data) void loadCatchUp(false)
@@ -1255,4 +1256,42 @@ export async function sendTapback(m: Message, kind: ClassicTapback) {
     const now = findMessage(m.conversationId, m.id)
     if (!now || !tapbackLanded(now, p)) toast('Messages didn’t confirm that tapback. It may not have gone through.')
   }, 25000)
+}
+
+// ------------------------------------------------------------------ unreads
+
+/** Conversations with something new, newest first (muted and snoozed ones left out, like the badge). */
+export function unreadConversations(convs: Record<string, Conversation>, now = Date.now()) {
+  return Object.values(convs)
+    .filter((c) => c.unreadCount > 0 && !c.prefs.muted && !(c.prefs.snoozedUntil && new Date(c.prefs.snoozedUntil).getTime() > now))
+    .sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? ''))
+}
+
+/** The messages that make up a conversation's unread count: its newest texts from other people. */
+export function unreadMessages(c: Conversation, items: Message[]) {
+  if (c.unreadCount <= 0) return []
+  return items.filter((m) => !m.fromMe && !m.event).slice(-c.unreadCount)
+}
+
+export async function markConversationRead(cid: string) {
+  window.clearTimeout(readTimers[cid])
+  try {
+    upsertConversation(await api.markRead(cid))
+  } catch (err) {
+    toast(err instanceof Error ? err.message : "Couldn't mark that read.", 'error')
+  }
+}
+
+export async function markAllRead(cids: string[]) {
+  if (!cids.length) return
+  const results = await Promise.allSettled(cids.map((cid) => api.markRead(cid)))
+  let done = 0
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      upsertConversation(r.value)
+      done += 1
+    }
+  }
+  if (done < cids.length) toast(`Marked ${done} of ${cids.length} read. Try again for the rest.`, 'error')
+  else toast(done === 1 ? 'Marked 1 conversation read' : `Marked ${done} conversations read`)
 }

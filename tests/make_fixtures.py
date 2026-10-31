@@ -14,6 +14,7 @@ attributedBody, like real chat.db rows since Ventura.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import plistlib
 import shutil
@@ -246,11 +247,28 @@ class ChatBuilder:
                            "member_ids": member_ids}
         self.manifest["chats"][key] = {"rowid": rowid, "guid": guid}
 
+    # Where Messages keeps some files besides Attachments/ (chat.db prefix, folder in the fixtures).
+    LOCATIONS = {
+        "stickercache": ("~/Library/Messages/StickerCache", "StickerCache"),
+        "container": ("~/Library/Containers/com.apple.MobileSMS", "Containers/com.apple.MobileSMS"),
+    }
+
     def _attachment(self, msg_guid: str, part: int, name: str, data: bytes | None, mime: str | None,
                     uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float,
-                    **columns: Any) -> dict:
+                    location: str = "attachments", **columns: Any) -> dict:
         guid = f"at_{part}_{msg_guid}"
-        if data is None:  # offloaded to iCloud: the row exists, the file doesn't
+        if location == "varfolders":  # a transient temp file Backchannel never serves
+            filename, size = f"/var/folders/h2/b7k2q0x51_9c0000gn/T/com.apple.MobileSMS/{guid}/{name}", 1_204_220
+        elif location in self.LOCATIONS:
+            prefix, folder = self.LOCATIONS[location]
+            digest = hashlib.sha1(guid.encode()).hexdigest().upper()
+            rel = (f"{digest[:8]}-{digest[8:12]}/{guid}/{name}" if location == "stickercache"
+                   else f"Data/Library/Caches/com.apple.MobileSMS/{guid}/{name}")
+            dest = self.out / folder / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data or b"")
+            filename, size = f"{prefix}/{rel}", len(data or b"")
+        elif data is None:  # offloaded to iCloud: the row exists, the file doesn't
             filename = f"~/Library/Messages/Attachments/{fakedb.attachment_relpath(guid, name)}"
             size = 2_481_337
         else:
@@ -308,7 +326,8 @@ class ChatBuilder:
         return guid
 
     def tapback(self, chat_key: str, sender: str, target: str, kind: int, when: float, *, emoji: str | None = None,
-                part: int = 0, sticker: bytes | None = None, label: str | None = None) -> str:
+                part: int = 0, sticker: bytes | None = None, sticker_location: str = "attachments",
+                label: str | None = None) -> str:
         target_text = self.texts.get(target, "")
         if part == 0 and self._has_attachment(target):
             quoted = "an image"
@@ -326,7 +345,8 @@ class ChatBuilder:
             text = f"Removed a reaction from {quoted}"
         attachments = []
         if sticker is not None:
-            attachments.append(("sticker.png", sticker, "image/png", "public.png", {"sticker": True}))
+            attachments.append(("sticker.png", sticker, "image/png", "public.png",
+                                {"sticker": True, "location": sticker_location}))
         cols = {
             "associated_message_guid": f"p:{part}/{self.guids[target]}",
             "associated_message_type": kind,
@@ -548,7 +568,7 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("family", "mom", "Made us a family chat! 🏡", b.day(21, 18, 1))
     b.msg("family", "dad", "👍", b.day(21, 18, 5))
     b.msg("family", "dad", "Found this old one of you two", b.day(8, 10, 0), label="f_missing",
-          attachments=[("IMG_2210.JPG", None, JPEG, "public.jpeg")])
+          attachments=[("IMG_2210.JPG", None, JPEG, "public.jpeg", {"location": "varfolders"})])
     b.msg("family", "mom", "Thanksgiving planning thread! Who's hosting this year?", b.day(6, 19, 0), label="f_root")
     b.msg("family", "grace", "I can host! We finally have the big table", b.day(6, 19, 10), thread="f_root")
     b.msg("family", "dad", "Grace's it is. I'll bring the turkey 🦃", b.day(6, 19, 12), thread="f_root")
@@ -585,7 +605,8 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("soccer", "kevin", "in 💪", b.ago(hours=14, minutes=48), thread="soc_root")
     b.msg("soccer", "aisha", "in but might be 10 min late", b.ago(hours=14, minutes=30), thread="soc_root")
     b.msg("soccer", "ben", "out this week, sorry 😩", b.ago(hours=14), thread="soc_root")
-    b.tapback("soccer", "kevin", "soc_root", 2007, b.ago(hours=13, minutes=54), sticker=sticker_png, label="soc_sticker")
+    b.tapback("soccer", "kevin", "soc_root", 2007, b.ago(hours=13, minutes=54), sticker=sticker_png,
+              sticker_location="container", label="soc_sticker")  # one of the few in Messages' container
     b.tapback("soccer", "ben", "soc_root", 2002, b.ago(hours=13, minutes=48))
     b.tapback("soccer", "jordan", "soc_tomas_in", 2001, b.ago(hours=13, minutes=30))
     b.msg("soccer", "me", "I can bring the new ball + pump", b.ago(hours=12), label="soc_ball")
@@ -609,8 +630,9 @@ def build_story(b: ChatBuilder) -> None:
     b.msg("dinner", "sam", "nvm wrong chat lol", b.day(2, 20, 5))
     sake = "Harry are you bringing the sake again? 🍶"
     b.msg("dinner", "ellie", sake, b.ago(hours=1), label="d_sake", unread=True, mentions=[(0, 5, ME_PHONE)])
-    b.msg("dinner", "ellie", None, b.day(8, 12, 0), label="d_ellie_sticker",
-          attachments=[("ramen-sticker.png", ramen_sticker, "image/png", "public.png", {"sticker": True})])
+    b.msg("dinner", "ellie", None, b.day(8, 12, 0), label="d_ellie_sticker",  # stickers live in StickerCache/
+          attachments=[("ramen-sticker.png", ramen_sticker, "image/png", "public.png",
+                        {"sticker": True, "location": "stickercache"})])
 
     # -- An unnamed group ---------------------------------------------------------------------------------
     b.msg("trio", "sam", "surprise party for priya — sat the 14th?", b.day(16, 19, 0))

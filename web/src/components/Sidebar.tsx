@@ -13,6 +13,7 @@ import {
   toggleSection,
   useStore,
   type RailTab,
+  unreadConversations,
 } from '../state/store'
 import type { LaterItem } from '../api/types'
 import { Avatar, ConversationGlyph } from './common'
@@ -108,6 +109,8 @@ function HomeSidebar() {
     (st) => st.catchUp.data?.sections.filter((x) => x.kind === 'reply_now' || x.kind === 'reply_soon').reduce((n, x) => n + x.items.length, 0) ?? 0,
   )
   const scheduledCount = useStore((st) => st.scheduled.filter((x) => x.status === 'pending').length)
+  const convs = useStore((st) => st.conversations)
+  const unreadCount = useMemo(() => unreadConversations(convs).length, [convs])
   const threadsUnread = 0
   const me = useStore((st) => st.me)
   return (
@@ -123,6 +126,7 @@ function HomeSidebar() {
       </header>
       <div className="sidebar-scroll">
         <div className="sidebar-nav">
+          <NavItem icon="inbox" label="Unreads" active={view?.kind === 'unreads'} count={unreadCount || undefined} bold={unreadCount > 0} onClick={() => openView('unreads')} />
           <NavItem icon="sparkles" label="Catch up" active={view?.kind === 'catchup'} badge={catchUpCount || undefined} onClick={() => openView('catchup')} accent />
           <NavItem icon="thread" label="Threads" active={view?.kind === 'threads'} badge={threadsUnread || undefined} onClick={() => openView('threads')} />
           <NavItem icon="send" label="Scheduled" active={view?.kind === 'scheduled'} count={scheduledCount || undefined} onClick={() => openView('scheduled')} />
@@ -181,17 +185,19 @@ function NavItem({
   count,
   onClick,
   accent,
+  bold,
 }: {
-  icon: 'sparkles' | 'thread' | 'send'
+  icon: 'sparkles' | 'thread' | 'send' | 'inbox'
   label: string
   active: boolean
   badge?: number
   count?: number
   onClick: () => void
   accent?: boolean
+  bold?: boolean
 }) {
   return (
-    <button type="button" className={`side-row nav-row ${active ? 'is-active' : ''} ${accent ? 'is-accent' : ''}`} onClick={onClick}>
+    <button type="button" className={`side-row nav-row ${active ? 'is-active' : ''} ${accent ? 'is-accent' : ''} ${bold ? 'is-unread' : ''}`} onClick={onClick}>
       <span className="side-glyph">
         <Icon name={icon} size={17} />
       </span>

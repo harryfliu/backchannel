@@ -33,6 +33,8 @@ fixture_env() {
   export BACKCHANNEL_CHAT_DB="$FIXTURES/chat.db"
   export BACKCHANNEL_ADDRESSBOOK_GLOB="$FIXTURES/AddressBook/Sources/*/AddressBook-v22.abcddb:$FIXTURES/AddressBook/AddressBook-v22.abcddb"
   export BACKCHANNEL_ATTACHMENTS_ROOT="$FIXTURES/Attachments"
+  export BACKCHANNEL_STICKER_CACHE_ROOT="$FIXTURES/StickerCache"
+  export BACKCHANNEL_MESSAGES_CONTAINER_ROOT="$FIXTURES/Containers/com.apple.MobileSMS"
   export BACKCHANNEL_STATE_DIR="$FIXTURES/state"
   export BACKCHANNEL_CACHE_DIR="$FIXTURES/cache"
   export BACKCHANNEL_STYLE_PROFILE="$FIXTURES/texting_style.json"

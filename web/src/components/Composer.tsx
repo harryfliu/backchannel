@@ -21,7 +21,18 @@ import { EmojiPicker } from './EmojiPicker'
 import { Menu, Modal, useMenu } from './common'
 
 
-export function Composer({ c, threadRootId = null, compact = false }: { c: Conversation; threadRootId?: string | null; compact?: boolean }) {
+export function Composer({
+  c,
+  threadRootId = null,
+  compact = false,
+  onSent,
+}: {
+  c: Conversation
+  threadRootId?: string | null
+  compact?: boolean
+  /** Called right after a message or files are handed off to send. */
+  onSent?: () => void
+}) {
   const key = draftKey(c.id, threadRootId)
   const draft = useStore((s) => s.drafts[key] ?? '')
   const ai = useStore((s) => s.aiDrafts[key])
@@ -85,6 +96,7 @@ export function Composer({ c, threadRootId = null, compact = false }: { c: Conve
     }
     if (text.trim()) void sendMessage(c.id, text, { threadRootId, sendAt })
     setText('')
+    onSent?.()
   }
   const ready = !!text.trim() || files.length > 0
 

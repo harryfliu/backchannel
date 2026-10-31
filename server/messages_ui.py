@@ -647,8 +647,10 @@ class MessagesUI:
         else:
             handle = message.get("senderHandle")
             person = next((p for p in conv.persons if handle and (handle == p.handle or handle in p.handles)), None)
-            senders = [n for n in dict.fromkeys([person.name, person.short_name] if person else [handle or ""])
-                       if n and len(n) >= 3]
+            contact = self.contacts.lookup(handle) if (self.contacts is not None and handle) else None
+            full = " ".join(p for p in (contact.first, contact.last) if p) if contact else ""
+            names = [person.name, person.short_name, full] if person else [format_handle(handle or ""), full]
+            senders = [n for n in dict.fromkeys(names) if n and len(n) >= 3]
             same_sender = lambda m: not m.get("fromMe") and m.get("senderHandle") == handle  # noqa: E731
         recent = self.builder.recent(conv, RECENT_FOR_SKIPS)
         ids = [m["id"] for m in recent]
@@ -1029,10 +1031,9 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 60.0,
             lines.append("- Tapback picker buttons: " + (safe_titles(parts[1], private) if parts[1] else "none appeared"))
         elif key == "reply_field" and len(parts) == 2 and parts[1] == "none":
             lines.append("- reply field: no text field got focus")
-        elif key == "reply_field" and len(parts) == 3:
+        elif key == "reply_field" and len(parts) == 3 and parts[2].lower() in ("true", "false"):
             role = parts[1] if _ROLE.match(parts[1]) else "(other)"
-            settable = {"true": "yes", "false": "no"}.get(parts[2].lower(), "?")
-            lines.append(f"- reply field: {role}, AXValue settable: {settable}")
+            lines.append(f"- reply field: {role}, AXValue settable: {'yes' if parts[2].lower() == 'true' else 'no'}")
     if tree:
         lines.append("- front window (roles and child counts):")
         lines.extend(tree[:400])

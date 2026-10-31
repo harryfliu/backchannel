@@ -49,6 +49,8 @@ def doctor_env(fixture_src, tmp_path, monkeypatch):
         "BACKCHANNEL_CHAT_DB": str(fx / "chat.db"),
         "BACKCHANNEL_ADDRESSBOOK_GLOB": f"{fx}/AddressBook/Sources/*/AddressBook-v22.abcddb:{fx}/AddressBook/AddressBook-v22.abcddb",
         "BACKCHANNEL_ATTACHMENTS_ROOT": str(fx / "Attachments"),
+        "BACKCHANNEL_STICKER_CACHE_ROOT": str(fx / "StickerCache"),
+        "BACKCHANNEL_MESSAGES_CONTAINER_ROOT": str(fx / "Containers" / "com.apple.MobileSMS"),
         "BACKCHANNEL_STATE_DIR": str(tmp_path / "state"),
         "BACKCHANNEL_CACHE_DIR": str(tmp_path / "cache"),
         "BACKCHANNEL_CHIEF_DB": str(fx / "chief.db"),
@@ -118,6 +120,13 @@ INSPECTION = "\n".join([
     "rows\t12\tJordan\t0\t12\t48\t0\t60",  # dropped
     "description\tJordan Park, are you down to hike Saturday?, 2:41 PM",  # unknown keys are dropped
     "Marcus Webb",
+    "bubble\tAXGroup\tAXShowMenu,AXPress,Jordan",
+    "bubble_menu\tReply | Tapback… | Copy | Look Up “hike” | Translate | Forward… | missing value | Delete…",
+    "tapback_item\tyes",
+    "tapback_buttons\tHeart | Thumbs up | Thumbs down | Ha ha | Exclamation marks | Question mark | Jordan Park",
+    "reply_item\tyes",
+    "reply_field\tAXTextArea\ttrue",
+    "reply_field\tAXTextArea\tare you down to hike",  # dropped: not a boolean
 ])
 
 
@@ -136,12 +145,21 @@ def test_messages_ui_inspection_never_prints_names(doctor_env, monkeypatch):
     assert calls == [(messages_ui.INSPECT_SCRIPT, [])]
     section = text[text.index("## Messages UI (Accessibility)"):]
     assert "- markReadInMessages setting: off" in section and "- last result: (none)" in section
+    assert "- tapbacksViaMessages setting: off" in section and "- threadRepliesViaMessages setting: off" in section
     assert "- Accessibility: allowed" in section and "- Messages running: yes" in section and "- windows: 1" in section
     assert "- menu bar: Apple | Messages | File | Edit | View | Conversation | Format | Window | Help" in section
     assert ("- Conversation menu: Delete Conversation… | Mark as Read | Mark as Unread | (hidden) | (hidden) | "
             "(hidden) | (hidden)") in section
     assert "AXSplitGroup (3)" in section and "(other) (1)" in section and "AXStaticText (0)" in section
     assert "row-like elements (AXRow/AXCell): 12; with description 12 (longest 48)" in section
+    assert "- newest bubble: AXGroup (actions: AXShowMenu, AXPress, (other))" in section
+    assert ("- its context menu: Reply | Tapback… | Copy | (hidden) | Translate | Forward… | --- | Delete…"
+            in section)
+    assert "- Tapback item: yes" in section and "- Reply item: yes" in section
+    assert ("- Tapback picker buttons: Heart | Thumbs up | Thumbs down | Ha ha | Exclamation marks | Question mark | "
+            "(hidden)") in section
+    assert "- reply field: AXTextArea, AXValue settable: yes" in section
+    assert section.count("- reply field:") == 1
     for secret in SECRETS + ("Saturday", "2:41"):
         assert secret not in text, secret
 

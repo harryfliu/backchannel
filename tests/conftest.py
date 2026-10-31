@@ -33,6 +33,8 @@ def settings_for(fx: Path, state: Path, **extra: str) -> Settings:
         "BACKCHANNEL_CHAT_DB": str(fx / "chat.db"),
         "BACKCHANNEL_ADDRESSBOOK_GLOB": f"{fx}/AddressBook/Sources/*/AddressBook-v22.abcddb:{fx}/AddressBook/AddressBook-v22.abcddb",
         "BACKCHANNEL_ATTACHMENTS_ROOT": str(fx / "Attachments"),
+        "BACKCHANNEL_STICKER_CACHE_ROOT": str(fx / "StickerCache"),
+        "BACKCHANNEL_MESSAGES_CONTAINER_ROOT": str(fx / "Containers" / "com.apple.MobileSMS"),
         "BACKCHANNEL_STATE_DIR": str(state),
         "BACKCHANNEL_CACHE_DIR": str(state / "cache"),
         "BACKCHANNEL_STYLE_PROFILE": str(fx / "texting_style.json"),
@@ -68,6 +70,7 @@ class Harness:
         return self
 
     def __exit__(self, *exc: Any) -> None:
+        self.services.messages_ui.wait_idle(15)  # let a queued Messages helper finish before state.db closes
         self.client.__exit__(*exc)
 
     # helpers ----------------------------------------------------------------

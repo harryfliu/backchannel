@@ -29,6 +29,8 @@ DEFAULTS: dict[str, Any] = {
         "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb",
     ],
     "attachments_root": "~/Library/Messages/Attachments",
+    "sticker_cache_root": "~/Library/Messages/StickerCache",
+    "messages_container_root": "~/Library/Containers/com.apple.MobileSMS",
     "state_dir": "~/Library/Application Support/Backchannel",
     "cache_dir": "~/Library/Caches/Backchannel",
     "style_profile_path": "~/Documents/claude_projects/imessage-checker/.texting_style.json",
@@ -61,6 +63,8 @@ class Settings:
     chat_db: Path
     addressbook_globs: list[str]
     attachments_root: Path
+    sticker_cache_root: Path
+    messages_container_root: Path
     state_dir: Path
     cache_dir: Path
     style_profile_path: Path | None
@@ -151,6 +155,9 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
         chat_db=_expand(env.get("BACKCHANNEL_CHAT_DB") or raw["chat_db"]),
         addressbook_globs=[str(_expand(g)) for g in globs],
         attachments_root=_expand(env.get("BACKCHANNEL_ATTACHMENTS_ROOT") or raw["attachments_root"]),
+        sticker_cache_root=_expand(env.get("BACKCHANNEL_STICKER_CACHE_ROOT") or raw["sticker_cache_root"]),
+        messages_container_root=_expand(env.get("BACKCHANNEL_MESSAGES_CONTAINER_ROOT")
+                                        or raw["messages_container_root"]),
         state_dir=_expand(env.get("BACKCHANNEL_STATE_DIR") or raw["state_dir"]),
         cache_dir=_expand(env.get("BACKCHANNEL_CACHE_DIR") or raw["cache_dir"]),
         style_profile_path=_expand(style) if style else None,

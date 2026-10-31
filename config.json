@@ -8,6 +8,8 @@
     "~/Library/Application Support/AddressBook/AddressBook-v22.abcddb"
   ],
   "attachments_root": "~/Library/Messages/Attachments",
+  "sticker_cache_root": "~/Library/Messages/StickerCache",
+  "messages_container_root": "~/Library/Containers/com.apple.MobileSMS",
   "state_dir": "~/Library/Application Support/Backchannel",
   "cache_dir": "~/Library/Caches/Backchannel",
   "style_profile_path": "~/Documents/claude_projects/imessage-checker/.texting_style.json",

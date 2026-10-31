@@ -1,24 +1,31 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { CatchUpItem, CatchUpSection, Message } from '../api/types'
-import { ageLong, ageShort, whenLabel } from '../lib/format'
+import type { CatchUpItem, CatchUpSection, Conversation, Message } from '../api/types'
+import { ageLong, ageShort, plural, whenLabel } from '../lib/format'
 import { Icon } from '../lib/icons'
 import {
   cancelScheduled,
   displayName,
   goBack,
   loadCatchUp,
+  loadMessages,
+  markAllRead,
   markCatchUpDone,
+  markConversationRead,
   openConversation,
   openThread,
   personFor,
   sendMessage,
+  toast,
+  unreadConversations,
+  unreadMessages,
   useStore,
 } from '../state/store'
 import { Avatar, ConversationGlyph, Spinner } from './common'
-import { MessageContent } from './Message'
+import { Composer } from './Composer'
+import { MessageContent, MessageRow } from './Message'
 
-function ViewHeader({ icon, title, sub, right }: { icon: 'sparkles' | 'thread' | 'send'; title: string; sub?: string; right?: React.ReactNode }) {
+function ViewHeader({ icon, title, sub, right }: { icon: 'sparkles' | 'thread' | 'send' | 'inbox'; title: string; sub?: string; right?: React.ReactNode }) {
   return (
     <header className="view-head">
       <button type="button" className="mobile-back icon-btn" aria-label="Back" onClick={() => goBack()}>
@@ -263,6 +270,124 @@ export function ThreadsView() {
         </div>
       </div>
     </section>
+  )
+}
+
+// ------------------------------------------------------------------ Unreads
+
+/** Every conversation with something new in one place (Slack's "All unreads"). Nothing is marked read until you say so. */
+export function UnreadsView() {
+  const convs = useStore((s) => s.conversations)
+  const list = useMemo(() => unreadConversations(convs), [convs])
+  const people = list.filter((c) => !c.isAutomated)
+  const automated = list.filter((c) => c.isAutomated)
+  const ids = list.map((c) => c.id).join('|')
+  useEffect(() => {
+    for (const id of ids ? ids.split('|') : []) void loadMessages(id)
+  }, [ids])
+  const total = list.reduce((n, c) => n + c.unreadCount, 0)
+  return (
+    <section className="view">
+      <ViewHeader
+        icon="inbox"
+        title="Unreads"
+        sub={list.length ? `${plural(total, 'new message')} in ${plural(list.length, 'conversation')}, newest first` : 'Nothing new'}
+        right={
+          list.length > 0 && (
+            <button type="button" className="btn" onClick={() => markAllRead(list.map((c) => c.id))}>
+              <Icon name="checkCheck" size={16} /> Mark all read
+            </button>
+          )
+        }
+      />
+      <div className="view-scroll">
+        <div className="unreads-inner">
+          {list.length === 0 && (
+            <div className="unreads-empty">
+              <span className="unreads-empty-icon">
+                <Icon name="checkCheck" size={26} />
+              </span>
+              <p className="empty-title">You’re all caught up</p>
+              <p className="empty-sub">New texts from every conversation show up here.</p>
+            </div>
+          )}
+          {people.map((c) => (
+            <UnreadCard key={c.id} c={c} />
+          ))}
+          {automated.length > 0 && (
+            <>
+              <h2 className="unreads-group">Apps &amp; alerts</h2>
+              {automated.map((c) => (
+                <UnreadCard key={c.id} c={c} />
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function UnreadCard({ c }: { c: Conversation }) {
+  const ms = useStore((s) => s.messages[c.id])
+  const [replying, setReplying] = useState(false)
+  const card = useRef<HTMLElement>(null)
+  const unread = useMemo(() => (ms ? unreadMessages(c, ms.items) : []), [ms, c])
+  const shown = unread.slice(-5)
+  const earlier = unread.length - shown.length
+
+  useEffect(() => {
+    if (replying) card.current?.querySelector<HTMLTextAreaElement>('.unread-card-reply textarea')?.focus()
+  }, [replying])
+
+  return (
+    <article ref={card} className="unread-card" aria-label={`${c.title}, ${plural(c.unreadCount, 'new message')}`}>
+      <header className="unread-card-head">
+        <button type="button" className="unread-card-title" onClick={() => openConversation(c.id)} title="Open the conversation">
+          <ConversationGlyph c={c} size={20} />
+          <span className="unread-card-name">{c.title}</span>
+          <span className="unread-card-count">{c.unreadCount} new</span>
+        </button>
+        <span className="unread-card-time">{c.lastMessage ? ageShort(c.lastMessage.sentAt) : ''}</span>
+        <div className="unread-card-actions">
+          <button type="button" className={`btn is-quiet ${replying ? 'is-on' : ''}`} aria-expanded={replying} onClick={() => setReplying((r) => !r)}>
+            <Icon name="reply" size={15} /> Reply
+          </button>
+          <button type="button" className="btn is-quiet" onClick={() => markConversationRead(c.id)}>
+            <Icon name="check" size={15} /> Mark read
+          </button>
+        </div>
+      </header>
+      <div className="unread-card-msgs">
+        {(!ms || ms.loading) && (
+          <div className="panel-loading">
+            <Spinner />
+          </div>
+        )}
+        {ms?.error && <p className="side-empty">{ms.error}</p>}
+        {earlier > 0 && (
+          <button type="button" className="link-btn unread-earlier" onClick={() => openConversation(c.id)}>
+            {plural(earlier, 'earlier new message')}: open the conversation
+          </button>
+        )}
+        {shown.map((m, i) => (
+          <MessageRow key={m.id} m={m} opts={{ head: i === 0 || shown[i - 1].senderHandle !== m.senderHandle, isGroup: c.kind === 'group' }} />
+        ))}
+      </div>
+      {replying && (
+        <div className="unread-card-reply">
+          <Composer
+            c={c}
+            compact
+            onSent={() => {
+              // Replying here counts as reading it.
+              toast(`Replied to ${c.title}`)
+              void markConversationRead(c.id)
+            }}
+          />
+        </div>
+      )}
+    </article>
   )
 }
 

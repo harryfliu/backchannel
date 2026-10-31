@@ -20,8 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ts_shapes import validate  # noqa: E402
 
 EXTRAS = {"stickerUrl"}
-# In types.ts already, built in a later round: reported, not counted as problems.
-NOT_BUILT = {"ServerSettings.tapbacksViaMessages: missing", "ServerSettings.threadRepliesViaMessages: missing"}
 
 
 def main() -> int:
@@ -48,10 +46,6 @@ def main() -> int:
             values = data[key] if key else data
             for value in (values if each else [values]):
                 errors = validate(value, type_name, allow_extra=EXTRAS)
-                pending = [e for e in errors if e in NOT_BUILT]
-                if pending:
-                    print(f"note {path}: not built yet: {', '.join(sorted(pending))}")
-                    errors = [e for e in errors if e not in NOT_BUILT]
                 checked += 1
                 if errors:
                     problems += 1

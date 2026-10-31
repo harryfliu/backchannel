@@ -66,6 +66,8 @@ Access instead.
 | SMS | Green SMS tag and send button |
 
 **Beyond Slack**
+- **Unreads** (⌘⇧A): every conversation with something new on one page, with
+  reply and mark-read right there. Nothing is marked read until you say so.
 - **Catch up**: what needs you, with replies drafted in your voice.
 - **Waiting on you**: people who asked you something you haven't answered.
 - **Draft reply**: three suggestions in any conversation.

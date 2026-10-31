@@ -156,7 +156,9 @@ def check_attachments(report: Report, services: Any, days: int = 90) -> None:
         report.item("HEIC sizes read", f"{sized} of {len(samples['heif'])} sampled")
 
     with tempfile.TemporaryDirectory(prefix="bc-doctor-") as tmp:
-        scratch = Media(services.settings.attachments_root, Path(tmp))
+        scratch = Media(services.settings.attachments_root, Path(tmp),
+                        sticker_cache_root=services.settings.sticker_cache_root,
+                        messages_container_root=services.settings.messages_container_root)
         report.item("sips", tilde(scratch.sips) if scratch.sips else "not found")
         report.item("qlmanage", tilde(scratch.qlmanage) if scratch.qlmanage else "not found")
         report.item("afconvert", tilde(scratch.afconvert) if scratch.afconvert else "not found")

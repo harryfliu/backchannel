@@ -56,7 +56,7 @@ on tagged(argv, tagName)
     repeat with arg in argv
         set s to arg as text
         if (length of s) > (length of prefix) and s starts with prefix then
-            set end of out to text ((length of prefix) + 1) thru -1 of s
+            set out to out & {text ((length of prefix) + 1) thru -1 of s}
         end if
     end repeat
     return out
@@ -486,7 +486,9 @@ on fieldText(f)
         end try
     end tell
 end fieldText
+"""
 
+CLIPBOARD = """
 on clipboardIsText()
     try
         set clipInfo to (clipboard info)
@@ -731,36 +733,37 @@ INSPECT_RUN = """
 property budget : 400
 
 on run argv
-    set outLines to {}
-    tell application "System Events"
-        try
-            set probe to count of UI elements of process "Finder"
-            set end of outLines to "accessibility" & tab & "allowed"
-        on error errMsg number errNum
-            set end of outLines to "accessibility" & tab & "denied" & tab & (errNum as text)
-            return my joinWith(outLines, linefeed)
-        end try
-        if not (exists process "Messages") then
-            set end of outLines to "messages_running" & tab & "no"
-            return my joinWith(outLines, linefeed)
-        end if
-        set end of outLines to "messages_running" & tab & "yes"
-        tell process "Messages"
-            set end of outLines to "windows" & tab & ((count of windows) as text)
-            try
-                set end of outLines to "menu_bar" & tab & my joinWith(my cleanNames(name of every menu bar item of menu bar 1), " | ")
-            end try
-            try
-                set end of outLines to "conversation_menu" & tab & my joinWith(my cleanNames(name of every menu item of menu 1 of menu bar item "Conversation" of menu bar 1), " | ")
-            end try
-            set winCount to count of windows
-            if winCount > 0 then set win to window 1
-        end tell
-    end tell
+    set accessErr to 0
+    try
+        tell application "System Events" to set probeCount to count of UI elements of process "Finder"
+    on error errMsg number errNum
+        set accessErr to errNum
+    end try
+    if accessErr is not 0 then return "accessibility" & tab & "denied" & tab & (accessErr as text)
+    set outLines to {"accessibility" & tab & "allowed"}
+    tell application "System Events" to set isRunning to (exists process "Messages")
+    if not isRunning then return my joinWith(outLines & {"messages_running" & tab & "no"}, linefeed)
+    set outLines to outLines & {"messages_running" & tab & "yes"}
+    tell application "System Events" to set winCount to count of windows of process "Messages"
+    set outLines to outLines & {"windows" & tab & (winCount as text)}
+    set barNames to {}
+    try
+        tell application "System Events" to set barNames to name of every menu bar item of menu bar 1 of process "Messages"
+    end try
+    set outLines to outLines & {"menu_bar" & tab & my joinWith(my cleanNames(barNames), " | ")}
+    set convNames to {}
+    set hasConvMenu to true
+    try
+        tell application "System Events" to set convNames to name of every menu item of menu 1 of menu bar item "Conversation" of menu bar 1 of process "Messages"
+    on error
+        set hasConvMenu to false
+    end try
+    if hasConvMenu then set outLines to outLines & {"conversation_menu" & tab & my joinWith(my cleanNames(convNames), " | ")}
     if winCount > 0 then
-        set end of outLines to my walk(win, 0, 8)
-        set end of outLines to my rowStats(win)
-        set end of outLines to my inspectBubble(win)
+        tell application "System Events" to set win to window 1 of process "Messages"
+        set outLines to outLines & {my walk(win, 0, 8)}
+        set outLines to outLines & {my rowStats(win)}
+        set outLines to outLines & {my inspectBubble(win)}
     end if
     return my joinWith(outLines, linefeed)
 end run
@@ -849,12 +852,13 @@ on buttonLabels()
             set seen to seen + 1
             if seen > 3000 then exit repeat
             if my roleOf(el) is in {"AXButton", "AXRadioButton", "AXCheckBox"} then
+                set d to ""
                 tell application "System Events"
                     try
                         set d to (description of el) as text
-                        if d is not "" and d is not "missing value" then set end of out to d
                     end try
                 end tell
+                if d is not "" and d is not "missing value" then set out to out & {d}
             end if
         end repeat
     end repeat
@@ -872,10 +876,10 @@ on inspectBubble(win)
             set acts to name of every action of bubble
         end try
     end tell
-    set end of outLines to "bubble" & tab & my roleOf(bubble) & tab & my joinWith(my cleanNames(acts), ",")
+    set outLines to outLines & {"bubble" & tab & my roleOf(bubble) & tab & my joinWith(my cleanNames(acts), ",")}
     set theMenu to my openMenu(bubble, win)
     if theMenu is missing value then
-        set end of outLines to "bubble_menu" & tab & "(none)"
+        set outLines to outLines & {"bubble_menu" & tab & "(none)"}
         return my joinWith(outLines, linefeed)
     end if
     set titles to {}
@@ -884,36 +888,37 @@ on inspectBubble(win)
             set titles to name of every menu item of theMenu
         end try
     end tell
-    set end of outLines to "bubble_menu" & tab & my joinWith(my cleanNames(titles), " | ")
+    set outLines to outLines & {"bubble_menu" & tab & my joinWith(my cleanNames(titles), " | ")}
     set tapItem to my menuItemStarting(theMenu, {"Tapback", "React"})
     if tapItem is missing value then
-        set end of outLines to "tapback_item" & tab & "no"
+        set outLines to outLines & {"tapback_item" & tab & "no"}
         my closeMenu(theMenu)
     else
-        set end of outLines to "tapback_item" & tab & "yes"
+        set outLines to outLines & {"tapback_item" & tab & "yes"}
         set beforeLabels to my buttonLabels()
         tell application "System Events" to click tapItem
         delay 0.6
         set fresh to {}
-        repeat with x in my buttonLabels()
-            if (contents of x) is not in beforeLabels then set end of fresh to (contents of x)
+        set afterLabels to my buttonLabels()
+        repeat with x in afterLabels
+            if (contents of x) is not in beforeLabels then set fresh to fresh & {(contents of x)}
         end repeat
-        set end of outLines to "tapback_buttons" & tab & my joinWith(fresh, " | ")
+        set outLines to outLines & {"tapback_buttons" & tab & my joinWith(fresh, " | ")}
         my pressEscape()
     end if
     set theMenu to my openMenu(bubble, win)
     if theMenu is not missing value then
         set replyItem to my menuItemStarting(theMenu, {"Reply"})
         if replyItem is missing value then
-            set end of outLines to "reply_item" & tab & "no"
+            set outLines to outLines & {"reply_item" & tab & "no"}
             my closeMenu(theMenu)
         else
-            set end of outLines to "reply_item" & tab & "yes"
+            set outLines to outLines & {"reply_item" & tab & "yes"}
             tell application "System Events" to click replyItem
             delay 0.7
             set f to my focusedTextField()
             if f is missing value then
-                set end of outLines to "reply_field" & tab & "none"
+                set outLines to outLines & {"reply_field" & tab & "none"}
             else
                 set settableValue to false
                 tell application "System Events"
@@ -921,7 +926,7 @@ on inspectBubble(win)
                         set settableValue to settable of attribute "AXValue" of f
                     end try
                 end tell
-                set end of outLines to "reply_field" & tab & my roleOf(f) & tab & (settableValue as text)
+                set outLines to outLines & {"reply_field" & tab & my roleOf(f) & tab & (settableValue as text)}
             end if
             my pressEscape()
         end if
@@ -931,28 +936,27 @@ on inspectBubble(win)
 end inspectBubble
 
 on walk(el, depth, maxDepth)
-    set outLines to {}
     if budget is less than or equal to 0 then return ""
     set budget to budget - 1
+    set r to "?"
+    set kids to {}
     tell application "System Events"
-        set r to "?"
         try
-            set r to role of el
+            set r to (role of el) as text
         end try
-        set kids to {}
         try
             set kids to UI elements of el
         end try
-        set end of outLines to "tree" & tab & (depth as text) & tab & r & tab & ((count of kids) as text)
-        if depth < maxDepth then
-            set i to 0
-            repeat with k in kids
-                set i to i + 1
-                if i > 12 or budget is less than or equal to 0 then exit repeat
-                set end of outLines to my walk(k, depth + 1, maxDepth)
-            end repeat
-        end if
     end tell
+    set outLines to {"tree" & tab & (depth as text) & tab & r & tab & ((count of kids) as text)}
+    if depth < maxDepth then
+        set i to 0
+        repeat with k in kids
+            set i to i + 1
+            if i > 12 or budget is less than or equal to 0 then exit repeat
+            set outLines to outLines & {my walk(contents of k, depth + 1, maxDepth)}
+        end repeat
+    end if
     return my joinWith(outLines, linefeed)
 end walk
 
@@ -973,9 +977,9 @@ on cleanNames(lst)
     set out to {}
     repeat with x in lst
         try
-            set end of out to (x as text)
+            set out to out & {(x as text)}
         on error
-            set end of out to "-"
+            set out to out & {"-"}
         end try
     end repeat
     return out
@@ -992,5 +996,5 @@ end joinWith
 
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MENUS + MARK_READ_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + MENUS + TAPBACK_BUTTONS + TAPBACK_ACT)
-REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + MENUS + TEXT_FIELDS + REPLY_ACT)
+REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + MENUS + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
 INSPECT_SCRIPT = lines(INSPECT_RUN + ELEMENTS + MENUS + TEXT_FIELDS)

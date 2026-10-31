@@ -82,6 +82,8 @@ variables override both — mostly for dev and tests:
 | `BACKCHANNEL_CHAT_DB` | `~/Library/Messages/chat.db` | Messages database (opened read-only) |
 | `BACKCHANNEL_ADDRESSBOOK_GLOB` | `…/AddressBook/Sources/*/AddressBook-v22.abcddb` and the root `AddressBook-v22.abcddb` | Contacts DBs; several globs separated by `:` |
 | `BACKCHANNEL_ATTACHMENTS_ROOT` | `~/Library/Messages/Attachments` | Where `~/Library/Messages/Attachments/…` paths in chat.db point |
+| `BACKCHANNEL_STICKER_CACHE_ROOT` | `~/Library/Messages/StickerCache` | Where `~/Library/Messages/StickerCache/…` paths point (most stickers live there) |
+| `BACKCHANNEL_MESSAGES_CONTAINER_ROOT` | `~/Library/Containers/com.apple.MobileSMS` | Where paths into Messages' container point |
 | `BACKCHANNEL_STATE_DIR` | `~/Library/Application Support/Backchannel` | `state.db` (stars, mutes, snoozes, last-seen marks, later, scheduled sends, thread mapping, custom emoji, server settings, sticker file hashes), `search.db`, `emoji/` (custom emoji files), upload scratch |
 | `BACKCHANNEL_CACHE_DIR` | `~/Library/Caches/Backchannel` | HEIC→JPEG, thumbnails, `.caf`→`.m4a`, sticker PNGs |
 | `BACKCHANNEL_SEND_MODE` | `applescript` | `dry-run` logs instead of calling osascript |
@@ -137,6 +139,11 @@ variables override both — mostly for dev and tests:
   over 200 KB are shrunk to 256 px. `avatarUrl` (people and you) is only set when
   there is a photo that can really be served, and `/api/avatar` answers 404
   otherwise.
+- **Where files are served from:** only `~/Library/Messages/Attachments`,
+  `~/Library/Messages/StickerCache` (stickers) and
+  `~/Library/Containers/com.apple.MobileSMS`, checked on the real path (no
+  symlinks or `..` out). chat.db rows pointing elsewhere are refused (403);
+  ones in temp folders (`/var/folders/…`) are long gone and show as missing (404).
 - **Attachments:** image sizes come from the bytes (for HEIC, the primary
   item's `ispe` with its `irot`, not the 512×512 tiles). Files are judged by
   their bytes, not their names (an iPhone may send HEIC named `.JPG`). `thumbUrl`
@@ -182,52 +189,96 @@ variables override both — mostly for dev and tests:
 - **Server settings** (`GET/PATCH /api/settings`) are stored in state.db;
   unknown keys are ignored and missing ones keep their value.
 
-## Mark read in Messages (experimental)
+## Messages helpers (experimental)
 
-Off by default (`markReadInMessages`). When it's on, `POST /read` also queues a
-job when chat.db still has unread incoming messages in that conversation. One
-background worker runs jobs one at a time; a conversation already waiting in
-the queue isn't queued twice (one that arrives while its own job runs is queued
-once more). The request never waits for it. It never runs in dry-run or
-fake-DB mode.
+Three things Apple gives other apps no way to do, done by driving the Messages
+app through macOS Accessibility (System Events). Each is off by default and
+turned on in Settings › Messages helpers (`PATCH /api/settings`):
 
-The job is one `osascript` (script lines as `-e`, names as arguments, never in
-the source) that drives System Events against the running Messages app, with an
-8 s timeout:
+| Setting | What Messages is asked to do | Checked in chat.db |
+|---|---|---|
+| `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: select the conversation, Conversation › Mark as Read (else the row's context menu) | 3 s later the messages that were unread are read |
+| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: select the conversation, find the bubble, its context menu › Tapback › the tapback (or the reaction right in the menu) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
+| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled): find the root bubble, context menu › Reply, put the text in the reply field, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
 
-1. If Messages isn't running or has no window, stop.
-2. Collect the labels (description, name, value) of rows, cells, buttons,
-   groups and static texts in the front window (the first 2,500 elements),
-   then look for the conversation:
-   first a label line that is exactly one of its names (or `Name, …`), then one
-   that starts with its title, full name, nickname, company or phone number
-   (`(415) 555-0134` and `+1 (415) 555-0134`). The short name ("Jordan") only
-   counts as an exact match, so it can't pick "Jordan Lee". Matches are climbed
-   to their row; rows win over other elements.
-3. Select the row (AXSelected, else AXPress — rows and cells only, never
-   buttons) and, if the selection took, click the menu bar's
-   Conversation › Mark as Read when it's enabled.
-4. Otherwise open the element's context menu (AXShowMenu) and click
-   Mark as Read there; if that isn't offered, press Escape.
+**Permissions.** Two macOS prompts, both for the app that runs the server
+(Backchannel.app, or your terminal): *Accessibility* (System Settings › Privacy
+& Security › Accessibility; the Mac app asks when a helper is turned on) and
+*Automation › System Events*. Turning a helper on queues a harmless System
+Events call (90 s timeout, never touches Messages) so the Automation prompt
+appears right then instead of during the first real action. `Health.messagesUi`
+says how it went: `permission` is `denied` for -1719/-25211 ("not allowed
+assistive access": Accessibility) and -1743 (Automation), `granted` once a real
+action got through, and the permission check alone only reports `lastResult:
+"Ready"`. Status survives restarts.
 
-Jobs still queued when the setting is turned off are dropped.
-It never types text and never sends anything. Three seconds after a success it
-checks chat.db again; if the messages that were unread are still unread,
-`lastResult` says so. Results go to `Health.messagesUi`
-(`permission` granted/denied/unknown, `lastResult`, `lastAt`, kept across
-restarts) and a short code to the log (never the conversation's name).
-"Not allowed assistive access" (-1719/-25211) means Accessibility is off for the
-app that runs the server: System Settings › Privacy & Security › Accessibility.
--1743 means the "control System Events" prompt was declined:
-System Settings › Privacy & Security › Automation.
+**How it runs.** One worker, one action at a time (read sync, tapbacks, replies
+and the permission check share the queue), never blocking a request. Each
+action is one `osascript`: the script lines as `-e`, every name and text as
+argv (tagged values, see `server/messages_scripts.py`), never in the source.
+Timeouts: 8 s (mark read), 10 s (tapback), 12 s (reply). A repeated mark-read
+for a conversation already in the queue is dropped; jobs whose setting was
+turned off while they waited are dropped. Nothing runs in dry-run or fake-DB
+mode (see below).
 
-`./backchannel doctor --messages-ui` shows whether Accessibility is allowed,
-whether Messages is running, its window count, the menu bar titles, the
-Conversation menu's items, the front window's roles and child counts to
-depth 8 (at most 400 elements), and how many row-like elements expose a
-description/name/value (counts and lengths only). It never prints labels or
-values, never opens a menu, and hides any menu title with digits, `@` or `+`,
-or a contact's name.
+**Finding things in Messages.**
+- *The conversation*: labels (description, name, value) of the window's rows,
+  cells, buttons, groups and static texts (first 2,500 elements). A label line
+  that is exactly one of its names (or `Name, …`) wins, most specific name first;
+  the title, full name, nickname, company and number (`(415) 555-0134`,
+  `+1 (415) 555-0134`) may also match a label's start, the short name
+  ("Jordan") only exactly. Matches climb to their row. Only rows and cells are
+  ever selected or pressed (AXSelected, else AXPress), and for tapbacks and
+  replies the selection has to be confirmed or nothing happens.
+- *The bubble* (tapbacks, replies): the transcript right of the sidebar row,
+  newest first (the window walked backwards). Text: the first line (60 chars);
+  8+ characters must appear in a label, shorter ones must be a whole label line.
+  Attachment-only messages: their placeholder ("Photo", "Audio Message",
+  "Sticker"…). Bubbles whose label also names the sender are preferred; newer
+  messages with the same text are counted (from chat.db) and skipped, so "ok"
+  finds the right "ok". Only recent messages (the ones Messages has loaded) can
+  be found.
+- *Tapbacks*: menu item "Tapback…"/"React…", then a button whose description is
+  one of: Heart/Love, Thumbs up/Like, Thumbs down/Dislike, Ha ha/Haha/Laugh,
+  Exclamation marks/Emphasize/!!, Question mark/Question/?. Choosing a tapback
+  toggles it, so chat.db is checked first: adding one you have, or removing one
+  you don't, is answered `done` without touching Messages.
+- *Replies*: menu item "Reply", then the focused text field must be empty (so a
+  draft is never overwritten). The text goes in by setting the field's value and
+  reading it back; only if that didn't take, by ⌘V with the plain-text
+  clipboard saved and restored (if the clipboard holds anything but text, it's
+  left alone and nothing is typed). Return is pressed only when the focused
+  field holds exactly the reply. Pasting and Return bring Messages to the front
+  for about a second; the app that was in front gets focus back.
+
+**Outcomes.** Every tapback and reply ends with one `ui-action` event
+(`done` / `fallback` / `failed` + a sentence); read sync only reports failures
+(not "Messages isn't open"). A reply that couldn't be typed (no Reply item, no
+field, no bubble, no permission…) goes out the normal AppleScript way
+(`fallback`, still threaded locally). Once text may be in Messages (typed,
+Return pressed, timed out, unexplained errors) it is never sent again:
+`send-status` failed with "Messages didn't confirm your reply. Check Messages
+before you try again." — and if the row shows up later it's still matched to the
+send. The log gets a short code per action, never names or text.
+
+**Dry-run and dev.** With the fake chat.db (`./backchannel dev`) nothing drives
+Messages: a tapback or reply writes the row it would have produced into the
+fake chat.db (like simulated sends), so the whole flow — `message-updated`,
+`send-status`, `ui-action` — can be tried without a Mac. Plain dry-run against a
+real chat.db never writes it: tapbacks answer `failed`, replies go out the
+normal (dry-run) way. Mark read and the permission check need the real app.
+
+**`./backchannel doctor --messages-ui`** prints, with no message text or names:
+whether Accessibility is allowed and Messages is running, the window count, the
+menu bar titles and the Conversation menu's items, the front window's roles and
+child counts (depth 8, at most 400 elements), how many rows expose a
+description/name/value (counts and lengths only), and for the newest bubble of
+the selected conversation: its role and actions, its context-menu titles, the
+Tapback picker's button descriptions (it opens the picker, chooses nothing,
+presses Escape) and whether the Reply field's value can be set (it opens Reply,
+types nothing, presses Escape). Titles with digits, `@`, `+` or quotes, longer
+than 40 characters, or naming a contact are hidden. This is what to look at when
+a helper says it couldn't find something.
 
 ## Development (no Mac needed)
 
@@ -285,13 +336,18 @@ Tests: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pyt
   `claude_bin` if it lives somewhere unusual. "Claude Code isn't logged in" →
   run `claude` in Terminal once and log in. Or put `ANTHROPIC_API_KEY=…` in
   `.env` at the repo root.
-- **Mark read in Messages doesn't work** — check `messagesUi.lastResult` in
-  `/api/health`. "Couldn't find … in Messages' sidebar" or "didn't offer Mark as
-  Read" usually means your macOS labels things differently: run
-  `./backchannel doctor --messages-ui` with Messages open and paste the report.
-  Permission errors: allow the app that runs the server (Backchannel, or your
-  terminal) under Privacy & Security › Accessibility (and › Automation › System
-  Events).
+- **A Messages helper doesn't work** (read sync, tapbacks, replies) — check
+  `messagesUi.lastResult` in `/api/health`. "Couldn't find … in Messages'
+  sidebar", "Couldn't find that message", "didn't offer that tapback" or "didn't
+  offer Reply" usually means your macOS labels things differently: open the
+  conversation in Messages, run `./backchannel doctor --messages-ui` and paste
+  the report. Permission errors: allow the app that runs the server
+  (Backchannel, or your terminal) under Privacy & Security › Accessibility and ›
+  Automation › System Events. A reply reported as "didn't confirm" may be
+  sitting in Messages' reply field: check Messages before sending it again.
+- **Stickers don't show** — they live in `~/Library/Messages/StickerCache`,
+  which needs the same Full Disk Access as chat.db. Files chat.db points into
+  `/var/folders/…` (temporary) are never served and show as missing.
 - **An emoji link fails** — 400 "private or local address" means the link
   pointed (or redirected) at your network; 502/504 are the site's answer or a
   timeout. Downloading the image and uploading it works too.

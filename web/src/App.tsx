@@ -10,6 +10,7 @@ import {
   moveConversation,
   openConversation,
   openSearch,
+  openView,
   setRail,
   setSettings,
   setState,
@@ -20,7 +21,7 @@ import {
 import { ConversationView } from './components/Conversation'
 import { RightPanel } from './components/Panels'
 import { Rail, SidebarColumn, useSections } from './components/Sidebar'
-import { CatchUpView, ScheduledView, ThreadsView } from './components/Views'
+import { CatchUpView, ScheduledView, ThreadsView, UnreadsView } from './components/Views'
 import {
   AddEmojiModal,
   ChiefLoopModal,
@@ -139,6 +140,7 @@ function MainView() {
     )
   }
   if (view.kind === 'catchup') return <CatchUpView />
+  if (view.kind === 'unreads') return <UnreadsView />
   if (view.kind === 'threads') return <ThreadsView />
   if (view.kind === 'scheduled') return <ScheduledView />
   if (!c) return null
@@ -278,6 +280,11 @@ function useGlobalKeys(order: string[]) {
       if (mod && e.key.toLowerCase() === 'g') {
         e.preventDefault()
         openSearch(null)
+        return
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        openView('unreads')
         return
       }
       if (mod && e.key === '/') {

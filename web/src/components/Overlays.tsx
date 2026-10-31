@@ -481,6 +481,7 @@ export function ShortcutsModal() {
     [`${mod} G`, 'Search messages'],
     ['⌥ ↑ / ⌥ ↓', 'Previous / next conversation'],
     ['⌥ ⇧ ↑ / ⌥ ⇧ ↓', 'Previous / next unread'],
+    [`${mod} ⇧ A`, 'All unreads'],
     ['Enter', 'Send'],
     ['⇧ Enter', 'New line'],
     ['Esc', 'Close the side panel'],
@@ -520,6 +521,11 @@ export function Toasts() {
 // ------------------------------------------------------------------ Tour (mock only)
 
 const TOUR: { title: string; body: string; go: () => void }[] = [
+  {
+    title: 'Unreads',
+    body: 'Every conversation with something new on one page (⌘⇧A). Reply or mark read right from the card. Nothing is marked read until you say so.',
+    go: () => openView('unreads'),
+  },
   {
     title: 'Catch up',
     body: 'A short read of what needs you, with replies already drafted in your voice. Edit and send right from the card.',
