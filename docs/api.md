@@ -318,7 +318,9 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   that conversation, checked by the title at the top of the chat (or its list
   item being the only one selected). If it isn't on screen: for one-to-one chats
   Messages' own link (`imessage://<handle>`, or `sms:<handle>` for SMS-only
-  chats; only plain numbers and addresses); else its item in the list, scrolling
+  chats; only plain numbers and addresses), which counts when the title then
+  names the chat or at least changed (the message itself still has to be found
+  by text and minute); else its item in the list, scrolling
   the list a page at a time (at most 12) when it isn't in view, pressed, then
   any other selected item pressed off, then clicked with Messages in front. The
   log line ends with the steps taken (step names and item positions only).
@@ -341,11 +343,10 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root
   bubble, use its "Reply…" action and check that the reply field really opened.
-  Then put the text in the way typing does, as the field's selected text
-  (setting the field's whole value dropped the reply on macOS 26.3 and sent a
-  regular text); only if that doesn't take, paste it, when the clipboard holds
-  only text (plain or formatted; saved and put back; an image or a file means
-  nothing is pasted: `clipboard-busy`). Return is pressed only when the
+  Then paste the text, as a person would (setting the field's value dropped
+  the reply on macOS 26.3 and sent a regular text; setting its selected text
+  did nothing). Everything on the clipboard (text, images, files) is saved
+  first and put back right after, through AppKit. Return is pressed only when the
   focused field holds exactly the reply and the reply preview is still there
   (if Messages let go of the message being answered, the text is taken back
   out: `reply-mode-lost`, nothing sent); then the app that was in front gets

@@ -143,7 +143,7 @@ def test_tapback_is_chosen_in_messages_and_verified(fake_rw):
     name, script, argv, timeout = fake.calls[-1]
     assert (name, script, timeout) == ("tapback", TAPBACK_SCRIPT, TAPBACK_TIMEOUT)
     times = [a for a in argv if a.startswith("H:")]
-    assert argv == ["tapback", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan",
+    assert argv == ["tapback", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan", "N:Jordan P.",
                     "T:are you down to hike Saturday?", "S:Jordan Park", "S:Jordan", "K:0", "J:0", *times, "Q:0",
                     "R:Heart", "R:Love", "R:Loved", "U:imessage://+14155550134"]
     # The minute it was sent, as Messages may print it: " 2:41" and " 14:41" (12- and 24-hour clocks).

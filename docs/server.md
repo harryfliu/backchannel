@@ -281,7 +281,9 @@ mode (see below).
   chats in the list's loaded part (pinned plus the most recent ones) can be
   found without scrolling: when it isn't there, the list is scrolled to the top
   and then down a page at a time (AXScrollDownByPage through its items, at most
-  12 pages, stopping when the list stops moving). Read sync scrolls back to the
+  12 pages, stopping when the list stops moving; the list ends with section
+  groups that can't scroll, so the next few items from that end are tried).
+  Names also include Contacts' short format "First L." Read sync scrolls back to the
   top afterwards.
 - *Opening the chat* (tapbacks, replies): nothing happens unless Messages' main
   window shows that conversation, checked by the title at the top of the chat
@@ -303,7 +305,9 @@ mode (see below).
   matching "11:37"); newer look-alikes from the same minute are counted from
   chat.db and skipped (a self-chat shows every message twice). When it isn't on
   screen, the chat is scrolled up a page at a time (at most 6) until it shows
-  up, and back down after a tapback. If no label shows that minute, the older
+  up, and back down after a tapback. If fewer same-minute look-alikes show than
+  chat.db counts (a self-chat may show a message once though chat.db keeps a
+  sent and a received copy), the oldest one showing is used. If no label shows that minute, the older
   rule applies on screen only: labels that also name the sender are preferred,
   and newer messages with the same text are counted and skipped, so "ok" finds
   the right "ok". The log line ends with what the search saw
@@ -319,13 +323,11 @@ mode (see below).
   field counts as open only when the entry area shows the reply preview (on
   macOS 26.3 a group in it goes from one child to two), else Escape and
   `no-reply-mode`. The focused text field must be empty (so a draft is never
-  overwritten). The text goes in the way typing does, by setting the field's
-  AXSelectedText (never its whole value: that dropped the reply on macOS 26.3
-  and sent a regular text). Only if that doesn't take is it pasted with ⌘V, and
-  only when the clipboard holds just text (plain or formatted; an image or a
-  file means `clipboard-busy`); the clipboard is saved (all its kinds when
-  AppleScript can hold them, else its text) and restored once the field shows
-  the reply.
+  overwritten). The text is pasted with ⌘V (never set as the field's value:
+  that dropped the reply on macOS 26.3 and sent a regular text; setting its
+  AXSelectedText did nothing). The reply script uses AppKit (AppleScriptObjC,
+  `use framework "AppKit"`) to save every item and kind on the clipboard
+  (text, images, files) and put them back once the field shows the reply.
   Return is pressed only when the focused field holds exactly the reply and the
   reply preview is still there; if it's gone, the text is taken back out
   (`reply-mode-lost`). The app that was in front gets focus back.

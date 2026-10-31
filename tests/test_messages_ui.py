@@ -149,10 +149,10 @@ def test_no_probe_without_the_real_runner(rw):
 def test_candidate_names():
     names, loose = candidate_names("Jordan Park", full_name="Jordan Park", person_name="Jordan Park",
                                    handle="+14155550134", short_name="Jordan")
-    assert names == ["Jordan Park", "(415) 555-0134", "+1 (415) 555-0134", "Jordan"] and loose == 3
+    assert names == ["Jordan Park", "(415) 555-0134", "+1 (415) 555-0134", "Jordan", "Jordan P."] and loose == 3
     names, loose = candidate_names("Jojo", full_name="Joanna Lee", nickname="Jojo", organization="Acme Labs",
                                    person_name="Jojo", handle="jo@example.com", short_name="Jojo")
-    assert names == ["Jojo", "Joanna Lee", "Acme Labs", "jo@example.com"] and loose == 4
+    assert names == ["Jojo", "Joanna Lee", "Acme Labs", "jo@example.com", "Joanna L."] and loose == 4
     assert candidate_names("Liu Family 🏡") == (["Liu Family 🏡"], 1)
     job = Job("dm:x", "Jordan Park", ["Jordan Park", "Jordan"], [1], loose=1)
     assert job.argv() == ["mark-read", "L:Jordan Park", "N:Jordan"]
@@ -295,8 +295,7 @@ def test_only_the_reply_script_puts_text_into_messages():
         attribute_writes = re.findall(r'set value of attribute "(\w+)" of (\w+) to', source)
         clipboard = "set the clipboard to" in source
         if name == "reply":
-            assert writes == ["bcBox"] and clipboard
-            assert attribute_writes == [("AXSelectedText", "bcBox")]
+            assert writes == ["bcBox"] and clipboard and attribute_writes == []
         else:
             assert writes == [] and attribute_writes == [] and not clipboard, name
 
@@ -368,7 +367,7 @@ def test_read_marks_it_read_in_messages(make_rw, caplog):
     assert fake.names() == ["mark-read"]
     _, script, argv, timeout = fake.calls[0]
     assert script is MARK_READ_SCRIPT and timeout == TIMEOUT
-    assert argv == ["mark-read", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan"]
+    assert argv == ["mark-read", "L:Jordan Park", "L:(415) 555-0134", "L:+1 (415) 555-0134", "N:Jordan", "N:Jordan P."]
     health = ui_health(rw)
     assert health["permission"] == "granted" and health["lastResult"] == "Marked Jordan Park read in Messages."
     assert health["lastAt"] and not validate(rw.get("/api/health"), "Health")
@@ -623,16 +622,42 @@ def test_scripts_open_the_chat_by_title_link_or_sidebar():
     assert "openChat" not in messages_scripts.MARK_READ_ACT  # read sync never changes which chat Messages shows
 
 
-def test_reply_is_typed_or_pasted_never_set_and_only_sent_while_still_replying():
+def test_reply_is_pasted_never_set_and_only_sent_while_still_replying():
     act = messages_scripts.REPLY_ACT
     assert "set value of bcBox to bcReply" not in act  # that went out as a regular text on macOS 26.3
+    assert "AXSelectedText" not in act  # did nothing on macOS 26.3
     assert act.count("set value of bcBox to") == 1 and 'set value of bcBox to ""' in act  # only to take it back out
-    typed = act.index('set value of attribute "AXSelectedText" of bcBox to bcReply')  # like typing, no clipboard
     paste = act.index("key code 9 using command down")
-    assert typed < act.index("my clipboardIsText()") < paste  # paste only as a fallback, and only over text
+    assert act.index("my clipSave()") < act.index("my setClip(bcReply)") < paste < act.index("my clipRestore(bcSaved)")
     before_return = act[:act.index("key code 36")]
-    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > paste > typed
-    assert before_return.index("my clipRestore(bcSaved)") > paste
+    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > paste
+
+
+def test_the_clipboard_is_saved_whole_with_appkit():
+    """Images and files too (a screenshot on the clipboard blocked replies), only in the reply script."""
+    assert REPLY_SCRIPT[:3] == ('use AppleScript version "2.4"', 'use framework "AppKit"', "use scripting additions")
+    clip = messages_scripts.CLIPBOARD
+    assert "pasteboardItems()" in clip and "dataForType:" in clip and "writeObjects:bcSaved" in clip
+    assert "clipboard info" not in clip  # nothing is refused for what kind it is any more
+    for name, script in SCRIPTS.items():
+        if name != "reply":
+            assert not any(line.startswith("use ") for line in script), name
+
+
+def test_sidebar_scrolling_tries_the_next_items_with_literal_actions():
+    """The sidebar ends with section groups that can't scroll: row0/0 on Harry's Mac."""
+    sidebar = messages_scripts.SIDEBAR
+    body = sidebar[sidebar.index("on pageList("):sidebar.index("end pageList")]
+    assert "repeat with bcStep from 0 to 4" in body
+    assert 'perform action "AXScrollUpByPage" of bcItem' in body and 'perform action "AXScrollDownByPage" of bcItem' in body
+    assert "perform action bcAction" not in body
+
+
+def test_after_the_link_a_changed_title_counts_and_fewer_copies_take_the_oldest():
+    sidebar, bubbles = messages_scripts.SIDEBAR, messages_scripts.BUBBLES
+    assert 'if bcTitleAfter is not "" and bcTitleAfter is not bcTitleBefore then return my traced("ok", bcTrace & {"changed"})' in sidebar
+    timed = bubbles[bubbles.index("on timedIndex("):bubbles.index("end timedIndex")]
+    assert "set bcOldest to i" in timed and timed.rstrip().endswith("return bcOldest")
 
 
 def test_open_mode_is_in_the_inspect_script():

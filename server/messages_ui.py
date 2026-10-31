@@ -163,9 +163,13 @@ def candidate_names(title: str, *, full_name: str | None = None, nickname: str |
         if name and name.lower() not in (n.lower() for n in names):
             names.append(name)
     count = len(names)
-    short = (short_name or "").strip()
-    if short and short.lower() not in (n.lower() for n in names):
-        names.append(short)
+    strict = [(short_name or "").strip()]
+    parts = (full_name or person_name or "").split()
+    if len(parts) >= 2 and parts[-1][:1].isalpha():
+        strict.append(f"{parts[0]} {parts[-1][0]}.")  # Contacts' short name format "First L."
+    for short in strict:
+        if short and short.lower() not in (n.lower() for n in names):
+            names.append(short)
     return names, count
 
 

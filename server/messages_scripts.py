@@ -453,24 +453,32 @@ on pressItem(bcList, bcAt)
     return bcDone
 end pressItem
 
--- Scroll the conversation list a page (AXScrollUpByPage / AXScrollDownByPage): its items pass
--- these actions on to the list's scroll view.
+-- Scroll a list (the sidebar or the open chat) a page: its items pass AXScrollUpByPage /
+-- AXScrollDownByPage on to the scroll view. Not every item has them (the sidebar ends with section
+-- groups), so the next few from that end are tried.
 on pageList(bcList, bcAction)
     set bcCount to 0
     try
         tell application "System Events" to set bcCount to count of UI elements of bcList
     end try
     if bcCount is 0 then return false
-    set bcIndex to bcCount
-    if bcAction is "AXScrollUpByPage" then set bcIndex to 1
-    set bcItem to my atPath(bcList, {bcIndex})
-    if bcItem is missing value then return false
-    set bcDone to false
-    try
-        tell application "System Events" to perform action bcAction of bcItem
-        set bcDone to true
-    end try
-    return bcDone
+    repeat with bcStep from 0 to 4
+        set bcIndex to bcCount - bcStep
+        if bcAction is "AXScrollUpByPage" then set bcIndex to 1 + bcStep
+        if bcIndex < 1 or bcIndex > bcCount then exit repeat
+        set bcItem to my atPath(bcList, {bcIndex})
+        if bcItem is not missing value then
+            try
+                if bcAction is "AXScrollUpByPage" then
+                    tell application "System Events" to perform action "AXScrollUpByPage" of bcItem
+                else
+                    tell application "System Events" to perform action "AXScrollDownByPage" of bcItem
+                end if
+                return true
+            end try
+        end if
+    end repeat
+    return false
 end pageList
 
 -- What the list shows, in short (item count, first and last labels), to tell when it stops moving.
@@ -533,14 +541,19 @@ on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
     set bcTrace to {}
     if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", {"shown"})
     if bcLinks is not {} then
-        set bcTrace to bcTrace & {"link"}
+        set bcTitleBefore to my titleText(bcWin)
+        set bcWinsBefore to my windowTotal()
         try
             open location (item 1 of bcLinks)
         end try
+        set bcTrace to bcTrace & {"link"}
         repeat 6 times
             delay 0.5
             if my titleMatches(bcWin, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace & {"title"})
         end repeat
+        set bcTitleAfter to my titleText(bcWin)
+        set bcTrace to bcTrace & {"w" & (bcWinsBefore as text) & "/" & ((my windowTotal()) as text), "tl" & ((length of bcTitleBefore) as text) & "/" & ((length of bcTitleAfter) as text)}
+        if bcTitleAfter is not "" and bcTitleAfter is not bcTitleBefore then return my traced("ok", bcTrace & {"changed"})
         set bcTrace to bcTrace & {"no"}
     end if
     set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
@@ -578,6 +591,14 @@ on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
     if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
     return my traced("not-selected", bcTrace)
 end openChat
+
+on windowTotal()
+    set bcCount to 0
+    try
+        tell application "System Events" to set bcCount to count of windows of process "Messages"
+    end try
+    return bcCount
+end windowTotal
 
 on traced(bcAnswer, bcTrace)
     set bcTrail to my joinWith(bcTrace, " ")
@@ -738,16 +759,20 @@ on timedIndex(bcTranscript, bcNeedles, bcExacts, bcTimes, bcSkip)
         tell application "System Events" to set bcDescs to description of every UI element of bcTranscript
     end try
     set bcSeen to 0
+    set bcOldest to 0
     repeat with i from (count of bcDescs) to 1 by -1
         set bcLabel to my asText(item i of bcDescs)
         if (length of bcLabel) > 5 then
             if my matchesBubble(bcLabel, bcNeedles, bcExacts) and my mentionsAny(bcLabel, bcTimes) then
                 set bcSeen to bcSeen + 1
+                set bcOldest to i
                 if bcSeen = bcSkip + 1 then return i
             end if
         end if
     end repeat
-    return 0
+    -- Fewer look-alikes from that minute than chat.db has (a self-chat may show a message once though
+    -- chat.db keeps a sent and a received copy): the oldest one showing it.
+    return bcOldest
 end timedIndex
 
 -- What the search saw on screen, for the log: items / text matches / text-and-minute matches.
@@ -851,53 +876,51 @@ on fieldText(bcField)
 end fieldText
 """
 
+# The reply script uses AppKit (AppleScriptObjC) for the clipboard, so it starts with these.
+USE_APPKIT = """
+use AppleScript version "2.4"
+use framework "AppKit"
+use scripting additions
+"""
+
 CLIPBOARD = """
-on clipboardIsText()
-    set bcInfo to {}
-    try
-        set bcInfo to (clipboard info)
-    on error
-        return false
-    end try
-    repeat with bcPair in bcInfo
-        set bcKind to item 1 of bcPair
-        if bcKind is not in {string, Unicode text, text, «class utf8», «class ut16», «class RTF », «class HTML», «class rtfd»} then return false
-    end repeat
-    return true
-end clipboardIsText
-
-on clipText()
-    try
-        return (the clipboard as text)
-    on error
-        return ""
-    end try
-end clipText
-
 on setClip(bcText)
     try
         set the clipboard to bcText
     end try
 end setClip
 
--- The clipboard as it was: every kind of text it held when AppleScript can keep them, and its text.
+-- Everything on the clipboard (every item, every kind: text, images, files…), copied.
 on clipSave()
-    set bcRec to missing value
+    set bcSaved to current application's NSMutableArray's array()
+    set bcItems to {}
     try
-        set bcRec to (the clipboard as record)
+        set bcItems to (current application's NSPasteboard's generalPasteboard()'s pasteboardItems()) as list
     end try
-    return {bcRec, my clipText()}
+    repeat with bcItem in bcItems
+        set bcCopy to current application's NSPasteboardItem's alloc()'s init()
+        set bcTypes to {}
+        try
+            set bcTypes to ((contents of bcItem)'s types()) as list
+        end try
+        repeat with bcType in bcTypes
+            set bcData to missing value
+            try
+                set bcData to (contents of bcItem)'s dataForType:(contents of bcType)
+            end try
+            if bcData is not missing value then bcCopy's setData:bcData forType:(contents of bcType)
+        end repeat
+        bcSaved's addObject:bcCopy
+    end repeat
+    return bcSaved
 end clipSave
 
 on clipRestore(bcSaved)
-    set bcDone to false
-    if item 1 of bcSaved is not missing value then
-        try
-            set the clipboard to (item 1 of bcSaved)
-            set bcDone to true
-        end try
-    end if
-    if not bcDone then my setClip(item 2 of bcSaved)
+    try
+        set bcBoard to current application's NSPasteboard's generalPasteboard()
+        bcBoard's clearContents()
+        if (bcSaved's |count|()) > 0 then bcBoard's writeObjects:bcSaved
+    end try
 end clipRestore
 """
 
@@ -1077,51 +1100,34 @@ on act(argv)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    -- Put the text in the way typing does: as the field's selected text, which keeps the reply
-    -- attached (text set as the field's whole value went out as a regular text on macOS 26.3).
-    -- If that doesn't take, paste it, when the clipboard holds only text (saved and put back).
+    -- Paste, as a person would: Messages keeps the reply attached to pasted or typed text, but not to
+    -- text set as the field's value (that went out as a regular text on macOS 26.3). Everything on
+    -- the clipboard is saved first and put back right after.
     set bcHow to ""
+    set bcSaved to my clipSave()
+    my setClip(bcReply)
     try
-        tell application "System Events" to set value of attribute "AXSelectedText" of bcBox to bcReply
+        tell application "System Events" to key code 9 using command down
     end try
-    delay 0.2
-    set bcFocused to my focusedTextField()
-    if bcFocused is not missing value then
-        considering case
-            if (my fieldText(bcFocused)) is bcReply then set bcHow to "typed"
-        end considering
-    end if
+    set bcFocused to missing value
+    repeat 10 times
+        delay 0.15
+        set bcFocused to my focusedTextField()
+        if bcFocused is not missing value then
+            considering case
+                if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
+            end considering
+        end if
+        if bcHow is not "" then exit repeat
+    end repeat
+    my clipRestore(bcSaved)
     if bcHow is "" then
         if bcFocused is missing value then return "typed-unknown"
-        if (my fieldText(bcFocused)) is not "" then return "typed-unknown"
-        if not my clipboardIsText() then
+        if (my fieldText(bcFocused)) is "" then
             my pressEscape()
-            return "clipboard-busy"
+            return "nothing-typed"
         end if
-        set bcSaved to my clipSave()
-        my setClip(bcReply)
-        try
-            tell application "System Events" to key code 9 using command down
-        end try
-        repeat 10 times
-            delay 0.15
-            set bcFocused to my focusedTextField()
-            if bcFocused is not missing value then
-                considering case
-                    if (my fieldText(bcFocused)) is bcReply then set bcHow to "paste"
-                end considering
-            end if
-            if bcHow is not "" then exit repeat
-        end repeat
-        my clipRestore(bcSaved)
-        if bcHow is "" then
-            if bcFocused is missing value then return "typed-unknown"
-            if (my fieldText(bcFocused)) is "" then
-                my pressEscape()
-                return "nothing-typed"
-            end if
-            return "typed-unknown"
-        end if
+        return "typed-unknown"
     end if
     -- Still replying? If Messages let go of the message being answered, take the text back out
     -- rather than send it as a regular text.
@@ -1609,5 +1615,5 @@ assert "__SPOT_" not in SIDEBAR
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
-REPLY_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
+REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
 INSPECT_SCRIPT = lines(INSPECT_RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES)
