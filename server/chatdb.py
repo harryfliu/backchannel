@@ -297,6 +297,33 @@ class ChatDB:
             (since_ns,),
         )
 
+    WINDOW_FIELDS = (
+        "ROWID", "guid", "date", "is_from_me", "handle_id", "text", "attributedBody", "item_type",
+        "associated_message_type", "date_retracted", "date_edited", "message_summary_info",
+        "thread_originator_guid", "has_unseen_mention", "is_read", "cache_has_attachments", "balloon_bundle_id",
+    )
+
+    def window_rows(self, chat_ids: Sequence[int], since_ns: int) -> list[sqlite3.Row]:
+        """These chats' rows newer than `since_ns`, oldest first ("Needs you": the last 3 days).
+        Uses the chat_message_join (chat_id, message_date) index, so it only reads the window."""
+        if not chat_ids:
+            return []
+        marks = ",".join("?" * len(chat_ids))
+        rows = self.query(
+            f"""SELECT {self.message_select(fields=self.WINDOW_FIELDS)}, cmj.chat_id AS chat_id
+                FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id
+                WHERE cmj.chat_id IN ({marks}) AND cmj.message_date > ?
+                ORDER BY cmj.message_date, m.ROWID""",
+            (*chat_ids, since_ns),
+        )
+        seen: set[int] = set()
+        out = []
+        for row in rows:
+            if row["ROWID"] not in seen:
+                seen.add(row["ROWID"])
+                out.append(row)
+        return out
+
     def reaction_rows(self, assoc_guids: Sequence[str]) -> list[sqlite3.Row]:
         fields = (
             "ROWID", "guid", "associated_message_guid", "associated_message_type",

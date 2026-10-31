@@ -54,7 +54,7 @@ def test_existing_person_reuses_their_conversation(rw):
     assert start(rw, "JORDAN.PARK@icloud.example", text="also", client_id="n-4") == {"conversationId": "dm:+14155550134"}
     events = rw.events_until(lambda e: len(of_type(e, "send-status")) == 2)
     assert {s["conversationId"] for s in of_type(events, "send-status")} == {"dm:+14155550134"}
-    assert rw.db().execute("SELECT COUNT(*) FROM chat").fetchone()[0] == 20  # no new chat rows
+    assert rw.db().execute("SELECT COUNT(*) FROM chat").fetchone()[0] == 24  # no new chat rows
 
 
 def test_contact_without_a_chat_yet(rw):

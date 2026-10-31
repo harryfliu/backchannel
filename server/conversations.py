@@ -21,12 +21,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import quote
 
+from datetime import datetime, timezone
+
 from . import heuristics as H
-from .chatdb import ChatDB, ChatInfo, ChangeTracker, HandleInfo, Meta
+from .chatdb import ChatDB, ChatDBError, ChatInfo, ChangeTracker, HandleInfo, Meta
 from .contacts import Contact, ContactBook
 from .handles import format_handle, is_short_code, normalize_handle
+from .priority import WINDOW as PRIORITY_WINDOW, Item, Result, prioritize
 from .state import State
-from .timeutil import apple_to_ns, iso, iso_apple, now_apple_ns
+from .timephrases import local_tz
+from .timeutil import apple_to_ns, apple_to_unix, iso, iso_apple, now_apple_ns, unix_to_apple_ns
 from .typedstream import clean_text, decode_text, extract_mentions
 
 log = logging.getLogger("backchannel.conversations")
@@ -37,7 +41,7 @@ FACT_FIELDS = (
     "ROWID", "guid", "text", "attributedBody", "handle_id", "service", "date", "date_edited", "date_retracted",
     "is_from_me", "item_type", "group_title", "group_action_type", "other_handle", "associated_message_type",
     "associated_message_emoji", "balloon_bundle_id", "message_summary_info", "thread_originator_guid",
-    "cache_has_attachments", "is_audio_message", "has_unseen_mention",
+    "cache_has_attachments", "is_audio_message", "has_unseen_mention", "is_read",
 )
 AWAITING_WINDOW_NS = 7 * DAY_NS
 _SAFE_ID = re.compile(r"^[A-Za-z0-9@._+\-]+$")
@@ -302,7 +306,10 @@ class Facts:
     last_date: int
     run_newest: int | None = None   # newest message in the unanswered run (ns)
     awaiting_since: int | None = None  # first asking/qualifying message in the run (ns)
+    asking_guid: str | None = None  # …and that message ("asked" goes on it)
     automated: bool = False
+    rows: list[Any] = field(default_factory=list)  # the newest rows read for these facts (newest first)
+    complete: bool = False  # `rows` holds every row of the conversation
 
 
 def normalize_service(value: str | None, fallback: str = "iMessage") -> str:
@@ -363,6 +370,13 @@ class ConversationService:
         self._dirty: dict[str, int] = {}
         self._unread: dict[str, list[tuple[int, bool]]] | None = None
         self._list_cache: tuple[tuple, list[dict[str, Any]]] | None = None
+        # "Needs you" (server/priority.py): each conversation's priority, cached until its inputs change
+        # (or 5 minutes pass).
+        self.clock: Callable[[], float] = time.time
+        self.tz = local_tz()
+        self.vip_book: Any = None  # vips.VipBook, set by the app
+        self._priorities: dict[str, tuple[tuple, Result]] = {}
+        self._texts: dict[tuple[int, int], str] = {}  # (ROWID, date_edited) → decoded text
 
     # ------------------------------------------------------------------ refresh
 
@@ -446,7 +460,7 @@ class ConversationService:
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             generation = self.refresh()
-            key = (generation, self.state.version, int(time.time() // 60))
+            key = (generation, self.state.version, int(self.clock() // 60))
             if self._list_cache and self._list_cache[0] == key:
                 return self._list_cache[1]
             directory = self._directory
@@ -481,17 +495,12 @@ class ConversationService:
             me = self._me
             assert me is not None
             facts = self._facts_for(conv)
-            unread, mentions = self._unread_counts(conv)
+            mark = self.state.get_mark(conv.id, conv.aliases) or 0
+            unread, mentions = self._unread_counts(conv, mark)
             prefs = self.state.get_prefs(conv.id, conv.aliases)
-            now = now_apple_ns()
-            awaiting = bool(
-                not facts.automated
-                and not conv.is_self
-                and facts.run_newest
-                and now - facts.run_newest < AWAITING_WINDOW_NS
-                and facts.awaiting_since
-            )
+            awaiting = self._awaiting(conv, facts)
             snoozed = prefs.get("snoozed_until")
+            result = self._priority_result(conv, facts, awaiting, prefs, mark, unread)
             data = {
                 "id": conv.id,
                 "kind": conv.kind,
@@ -505,7 +514,7 @@ class ConversationService:
                 "isAutomated": facts.automated,
                 "awaitingReply": awaiting,
                 "awaitingSince": iso_apple(facts.awaiting_since) if awaiting else None,
-                "priority": None,  # "Needs you" (round 6 contract): not computed yet
+                "priority": result.priority,
                 "prefs": {
                     "starred": bool(prefs.get("starred")),
                     "muted": bool(prefs.get("muted")),
@@ -546,8 +555,10 @@ class ConversationService:
                             and not r["item_type"]), None)
         recent_incoming = newest_real is not None and not newest_real["is_from_me"] and (
             now_apple_ns() - apple_to_ns(newest_real["date"]) < AWAITING_WINDOW_NS)
+        fetched = 10
         if len(ordered) == 10 and (newest_real is None or recent_incoming):
             ordered = self._recent_rows(conv, 40)  # the unanswered run may be longer than 10 rows
+            fetched = 40
         attachments = self.attachment_kinds([r["ROWID"] for r in ordered if r["cache_has_attachments"]])
         fallback_service = normalize_service(conv.chats[0].service if conv.chats else None)
         facts = Facts(preview=None, service=fallback_service, last_date=self.last_date(conv))
@@ -575,7 +586,7 @@ class ConversationService:
         for row in ordered:
             if H.is_reaction_type(row["associated_message_type"]) or row["item_type"]:
                 continue
-            text = message_text(row)
+            text = self._text(row)
             has_atts = bool(attachments.get(row["ROWID"]))
             if is_unsent(row, text, has_atts) or (not text and not has_atts and not row["balloon_bundle_id"]):
                 continue
@@ -585,12 +596,27 @@ class ConversationService:
         run.reverse()  # oldest first
         if run:
             facts.run_newest = apple_to_ns(run[-1][0]["date"])
-            facts.awaiting_since = self._awaiting_since(conv, run)
+            asking = self._awaiting_row(conv, run)
+            if asking is not None:
+                facts.awaiting_since = apple_to_ns(asking["date"])
+                facts.asking_guid = asking["guid"]
 
         facts.automated = self._automated(conv, [t for r, t in run] + [
-            message_text(r) for r in ordered if not r["is_from_me"] and not r["item_type"]
+            self._text(r) for r in ordered if not r["is_from_me"] and not r["item_type"]
         ][:8])
+        facts.rows = ordered  # "Needs you" reuses these when they cover its 3-day window
+        facts.complete = len(ordered) < fetched
         return facts
+
+    def _text(self, row: Any) -> str:
+        """message_text(), remembered: facts, previews and "Needs you" decode the same recent rows."""
+        key = (row["ROWID"], row["date_edited"] or 0)
+        text = self._texts.get(key)
+        if text is None:
+            if len(self._texts) > 20000:
+                self._texts.clear()
+            text = self._texts[key] = message_text(row)
+        return text
 
     def _recent_rows(self, conv: Conv, count: int) -> list[Any]:
         ids = self.db.page_ids(conv.chat_ids, None, count, reactions=True)
@@ -604,8 +630,8 @@ class ConversationService:
             return True
         return any(me.is_me(h) for h in extract_mentions(row["attributedBody"]))
 
-    def _awaiting_since(self, conv: Conv, run: list[tuple[Any, str]]) -> int | None:
-        """docs/api.md "Waiting on you": when the first asking message arrived, else None."""
+    def _awaiting_row(self, conv: Conv, run: list[tuple[Any, str]]) -> Any | None:
+        """docs/api.md "Waiting on you": the first asking message in the run, else None."""
         if conv.kind == "dm":
             asking = [r for r, t in run if H.asks_something(t) or self._mentions_me(r)]
             if not asking:
@@ -615,14 +641,14 @@ class ConversationService:
             newest_asks = H.asks_something(newest_text) or self._mentions_me(newest_row)
             if H.opens_with_closer(newest_text) and not newest_asks:
                 return None
-            return apple_to_ns(asking[0]["date"])
+            return asking[0]
         roots = [r["thread_originator_guid"] for r, _ in run if r["thread_originator_guid"]]
         mine: set[str] = set()
         if roots:
             mine = {row["guid"] for row in self.db.messages_by_guid(list(set(roots))) if row["is_from_me"]}
         for row, _ in run:
             if self._mentions_me(row) or (row["thread_originator_guid"] in mine):
-                return apple_to_ns(row["date"])
+                return row
         return None
 
     def _automated(self, conv: Conv, incoming_texts: list[str]) -> bool:
@@ -643,7 +669,7 @@ class ConversationService:
         """One-line preview: text, 'Photo', 'Loved “…”', an event line…"""
         directory = self._directory
         assert directory is not None
-        text = message_text(row)
+        text = self._text(row) if "ROWID" in row.keys() and "date_edited" in row.keys() else message_text(row)
         assoc = row["associated_message_type"] or 0
         if H.is_reaction_type(assoc):
             if text:
@@ -672,12 +698,108 @@ class ConversationService:
             return "Link" if "URLBalloon" in (row["balloon_bundle_id"] or "") else "Message"
         return None
 
+    # ------------------------------------------------------------------ needs you (priority)
+
+    def _priority_result(self, conv: Conv, facts: Facts, awaiting: bool, prefs: dict[str, Any],
+                         mark: int | None = None, unread: int | None = None) -> Result:
+        """"Needs you" for one conversation. Cached per conversation: recomputed when its own messages,
+        read mark, prefs or the VIPs change, and at least every 5 minutes. Conversations with nothing in
+        the last 3 days cost nothing (no query)."""
+        if facts.automated or prefs.get("muted") or conv.is_self:
+            return Result(None, {})
+        now = self.clock()
+        since = now - PRIORITY_WINDOW.total_seconds()
+        if self.last_date(conv) < unix_to_apple_ns(since):
+            return Result(None, {})
+        directory = self._directory
+        assert directory is not None
+        vips: dict[str, str] = {}
+        vip_version: tuple = ()
+        if self.vip_book is not None:
+            vips, vip_version = self.vip_book.vips(directory)
+        if mark is None:
+            mark = self.state.get_mark(conv.id, conv.aliases) or 0
+        if unread is None:
+            unread, _ = self._unread_counts(conv, mark)
+        if not unread and not (facts.run_newest and facts.run_newest >= unix_to_apple_ns(since)):
+            return Result(None, {})  # every reason needs an unread message or an unanswered one
+        signature = (tuple(self._last_dates.get(c, (0, 0)) for c in conv.chat_ids), self._dirty.get(conv.id, 0),
+                     self._contacts_version)
+        key = (signature, mark, awaiting, facts.asking_guid, vip_version, int(now // 300))
+        cached = self._priorities.get(conv.id)
+        if cached and cached[0] == key:
+            return cached[1]
+        start = unix_to_apple_ns(since - 3600)
+        if facts.rows and (facts.complete or apple_to_ns(facts.rows[-1]["date"]) <= start):
+            rows = list(reversed(facts.rows))  # the facts already read the whole window
+        else:
+            try:
+                rows = self.db.window_rows(conv.chat_ids, start)
+            except ChatDBError:
+                rows = []
+        result = prioritize(conv.kind, self._priority_items(conv, rows, mark, directory, start),
+                            facts.asking_guid if awaiting else None, vips,
+                            datetime.fromtimestamp(now, timezone.utc), self.tz)
+        self._priorities[conv.id] = (key, result)
+        return result
+
+    def _priority_items(self, conv: Conv, rows: list[Any], mark: int, directory: Directory,
+                        start: int = 0) -> list[Item]:
+        """The conversation's real messages for priority.py; text is decoded only where it can matter."""
+        real = [r for r in rows if (r["date"] or 0) > start and not r["item_type"]
+                and not H.is_reaction_type(r["associated_message_type"])]
+        last_mine = max((i for i, r in enumerate(real) if r["is_from_me"] and not r["date_retracted"]), default=-1)
+        mine = {r["guid"] for r in real if r["is_from_me"]}
+        unknown_roots = {r["thread_originator_guid"] for r in real
+                         if not r["is_from_me"] and r["thread_originator_guid"] and r["thread_originator_guid"] not in mine}
+        if unknown_roots:
+            mine |= {r["guid"] for r in self.db.messages_by_guid(list(unknown_roots), ("ROWID", "guid", "is_from_me"))
+                     if r["is_from_me"]}
+        items: list[Item] = []
+        for index, row in enumerate(real):
+            sent = apple_to_unix(row["date"]) or 0.0
+            if row["is_from_me"]:
+                if not row["date_retracted"]:
+                    items.append(Item(row["guid"], sent, True))
+                continue
+            unread = not row["is_read"] and apple_to_ns(row["date"]) > mark
+            candidate = unread or index > last_mine
+            text = self._text(row) if candidate else ""
+            if candidate and (is_unsent(row, text, bool(row["cache_has_attachments"]))
+                              or (not text and not row["cache_has_attachments"] and not row["balloon_bundle_id"])):
+                continue
+            sender = directory.handle_norm(row["handle_id"])
+            if not sender and conv.kind == "dm" and conv.persons:
+                sender = conv.persons[0].handle
+            person = directory.persons.get(sender) if sender else None
+            items.append(Item(
+                row["guid"], sent, False, sender=person.key if person else sender, text=text, unread=unread,
+                mentions_me=candidate and conv.kind == "group" and self._mentions_me(row),
+                reply_to_me=bool(row["thread_originator_guid"]) and row["thread_originator_guid"] in mine,
+            ))
+        return items
+
+    def importance_map(self, conv: Conv | None) -> dict[str, list[dict[str, Any]]]:
+        """`Message.importance` for a conversation's counting messages (guid → reasons)."""
+        if conv is None:
+            return {}
+        with self._lock:
+            self.refresh()
+            facts = self._facts_for(conv)
+            prefs = self.state.get_prefs(conv.id, conv.aliases)
+            return self._priority_result(conv, facts, self._awaiting(conv, facts), prefs).importance
+
+    def _awaiting(self, conv: Conv, facts: Facts) -> bool:
+        return bool(not facts.automated and not conv.is_self and facts.run_newest
+                    and now_apple_ns() - facts.run_newest < AWAITING_WINDOW_NS and facts.awaiting_since)
+
     # ------------------------------------------------------------------ unread
 
-    def _unread_counts(self, conv: Conv) -> tuple[int, int]:
+    def _unread_counts(self, conv: Conv, mark: int | None = None) -> tuple[int, int]:
         if self._unread is None:
             self._unread = self._load_unread()
-        mark = self.state.get_mark(conv.id, conv.aliases) or 0
+        if mark is None:
+            mark = self.state.get_mark(conv.id, conv.aliases) or 0
         entries = []
         for cid in (conv.id, *conv.aliases):
             entries.extend(self._unread.get(cid, []))

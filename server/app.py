@@ -29,6 +29,7 @@ from .conversations import ConversationService, NotFound, build_me, conv_title, 
 from .emoji import EmojiError, EmojiStore, clean_name
 from .messages_ui import HELPER_SETTINGS, TAPBACKS_OFF, MessagesUI, Runner, Simulator, osascript_runner
 from .stickers import StickerLibrary
+from .vips import VipBook
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
 from .imagetypes import AVATAR_IMAGES, MIME
@@ -168,6 +169,8 @@ class Services:
         self.reminders = Reminders(self.db, self.convs, self.state, self.builder, self.hub.publish)
         self.watcher.reminders = self.reminders
         self.chief = Chief(settings.chief_db)
+        self.convs.vip_book = VipBook(self.db, self.state, self.contacts, chief=self.chief,
+                                      clock=lambda: self.convs.clock())
         self.emoji = EmojiStore(self.state, settings.state_dir / "emoji",
                                 convert_heic=lambda data: self.media.png_bytes(data, uuid.uuid4().hex))
         self.stickers = StickerLibrary(self.db, self.tracker, self.state, self.media)
@@ -258,6 +261,7 @@ def create_app(
             tasks.append(asyncio.create_task(services.watcher.run()))
             tasks.append(asyncio.create_task(services.sending.scheduler_loop()))
             tasks.append(asyncio.create_task(services.reminders.loop()))
+            tasks.append(asyncio.create_task(services.watcher.priority_loop()))
             if settings.ai.get("backend") in ("auto", "claude-cli"):
                 # Finding `claude` may need the login shell (a few seconds): do it now, off the request path.
                 tasks.append(asyncio.create_task(asyncio.to_thread(services.ai.cli.locate)))

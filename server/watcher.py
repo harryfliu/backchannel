@@ -253,6 +253,27 @@ class Watcher:
                 events.append({"type": "conversation", "conversation": summary})
         return events
 
+    def tick(self) -> list[dict[str, Any]]:
+        """Time alone changes "Needs you" (a time comes up, passes, or a message turns 3 days old):
+        re-check every summary and publish the ones that changed."""
+        if not self._primed:
+            return []
+        with self._lock:
+            events = self._conversation_events(set())
+        for event in events:
+            self.hub.publish(event)
+        return events
+
+    async def priority_loop(self, interval: float = 60.0) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await asyncio.to_thread(self.tick)
+            except ChatDBError:
+                pass
+            except Exception:
+                log.exception("Priority refresh failed")
+
     def note_state_change(self, conv_id: str) -> None:
         """Prefs/read marks changed through the API: push the new summary to other tabs."""
         try:

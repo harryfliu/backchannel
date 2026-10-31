@@ -148,7 +148,13 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
   - today, eod / end of day → `at` null, label "Today", window ends 23:59;
   - tomorrow / tmrw (optionally + morning/afternoon/night or a clock time) →
     label "Tomorrow" or "Tomorrow 9 AM";
-  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri".
+  - weekday names ("Friday", "this Fri", "on fri") up to 6 days ahead → "Fri";
+    an explicit date ("Nov 3", "on 11/3") is a named day too, so "Tue Nov 3 at
+    10am" isn't read as the next 10 AM.
+  Also understood: "@ 7" like "at 7", "at 19:00", "in an hour", "in half an
+  hour", "20m"/"2h", "tonite", "tmr"; and a day part in the same text picks the
+  half of the day for a bare hour ("tonight at 8" is 8 PM). URLs, emails, phone
+  numbers and numbers followed by a unit ("at 3 people", "by 5%") never count.
   It counts while the moment (or the day's 23:59 when `at` is null) is still
   ahead and within 36 hours, and for up to 1 hour after a named time passes.
   A message mentioning several times uses the soonest still ahead.
@@ -165,13 +171,16 @@ asked, mention, reply, vip), each kind once (for `time`, the soonest).
 Level is `urgent` when there's an `urgent` or `repeat` reason, or a `time` whose
 `at` is within the next 3 hours (or passed less than an hour ago); otherwise
 `high`. `score` orders within a level: start at 300 (urgent) or 100 (high),
-add urgent +80, repeat +40 per message past 2, time-in-3h +80, time +30,
-asked +60, mention +50, reply +40, vip +25, then subtract the hours since the
-newest counting message (at most 72). `messageId` is the counting message with
-the most weight (newest on ties). `until` is when the earliest time-based reason
-stops counting, or null. Priorities are recomputed whenever the conversation
-changes and every 5 minutes for those with an `until`; a change emits the
-usual `conversation` event, and new messages arrive with `importance` set.
+add urgent +80, repeat +40 per message past 2, time +80 when it's within 3
+hours (else +30), asked +60, mention +50, reply +40, vip +25 (each reason in
+`priority.reasons` once: for `repeat` the longest streak, for the others the
+newest), then subtract the hours since the newest counting message (at most
+72), rounded. `messageId` is the counting message with the most weight (the
+same weights over its own reasons; newest on ties). `until` is when the earliest
+time-based reason stops counting (a moment + 1 h, or the window's end), or null.
+Priorities are recomputed whenever the conversation changes and at least every
+5 minutes (the server re-checks every conversation each minute); a change emits
+the usual `conversation` event, and new messages arrive with `importance` set.
 
 **Automated.** `isAutomated` when the sender is a short code (3–6 digits) or a
 non-contact who the user has never written to and whose texts look automated

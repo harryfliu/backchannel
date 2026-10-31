@@ -50,6 +50,22 @@ def human_birthday(value: str | None) -> str | None:
     return text
 
 
+def match_name(names: list[str], who: Who) -> str | None:
+    """Which of Chief's people names is this person: a full name or nickname, else a first name
+    only one Chief person has."""
+    by_name = {(n or "").strip().lower(): n for n in names if n}
+    for full in who.full_names:
+        found = by_name.get((full or "").strip().lower())
+        if found is not None:
+            return found
+    first = (who.first_name or "").strip().lower()
+    if first:
+        matches = [n for n in names if (n or "").split() and n.split()[0].lower() == first]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 def _mentions(text: str, names: list[str]) -> bool:
     for name in names:
         if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text, re.IGNORECASE):
@@ -89,17 +105,24 @@ class Chief:
 
     def _match_person(self, conn: sqlite3.Connection, who: Who) -> sqlite3.Row | None:
         rows = conn.execute("SELECT id, name, relationship, birthday, notes FROM people").fetchall()
-        by_name = {(r["name"] or "").strip().lower(): r for r in rows if r["name"]}
-        for full in who.full_names:
-            row = by_name.get((full or "").strip().lower())
-            if row is not None:
-                return row
-        first = (who.first_name or "").strip().lower()
-        if first:
-            matches = [r for r in rows if (r["name"] or "").split() and r["name"].split()[0].lower() == first]
-            if len(matches) == 1:
-                return matches[0]
-        return None
+        name = match_name([r["name"] for r in rows if r["name"]], who)
+        return next((r for r in rows if r["name"] == name), None) if name else None
+
+    def people_names(self) -> list[str]:
+        """Everyone in Chief's people table (names only), or [] without Chief."""
+        if not self.available:
+            return []
+        try:
+            conn = self._connect_ro()
+        except sqlite3.Error:
+            return []
+        try:
+            return [r["name"] for r in conn.execute("SELECT name FROM people") if r["name"]]
+        except sqlite3.Error as exc:
+            log.info("Couldn't read Chief's people: %s", exc)
+            return []
+        finally:
+            conn.close()
 
     def card(self, who: Who) -> dict[str, Any] | None:
         """ChiefCard JSON for a person, or None when Chief doesn't know them."""

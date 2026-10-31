@@ -55,14 +55,31 @@ def main() -> int:
         check("/api/health", "Health")
         check("/api/me", "Me")
         convs = check("/api/conversations", "Conversation", key="conversations", each=True) or {"conversations": []}
+        needs_you = [c for c in convs["conversations"] if c.get("priority")]
+        for conv in needs_you:
+            for reason in conv["priority"]["reasons"]:
+                errors = validate(reason, "PriorityReason")
+                checked += 1
+                if errors:
+                    problems += 1
+                    print(f"FAIL priority reason in {conv['id']}: {errors[:3]}")
+        levels = [c["priority"]["level"] for c in needs_you]
+        print(f"Needs you: {len(needs_you)} conversations ({levels.count('urgent')} urgent, {levels.count('high')} high)")
+        important = 0
         for conv in convs["conversations"]:
             cid = quote(conv["id"], safe="")
             check(f"/api/conversations/{cid}", "Conversation")
             page = check(f"/api/conversations/{cid}/messages", "MessagePage", params={"limit": 200})
             check(f"/api/conversations/{cid}/media", "MediaPage")
             for message in (page or {}).get("messages", []):
+                if message.get("importance"):
+                    important += 1
                 if message.get("thread"):
                     check(f"/api/conversations/{cid}/threads/{quote(message['id'], safe='')}", "ThreadResponse")
+        print(f"{important} messages with importance")
+        if needs_you and not important:
+            print("FAIL: conversations need you but no message says why")
+            problems += 1
         handles = sorted({p["handle"] for c in convs["conversations"] for p in c["participants"]})
         cards = 0
         for handle in handles:
