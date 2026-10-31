@@ -38,7 +38,7 @@ from .chatdb import ChatDB, ChatDBError, NOT_REACTION_SQL
 from .conversations import Conv, NotFound, conv_title, message_text
 from .handles import format_handle
 from .messages_scripts import (INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT,
-                               TAPBACK_SCRIPT)
+                               REPLY_TEST_SCRIPT, TAPBACK_SCRIPT)
 from .state import State
 from .timeutil import iso
 
@@ -75,6 +75,10 @@ DRY_RUN_TEXT = "Backchannel is in dry-run mode, so it doesn't drive the Messages
 TAPBACKS_OFF = "Sending tapbacks is off. Turn it on in Settings › Messages helpers."
 TAPBACK_UNCONFIRMED = "Messages didn't confirm the tapback."
 REPLY_UNCONFIRMED = "Messages didn't confirm your reply. Check Messages before you try again."
+# Real replies to other people wait until one has threaded on this Mac (in the user's own chat).
+REPLY_PROOF_KEY = "reply_proof"
+REPLY_UNPROVEN = ("real replies haven't worked on this Mac yet. Reply in a thread in your own chat first; once "
+                  "one threads there, replies to others go through too.")
 
 # The six classic tapbacks, their chat.db offsets (2000 + k adds, 3000 + k removes) and what the
 # Messages app may call them (button descriptions or menu titles).
@@ -559,7 +563,8 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-menu": ("granted", "Messages didn't open a menu for that message.", "nothing"),
     "no-reply-item": ("granted", "Messages didn't offer Reply for that message.", "nothing"),
     "no-reply-field": ("granted", "Messages didn't open its reply field.", "nothing"),
-    "no-reply-mode": ("granted", "Messages didn't switch to replying to that message.", "nothing"),
+    "no-reply-mode": ("granted", "Messages didn't switch to replying to that message, so nothing was sent.",
+                      "nothing"),
     "field-busy": ("granted", "Messages' reply field already had text in it.", "nothing"),
     "clipboard-busy": ("granted", "The clipboard holds an image or a file, so Backchannel didn't paste your "
                        "reply.", "nothing"),
@@ -1075,12 +1080,41 @@ class MessagesUI:
         elif row["thread_originator_guid"] == job.root_id:
             result = ReplyResult("done", "Sent as a reply in Messages.", row["guid"])
             interp.code += ", verified"
+        elif row["thread_originator_guid"]:
+            result = ReplyResult("regular", "Messages threaded it under a different message.", row["guid"])
+            interp.code += ", threaded under another message"
         else:
             result = ReplyResult("regular", "Messages sent it as a regular text instead of a reply.", row["guid"])
             interp.code += ", not threaded"
         if self.runner is not None:
             self._record(interp, result.detail, "Reply")
+            if result.kind == "done":
+                self.note_reply_proof(True)
+            elif result.kind == "regular" and not row["thread_originator_guid"]:
+                self.note_reply_proof(False)
         return result
+
+    # ------------------------------------------------------------------ has a real reply worked here?
+
+    def replies_proven(self) -> bool:
+        """A real reply threaded on this Mac (checked in chat.db), and none went out unthreaded since."""
+        return bool((self.state.get_kv(REPLY_PROOF_KEY) or {}).get("ok"))
+
+    def note_reply_proof(self, ok: bool) -> None:
+        self.state.set_kv(REPLY_PROOF_KEY, {"ok": ok, "at": time.time()})
+
+    def needs_reply_proof(self, conv: Conv) -> bool:
+        """Real replies to other people wait until one has threaded in the user's own chat on this
+        Mac, so a Messages that won't switch into reply mode can't send them regular texts."""
+        return self.runner is not None and not conv.is_self and not self.replies_proven()
+
+    def reply_test(self, method: str, text: str, names: list[str], timeout: float = 60.0) -> Outcome:
+        """doctor --messages-reply-test: start replying to the newest message in the user's own chat one
+        way (action / menu / menubar); if Messages switches into reply mode, paste `text` and send it."""
+        if self.runner is None:
+            return Outcome(127, "", "Messages can't be driven here.")
+        argv = ["reply-test", f"W:{method}", f"M:{text}", *[f"N:{n}" for n in names if n]]
+        return self.runner(REPLY_TEST_SCRIPT, argv, timeout)
 
     # ------------------------------------------------------------------ permission probe
 

@@ -24,6 +24,7 @@ from . import fakedb
 from .chatdb import ChatInfo
 from .config import Settings
 from .conversations import Conv, ConversationService, NotFound, message_text
+from .messages_ui import REPLY_UNPROVEN
 from .sender import Sender, SendResult
 from .state import State
 from .timeutil import apple_to_unix, iso
@@ -206,6 +207,8 @@ class SendService:
     async def _reply_in_messages(self, conv: Conv, chat: ChatInfo, text: str, client_id: str,
                                  root_id: str) -> tuple[SendResult | None, str]:
         """Type the reply into Messages' Reply field. (None, why) = nothing was typed."""
+        if self.helpers.needs_reply_proof(conv):
+            return None, REPLY_UNPROVEN
         job = await asyncio.to_thread(self.helpers.reply_job, conv, root_id, text, client_id)
         if job is None:  # the root isn't a message Messages can show (unknown, an event, unsent…)
             return None, "Messages can't reply to that message."

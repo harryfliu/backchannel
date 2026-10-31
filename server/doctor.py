@@ -358,6 +358,94 @@ def check_system(report: Report, services: Any) -> None:
         report.item("web UI", "not built (web/dist missing)")
 
 
+_SHOWABLE = re.compile(r"[A-Za-z][A-Za-z .'’…|_-]{0,40}")
+
+
+def check_messages_reply_test(report: Report, services: Any) -> None:
+    """In the user's own chat only: start a reply to the newest message each way Messages may allow
+    (its Reply… action, its right-click menu's Reply, a Reply command in the menu bar). When one
+    switches Messages into reply mode, send a short test reply there and check chat.db for the
+    thread; stop at the first that threads (and let replies to others go through from then on)."""
+    from . import messages_ui
+    from .conversations import message_text
+
+    report.section("Messages helpers, reply test (your own chat only)")
+    try:
+        me = services.convs.me()
+    except ChatDBError:
+        report.item("result", "skipped: chat.db isn't readable")
+        return
+    db, helpers = services.db, services.messages_ui
+    private = services.contacts.private_names()
+    names = [n for n in (me.name.strip(), me.short_name.strip()) if n]
+
+    def newest_rowid() -> int:
+        rows = db.query("SELECT MAX(ROWID) AS m FROM message")
+        return int(rows[0]["m"] or 0) if rows else 0
+
+    def sent_row(after: int, text: str, seconds: float = 6.0) -> Any | None:
+        deadline = time.monotonic() + seconds
+        fields = ("ROWID", "guid", "text", "attributedBody", "thread_originator_guid")
+        while time.monotonic() < deadline:
+            for row in db.query(f"SELECT {db.message_select(fields=fields)} FROM message m"
+                                " WHERE m.ROWID > ? AND m.is_from_me = 1 ORDER BY m.ROWID", (after,)):
+                if (message_text(row) or "").strip() == text:
+                    return row
+            time.sleep(0.4)
+        return None
+
+    def show(value: str) -> str:
+        value = (value or "").strip()
+        if value in ("", "-"):
+            return "-"
+        if not _SHOWABLE.fullmatch(value) or any(p in value.lower() for p in private):
+            return "(hidden)"
+        return value
+
+    for number, method in enumerate(("action", "menu", "menubar"), 1):
+        text = f"Backchannel reply test {number}"
+        before = newest_rowid()
+        outcome = helpers.reply_test(method, text, names)
+        if outcome.timed_out:
+            report.item(method, "timed out")
+            continue
+        got: dict[str, list[str]] = {}
+        for line in outcome.stdout.splitlines():
+            key, _, rest = line.partition("\t")
+            got[key] = rest.split("\t")
+        if "rt" in got:
+            answer = got["rt"][0]
+            if answer == "not-your-chat":
+                report.item("result", "skipped: open your own chat in Messages first (your name at the top), then run this again")
+                return
+            report.item(method, re.sub(r"[^a-z-]", "", answer) or "no answer")
+            continue
+        if not got:
+            report.item(method, f"the script failed: {(outcome.stderr.splitlines() or ['no answer'])[-1][:160]}")
+            continue
+        hint, focus, marks = got.get("rt_hint", ["", ""]), got.get("rt_focus", ["", ""]), got.get("rt_marks", ["", ""])
+        report.item(method, f"started: {show(got.get('rt_did', ['?'])[0])}; placeholder {show(hint[0])} → "
+                            f"{show(hint[-1])}; focused field {show(focus[0])} → {show(focus[-1])}; "
+                            f"entry area {marks[0]} → {marks[-1]}; reply mode: {got.get('rt_engaged', ['?'])[0]}")
+        if "rt_hint_with_text" in got:
+            report.item(f"{method}, placeholder with the text in", show(got["rt_hint_with_text"][0]))
+        if got.get("rt_sent", [""])[0] != "yes":
+            if "rt_sent" in got:
+                report.item(f"{method}, test reply", "not sent (the text didn't land in the field)")
+            continue
+        row = sent_row(before, text)
+        if row is None:
+            report.item(f"{method}, test reply", "sent, but it isn't in chat.db")
+        elif row["thread_originator_guid"]:
+            report.item(f"{method}, test reply", "THREADED")
+            helpers.note_reply_proof(True)
+            report.item("result", f"real replies work on this Mac ({method}); replies to others are on")
+            return
+        else:
+            report.item(f"{method}, test reply", "went out as a regular text (not threaded)")
+    report.item("result", "no way of starting a reply threaded")
+
+
 def check_messages_open(report: Report, services: Any, name: str) -> None:
     """Find a conversation by the name Backchannel shows and bring it up in Messages, the way
     tapbacks and replies do (link for one-to-one chats, else its sidebar item, scrolling to it).
@@ -410,6 +498,9 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
                         help="live check in your own chat: press Heart (then take it off) and Reply (then Escape)")
     parser.add_argument("--messages-tree", action="store_true",
                         help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
+    parser.add_argument("--messages-reply-test", action="store_true",
+                        help="in your own chat: try each way of starting a reply; for the first that puts "
+                             "Messages in reply mode, send a short test reply to yourself and check it threaded")
     parser.add_argument("--messages-open", metavar="NAME",
                         help="bring a conversation up in Messages the way tapbacks and replies do (its name as "
                              "Backchannel shows it); nothing is sent. Prints how it got there")
@@ -439,6 +530,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
             check_messages_try(report, services)
         if args.messages_open:
             check_messages_open(report, services, args.messages_open)
+        if args.messages_reply_test:
+            check_messages_reply_test(report, services)
     finally:
         services.close()
     report.section("Result")

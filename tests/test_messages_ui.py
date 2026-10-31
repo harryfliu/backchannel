@@ -161,10 +161,12 @@ def test_candidate_names():
 # --------------------------------------------------------------------------- the scripts
 
 SCRIPTS = {"mark-read": MARK_READ_SCRIPT, "tapback": TAPBACK_SCRIPT, "reply": REPLY_SCRIPT, "inspect": INSPECT_SCRIPT,
-           "probe": PROBE_SCRIPT, "mark-unread": MARK_UNREAD_SCRIPT}
+           "probe": PROBE_SCRIPT, "mark-unread": MARK_UNREAD_SCRIPT,
+           "reply-test": messages_scripts.REPLY_TEST_SCRIPT}
 KEYS = {"mark-read": {"key code 53"}, "tapback": {"key code 53"}, "inspect": {"key code 53"}, "probe": set(),
         "mark-unread": {"key code 53"},
-        "reply": {"key code 53", "key code 36", "key code 9 using command down"}}
+        "reply": {"key code 53", "key code 36", "key code 9 using command down"},
+        "reply-test": {"key code 53", "key code 36", "key code 9 using command down"}}
 
 
 def _check_blocks(lines: tuple[str, ...]) -> None:
@@ -296,6 +298,8 @@ def test_only_the_reply_script_puts_text_into_messages():
         clipboard = "set the clipboard to" in source
         if name == "reply":
             assert writes == ["bcBox"] and clipboard and attribute_writes == []
+        elif name == "reply-test":  # doctor --messages-reply-test, the user's own chat only
+            assert writes == [] and clipboard and attribute_writes == []
         else:
             assert writes == [] and attribute_writes == [] and not clipboard, name
 
@@ -630,7 +634,8 @@ def test_reply_is_pasted_never_set_and_only_sent_while_still_replying():
     paste = act.index("key code 9 using command down")
     assert act.index("my clipSave()") < act.index("my setClip(bcReply)") < paste < act.index("my clipRestore(bcSaved)")
     before_return = act[:act.index("key code 36")]
-    assert before_return.rindex("my replyMarks(bcEntry) is not greater than bcShapeBefore") > paste
+    assert before_return.rindex("if not my stillReplying(bcHintBefore, bcFocusBefore) then") > paste
+    assert "replyMarks" not in act  # an inner group changing came with a regular text on macOS 26.3
 
 
 def test_the_clipboard_is_saved_whole_with_appkit():
@@ -640,7 +645,7 @@ def test_the_clipboard_is_saved_whole_with_appkit():
     assert "pasteboardItems()" in clip and "dataForType:" in clip and "writeObjects:bcSaved" in clip
     assert "clipboard info" not in clip  # nothing is refused for what kind it is any more
     for name, script in SCRIPTS.items():
-        if name != "reply":
+        if name not in ("reply", "reply-test"):
             assert not any(line.startswith("use ") for line in script), name
 
 
@@ -664,3 +669,23 @@ def test_open_mode_is_in_the_inspect_script():
     source = "\n".join(INSPECT_SCRIPT)
     assert 'else if bcMode is "open" then' in source
     assert 'set bcReport to bcReport & {"open" & tab & bcOpened & tab & bcTrail}' in source
+
+
+def test_reply_mode_counts_only_when_the_placeholder_or_focused_field_changes():
+    """macOS 26.3: "Reply…" changed an inner group of the entry area but the placeholder stayed
+    "iMessage", and what was sent came out unthreaded. Reply mode now needs a real change, and the
+    message's right-click menu is the second way in."""
+    menus = messages_scripts.MENUS
+    start = menus[menus.index("on startReply("):menus.index("end startReply")]
+    assert start.index('my customAction(bcBubble, {"Reply"})') < start.index("my replyFromMenu(bcBubble, bcWin)")
+    assert start.count("my replyEngaged(bcHintBefore, bcFocusBefore)") == 2 and "replyMarks" not in start
+    still = menus[menus.index("on stillReplying("):menus.index("end stillReplying")]
+    assert 'my hintNow()' in still and 'my focusKey()' in still
+
+
+def test_the_reply_test_only_runs_in_your_own_chat():
+    main = messages_scripts.REPLY_TEST_MAIN
+    assert main.index('if not my titleMatches(bcWin, my tagged(argv, "N"), {}) then return "rt" & tab & "not-your-chat"') \
+        < main.index("key code 36")
+    printed = [line for line in main.splitlines() if "set bcOut to bcOut & {" in line]
+    assert printed and not any(re.search(r"\b(description|value) of\b|fieldText", line) for line in printed)

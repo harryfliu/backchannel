@@ -368,6 +368,14 @@ both ways without typing anything. Titles with digits, `@`, `+` or quotes,
 longer than 40 characters, or naming a contact are hidden. This is what to look
 at when a helper says it couldn't find something.
 
+**`./backchannel doctor --messages-reply-test`** runs in your own chat only (it
+checks the title): for each way of starting a reply (the newest message's
+"Reply…" action, its right-click menu, a Reply command in the menu bar) it
+prints whether Messages started, the text field's placeholder and the focused
+field before → after, and whether that counts as reply mode. For the first way
+that does, it pastes "Backchannel reply test N", sends it to you and checks
+chat.db for the thread; a threaded one turns real replies to others on.
+
 **`./backchannel doctor --messages-open "Name"`** brings a conversation (by the
 name Backchannel shows) up in Messages the way tapbacks and replies do, without
 typing or sending anything, and prints whether it worked, the steps (the same

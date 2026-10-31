@@ -25,7 +25,7 @@ class FakeMessages:
             "mark-read": Outcome(0, "ok-menu", ""),
             "mark-unread": Outcome(0, "ok-action", ""),
             "tapback": Outcome(0, "chosen-overlay", ""),
-            "reply": Outcome(0, "sent-axvalue", ""),
+            "reply": Outcome(0, "sent-paste|shown t0 r:menu", ""),
             "probe": Outcome(0, "ready", ""),
             "inspect": Outcome(0, "", ""),
         }

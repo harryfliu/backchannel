@@ -547,7 +547,7 @@ on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
             open location (item 1 of bcLinks)
         end try
         set bcTrace to bcTrace & {"link"}
-        repeat 6 times
+        repeat 14 times
             delay 0.5
             if my titleMatches(bcWin, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace & {"title"})
         end repeat
@@ -883,6 +883,135 @@ use framework "AppKit"
 use scripting additions
 """
 
+# Starting a reply (the reply script and the doctor's reply test).
+MENUS = """
+on findMenu(bcEl, bcWin)
+    set bcMenu to missing value
+    try
+        tell application "System Events" to set bcMenu to menu 1 of bcEl
+    end try
+    if bcMenu is not missing value then return {bcMenu, "element"}
+    try
+        tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
+    end try
+    if bcMenu is not missing value then return {bcMenu, "app"}
+    try
+        tell application "System Events" to set bcMenu to menu 1 of bcWin
+    end try
+    if bcMenu is not missing value then return {bcMenu, "window"}
+    return {missing value, "none"}
+end findMenu
+
+on topRoles()
+    set bcRoles to {}
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of process "Messages"
+    end try
+    return my cleanNames(bcRoles)
+end topRoles
+
+-- The focused text field's placeholder ("iMessage"; replying changes it), or "-".
+on hintNow()
+    set bcField to my focusedTextField()
+    if bcField is missing value then return "-"
+    return my attrText(bcField, "AXPlaceholderValue")
+end hintNow
+
+-- Which text field has the focus (role and id), or "-".
+on focusKey()
+    set bcField to my focusedTextField()
+    if bcField is missing value then return "-"
+    return my roleOf(bcField) & "|" & my attrText(bcField, "AXIdentifier")
+end focusKey
+
+-- Messages is replying: the text field's placeholder changed, or another text field has the focus.
+-- (An inner group of the entry area changing isn't enough: on macOS 26.3 that came with a regular text.)
+on stillReplying(bcHintBefore, bcFocusBefore)
+    set bcHint to my hintNow()
+    if bcHint is not "-" and bcHint is not "" and bcHint is not bcHintBefore then return true
+    set bcKey to my focusKey()
+    return bcKey is not "-" and bcKey is not bcFocusBefore
+end stillReplying
+
+on replyEngaged(bcHintBefore, bcFocusBefore)
+    repeat 6 times
+        if my stillReplying(bcHintBefore, bcFocusBefore) then return true
+        delay 0.25
+    end repeat
+    return false
+end replyEngaged
+
+-- The message's right-click menu (AXShowMenu, with Messages in front), then its Reply item.
+on replyFromMenu(bcBalloon, bcWin)
+    try
+        tell application "System Events" to perform action "AXShowMenu" of bcBalloon
+    end try
+    delay 0.7
+    set bcFound to my findMenu(bcBalloon, bcWin)
+    set bcMenu to item 1 of bcFound
+    if bcMenu is missing value then return false
+    set bcTitles to {}
+    try
+        tell application "System Events" to set bcTitles to name of every menu item of bcMenu
+    end try
+    repeat with i from 1 to count of bcTitles
+        if (my asText(item i of bcTitles)) starts with "Reply" then
+            try
+                tell application "System Events" to click menu item i of bcMenu
+                return true
+            end try
+        end if
+    end repeat
+    my pressEscape()
+    return false
+end replyFromMenu
+
+-- A Reply command in the menu bar, if Messages has one: "bar<n>", "bar-disabled" or "bar-none".
+on replyFromMenuBar()
+    set bcBarCount to 0
+    try
+        tell application "System Events" to set bcBarCount to count of menu bar items of menu bar 1 of process "Messages"
+    end try
+    repeat with bcBar from 2 to bcBarCount
+        set bcTitles to {}
+        try
+            tell application "System Events" to set bcTitles to name of every menu item of menu 1 of menu bar item bcBar of menu bar 1 of process "Messages"
+        end try
+        repeat with i from 1 to count of bcTitles
+            if (my asText(item i of bcTitles)) starts with "Reply" then
+                set bcEnabled to false
+                try
+                    tell application "System Events" to set bcEnabled to enabled of menu item i of menu 1 of menu bar item bcBar of menu bar 1 of process "Messages"
+                end try
+                if bcEnabled is not true then return "bar-disabled"
+                try
+                    tell application "System Events" to click menu item i of menu 1 of menu bar item bcBar of menu bar 1 of process "Messages"
+                    return "bar" & (bcBar as text)
+                end try
+                return "bar-failed"
+            end if
+        end repeat
+    end repeat
+    return "bar-none"
+end replyFromMenuBar
+
+-- Put Messages in reply mode for this message: its "Reply…" action, else its right-click menu's
+-- Reply. Counts only when the placeholder or the focused field changes. The way that worked, or "".
+on startReply(bcBubble, bcWin, bcHintBefore, bcFocusBefore)
+    if my customAction(bcBubble, {"Reply"}) then
+        delay 0.5
+        if my replyEngaged(bcHintBefore, bcFocusBefore) then return "action"
+    end if
+    my pressEscape()
+    if my replyFromMenu(bcBubble, bcWin) then
+        delay 0.5
+        if my replyEngaged(bcHintBefore, bcFocusBefore) then return "menu"
+    end if
+    my pressEscape()
+    return ""
+end startReply
+"""
+
 CLIPBOARD = """
 on setClip(bcText)
     try
@@ -1078,16 +1207,13 @@ on act(argv)
             my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
             return "bubble-not-found"
         end if
-        set bcEntry to my spotEntry(bcWin)
-        if bcEntry is missing value then return "no-reply-field"
-        set bcShapeBefore to my replyMarks(bcEntry)
         my bringForward()
-        if not my customAction(bcBubble, {"Reply"}) then return "no-reply-item"
-        delay 0.8
-        if my replyMarks(bcEntry) is not greater than bcShapeBefore then
-            my pressEscape()
-            return "no-reply-mode"
-        end if
+        set bcHintBefore to my hintNow()
+        set bcFocusBefore to my focusKey()
+        if not my hasAction(bcBubble, {"Reply"}) then return "no-reply-item"
+        set bcStart to my startReply(bcBubble, bcWin, bcHintBefore, bcFocusBefore)
+        if bcStart is "" then return "no-reply-mode"
+        my addTrail("r:" & bcStart)
         set bcBox to my focusedTextField()
         if bcBox is missing value then
             my pressEscape()
@@ -1131,7 +1257,7 @@ on act(argv)
     end if
     -- Still replying? If Messages let go of the message being answered, take the text back out
     -- rather than send it as a regular text.
-    if my replyMarks(bcEntry) is not greater than bcShapeBefore then
+    if not my stillReplying(bcHintBefore, bcFocusBefore) then
         set bcBox to bcFocused
         try
             tell application "System Events" to set value of bcBox to ""
@@ -1152,6 +1278,92 @@ on act(argv)
     if (my fieldText(bcFocused)) is "" then return "sent-" & bcHow
     return "returned-unconfirmed"
 end act
+"""
+
+# --------------------------------------------------------------------------- reply test (doctor)
+# Run only from `doctor --messages-reply-test`, after it checked that the user's own chat is open
+# (the script checks the title again). W: names the way to start replying; if Messages switches
+# into reply mode, the M: text is pasted and sent to the user's own chat. Prints placeholders,
+# focus keys and counts, never message text.
+
+REPLY_TEST_MAIN = """
+property bcBudget : 320
+property bcTrail : ""
+property bcUp : 0
+
+on run argv
+    set bcRunning to false
+    tell application "System Events" to set bcRunning to (exists process "Messages")
+    if bcRunning is not true then return "rt" & tab & "not-running"
+    set bcWinCount to 0
+    tell application "System Events" to set bcWinCount to count of windows of process "Messages"
+    if bcWinCount is 0 then return "rt" & tab & "no-window"
+    tell application "System Events" to set bcWin to window 1 of process "Messages"
+    if not my titleMatches(bcWin, my tagged(argv, "N"), {}) then return "rt" & tab & "not-your-chat"
+    set bcMethod to ""
+    set bcMethods to my tagged(argv, "W")
+    if bcMethods is not {} then set bcMethod to item 1 of bcMethods
+    set bcTexts to my tagged(argv, "M")
+    set bcPrevApp to my frontBundle()
+    my bringForward()
+    my pressEscape()
+    set bcOut to {"rt_method" & tab & bcMethod}
+    set bcBalloon to my newestBalloon(bcWin)
+    if bcBalloon is missing value then
+        my restoreFront(bcPrevApp)
+        return my joinWith(bcOut & {"rt" & tab & "no-message"}, linefeed)
+    end if
+    set bcEntry to my spotEntry(bcWin)
+    set bcHintBefore to my hintNow()
+    set bcFocusBefore to my focusKey()
+    set bcMarksBefore to my replyMarks(bcEntry)
+    set bcDid to "no"
+    if bcMethod is "action" then
+        if my customAction(bcBalloon, {"Reply"}) then set bcDid to "yes"
+    else if bcMethod is "menu" then
+        if my replyFromMenu(bcBalloon, bcWin) then set bcDid to "yes"
+    else if bcMethod is "menubar" then
+        set bcDid to my replyFromMenuBar()
+    end if
+    delay 1.2
+    set bcHintAfter to my hintNow()
+    set bcFocusAfter to my focusKey()
+    set bcMarksAfter to my replyMarks(bcEntry)
+    set bcOut to bcOut & {"rt_did" & tab & bcDid, "rt_hint" & tab & bcHintBefore & tab & bcHintAfter}
+    set bcOut to bcOut & {"rt_focus" & tab & bcFocusBefore & tab & bcFocusAfter}
+    set bcOut to bcOut & {"rt_marks" & tab & (bcMarksBefore as text) & tab & (bcMarksAfter as text)}
+    set bcOut to bcOut & {"rt_top" & tab & my joinWith(my topRoles(), ",")}
+    set bcEngaged to my stillReplying(bcHintBefore, bcFocusBefore)
+    set bcOut to bcOut & {"rt_engaged" & tab & (bcEngaged as text)}
+    if (bcEngaged or bcMarksAfter > bcMarksBefore) and bcTexts is not {} then
+        set bcText to item 1 of bcTexts
+        set bcSaved to my clipSave()
+        my setClip(bcText)
+        try
+            tell application "System Events" to key code 9 using command down
+        end try
+        delay 0.6
+        my clipRestore(bcSaved)
+        set bcField to my focusedTextField()
+        set bcReady to false
+        if bcField is not missing value then
+            considering case
+                if (my fieldText(bcField)) is bcText then set bcReady to true
+            end considering
+        end if
+        set bcOut to bcOut & {"rt_hint_with_text" & tab & my hintNow()}
+        if bcReady then
+            tell application "System Events" to key code 36
+            delay 1.0
+            set bcOut to bcOut & {"rt_sent" & tab & "yes"}
+        else
+            set bcOut to bcOut & {"rt_sent" & tab & "no"}
+        end if
+    end if
+    my pressEscape()
+    my restoreFront(bcPrevApp)
+    return my joinWith(bcOut, linefeed)
+end run
 """
 
 # --------------------------------------------------------------------------- permission probe
@@ -1280,14 +1492,6 @@ on windowCount()
     return bcN
 end windowCount
 
-on topRoles()
-    set bcRoles to {}
-    try
-        tell application "System Events" to set bcRoles to role of every UI element of process "Messages"
-    end try
-    return my cleanNames(bcRoles)
-end topRoles
-
 on sidebarReport(bcList)
     set bcOut to {}
     set bcRoles to {}
@@ -1344,23 +1548,6 @@ on splitOn(bcText, bcSep)
     set AppleScript's text item delimiters to bcSaved
     return bcItems
 end splitOn
-
-on findMenu(bcEl, bcWin)
-    set bcMenu to missing value
-    try
-        tell application "System Events" to set bcMenu to menu 1 of bcEl
-    end try
-    if bcMenu is not missing value then return {bcMenu, "element"}
-    try
-        tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
-    end try
-    if bcMenu is not missing value then return {bcMenu, "app"}
-    try
-        tell application "System Events" to set bcMenu to menu 1 of bcWin
-    end try
-    if bcMenu is not missing value then return {bcMenu, "window"}
-    return {missing value, "none"}
-end findMenu
 
 -- Button labels under an element, a few levels deep (the tapback picker's buttons).
 on collectButtons(bcRoot, bcDepth)
@@ -1612,8 +1799,13 @@ for _name, _path in SPOTS.items():
     SIDEBAR = SIDEBAR.replace(f"__SPOT_{_name}__", spot_ref(_path))
 assert "__SPOT_" not in SIDEBAR
 
+INSPECT_MAIN, INSPECT_HANDLERS = INSPECT_RUN.split("end run\n", 1)
+INSPECT_MAIN += "end run\n"
+
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TAPBACK_ACT)
-REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + REPLY_ACT)
-INSPECT_SCRIPT = lines(INSPECT_RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES)
+REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + MENUS + REPLY_ACT)
+INSPECT_SCRIPT = lines(INSPECT_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + MENUS + INSPECT_HANDLERS)
+REPLY_TEST_SCRIPT = lines(USE_APPKIT + REPLY_TEST_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD
+                          + MENUS + INSPECT_HANDLERS)

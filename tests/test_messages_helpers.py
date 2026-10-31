@@ -81,6 +81,7 @@ def fake_rw(make_rw):
     rw = make_rw(messages_ui_runner=fake)
     rw.services.messages_ui.verify_seconds = 1.0
     turn_on(rw, tapbacksViaMessages=True, threadRepliesViaMessages=True)
+    rw.services.messages_ui.note_reply_proof(True)  # most tests reply to other people (see the gate test)
     rw.fake = fake
     rw.prime = rw.services.watcher.prime
     rw.services.watcher.prime()
@@ -463,3 +464,31 @@ def test_media_roots_keep_the_containment_check(tmp_path):
         assert media.resolve(bad) is None, bad
     (stickers / "AB" / "link.png").symlink_to(tmp_path / "secret.txt")
     assert media.resolve("~/Library/Messages/StickerCache/AB/link.png") is None  # realpath, not the name
+
+
+SELF = "dm:+15105550100"
+
+
+def test_replies_to_others_wait_until_one_threads_in_your_own_chat(fake_rw, sends):
+    """Harry's Mac: Messages never really switched into reply mode, and his wife got plain texts. Until
+    a real reply has threaded on this Mac (in his own chat), replies to others aren't attempted."""
+    rw, fake = fake_rw, fake_rw.fake
+    helpers = rw.services.messages_ui
+    helpers.note_reply_proof(False)
+    root = rw.guid("soc_root")
+    rw.post(send_url(SOCCER), {"text": "in!", "clientId": "g-1", "threadRootId": root})
+    failed = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "g-1"])
+    assert failed[0]["status"] == "failed"
+    assert failed[0]["error"].startswith("Not sent as a reply: real replies haven't worked on this Mac yet.")
+    assert not [c for c in fake.calls if c[0] == "reply"] and sends == []
+    # In your own chat it's tried; a reply that threads turns replies to others on.
+    mine = rw.get(f"/api/conversations/{SELF}/messages")["messages"][-1]["id"]
+    fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, mine, tagged(argv, "M")[0])
+    rw.post(send_url(SELF), {"text": "noted", "clientId": "s-1", "threadRootId": mine})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "s-1"])
+    assert sent[0]["status"] == "sent" and helpers.replies_proven()
+    # One that goes out unthreaded turns them off again.
+    fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, root, tagged(argv, "M")[0], threaded=False)
+    rw.post(send_url(SOCCER), {"text": "ok then", "clientId": "g-2", "threadRootId": root})
+    regular = wait_for(rw, ui_action("reply", clientId="g-2"))
+    assert regular["result"] == "fallback" and not helpers.replies_proven()
