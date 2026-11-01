@@ -70,17 +70,22 @@ property bcTrail : ""
 property bcUp : 0
 property bcMembers : {}
 property bcExtra : ""
+property bcKeepFront : false
+property bcRestoreTo : ""
+property bcFrontWas : ""
 
 on run argv
     set bcMembers to my tagged(argv, "G")
     set bcPrevApp to my frontBundle()
+    set bcFrontWas to bcPrevApp
     set bcAnswer to "error-late:unknown"
     try
         set bcAnswer to my act(argv)
     on error bcErrMsg number bcErrNum
         set bcAnswer to "error-late:" & (bcErrNum as text)
     end try
-    my restoreFront(bcPrevApp)
+    if bcRestoreTo is not "" then set bcPrevApp to bcRestoreTo
+    if not bcKeepFront then my restoreFront(bcPrevApp)
     set bcLine to bcAnswer
     if bcTrail is not "" then set bcLine to bcAnswer & "|" & bcTrail
     if bcExtra is not "" then set bcLine to bcLine & linefeed & bcExtra
@@ -1433,6 +1438,22 @@ on act(argv)
         set bcStart to my startReply(bcBubble, bcWin, bcHintBefore, bcFocusBefore)
         if bcStart is "" then return "no-reply-mode"
         my addTrail("r:" & bcStart)
+    on error bcErrMsg number bcErrNum
+        return "error:" & (bcErrNum as text)
+    end try
+    return my typeReply(bcReply, bcHintBefore, bcFocusBefore)
+end act
+"""
+
+# Putting the reply in and sending it, shared by both ways into reply mode (the menu bar's "Reply to
+# Last Message" for the newest message; the message's own right-click menu for older ones).
+REPLY_TYPING = """
+-- Paste, as a person would: Messages keeps the reply attached to pasted or typed text, but not to
+-- text set as the field's value (that went out as a regular text on macOS 26.3). Everything on the
+-- clipboard is saved first and put back right after. Return only while the field holds exactly the
+-- reply and Messages is still replying.
+on typeReply(bcReply, bcHintBefore, bcFocusBefore)
+    try
         set bcBox to my focusedTextField()
         if bcBox is missing value then
             my pressEscape()
@@ -1445,9 +1466,6 @@ on act(argv)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
-    -- Paste, as a person would: Messages keeps the reply attached to pasted or typed text, but not to
-    -- text set as the field's value (that went out as a regular text on macOS 26.3). Everything on
-    -- the clipboard is saved first and put back right after.
     set bcHow to ""
     set bcSaved to my clipSave()
     my setClip(bcReply)
@@ -1496,6 +1514,130 @@ on act(argv)
     delay 0.6
     if (my fieldText(bcFocused)) is "" then return "sent-" & bcHow
     return "returned-unconfirmed"
+end typeReply
+"""
+
+# --------------------------------------------------------------------------- reply to an older message
+# "Reply to Last Message" only answers the newest message, and accessibility can't open a message's
+# own menu on macOS 26.3 (its "Reply…" action and AXShowMenu do nothing). So: this script finds the
+# message and says where it is on screen (aim:x,y; Messages stays in front), the server right-clicks
+# there (server/mouse.py), and REPLY_FINISH_ACT chooses Reply… in the menu that opened and sends.
+
+REPLY_AIM_ACT = """
+on act(argv)
+    set bcLooseNames to my tagged(argv, "L")
+    set bcStrictNames to my tagged(argv, "N")
+    set bcNeedles to my tagged(argv, "T")
+    set bcExacts to my tagged(argv, "W")
+    set bcSenders to my tagged(argv, "S")
+    set bcSkipSender to my taggedNumber(argv, "K")
+    set bcSkipAny to my taggedNumber(argv, "J")
+    try
+        set bcState to my messagesState()
+        if bcState is not "ok" then return bcState
+        tell application "System Events" to set bcWin to window 1 of process "Messages"
+        set bcList to my spotList(bcWin)
+        if bcList is missing value then return "no-list"
+        set bcOpened to my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, "U"))
+        if bcOpened is not "ok" then return bcOpened
+        set bcTranscript to my spotTranscript(bcWin)
+        if bcTranscript is missing value then
+            delay 0.8
+            set bcTranscript to my spotTranscript(bcWin)
+        end if
+        if bcTranscript is missing value then return "no-transcript"
+        set bcTimes to my tagged(argv, "H")
+        set bcSkipMinute to my taggedNumber(argv, "Q")
+        repeat 4 times
+            if (my listKey(bcTranscript)) is not "0" then exit repeat
+            delay 0.5
+        end repeat
+        set bcBubble to my locateBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+        if bcBubble is missing value then
+            my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
+            return "bubble-not-found"
+        end if
+        if not my hasAction(bcBubble, {"Reply"}) then return "no-reply-item"
+        my bringForward()
+        try
+            tell application "System Events" to perform action "AXScrollToVisible" of bcBubble
+        end try
+        delay 0.4
+        set bcPoint to my visiblePoint(bcBubble, bcTranscript)
+        if bcPoint is missing value then return "not-visible"
+        set bcField to my searchId(my spotEntry(bcWin), "messageBodyField")
+        set bcHint to my attrText(bcField, "AXPlaceholderValue")
+        set bcKeepFront to true
+        set bcExtra to "front" & tab & bcFrontWas & linefeed & "hint" & tab & bcHint
+        return "aim:" & ((item 1 of bcPoint) as text) & "," & ((item 2 of bcPoint) as text)
+    on error bcErrMsg number bcErrNum
+        return "error:" & (bcErrNum as text)
+    end try
+end act
+
+-- The middle of the part of an element that's inside the view, in screen points, or missing value.
+on visiblePoint(bcEl, bcView)
+    set bcF to my frameOf(bcEl)
+    if bcF is missing value then return missing value
+    set bcLeft to item 1 of bcF
+    set bcTop to item 2 of bcF
+    set bcRight to bcLeft + (item 3 of bcF)
+    set bcBottom to bcTop + (item 4 of bcF)
+    set bcV to my frameOf(bcView)
+    if bcV is not missing value then
+        if (item 1 of bcV) > bcLeft then set bcLeft to item 1 of bcV
+        if (item 2 of bcV) > bcTop then set bcTop to item 2 of bcV
+        if (item 1 of bcV) + (item 3 of bcV) < bcRight then set bcRight to (item 1 of bcV) + (item 3 of bcV)
+        if (item 2 of bcV) + (item 4 of bcV) < bcBottom then set bcBottom to (item 2 of bcV) + (item 4 of bcV)
+    end if
+    if bcBottom - bcTop < 6 or bcRight - bcLeft < 6 then return missing value
+    return {round ((bcLeft + bcRight) / 2), round ((bcTop + bcBottom) / 2)}
+end visiblePoint
+"""
+
+REPLY_FINISH_ACT = """
+on act(argv)
+    set bcTexts to my tagged(argv, "M")
+    if bcTexts is {} then return "no-text"
+    set bcReply to item 1 of bcTexts
+    set bcFronts to my tagged(argv, "F")
+    if bcFronts is not {} then set bcRestoreTo to item 1 of bcFronts
+    set bcHintBefore to "iMessage"
+    set bcHints to my tagged(argv, "B")
+    if bcHints is not {} then set bcHintBefore to item 1 of bcHints
+    set bcFocusBefore to "AXTextField|messageBodyField"
+    try
+        set bcMenu to missing value
+        repeat 8 times
+            try
+                tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
+            end try
+            if bcMenu is not missing value then exit repeat
+            delay 0.2
+        end repeat
+        if bcMenu is missing value then return "no-menu"
+        set bcTitles to {}
+        try
+            tell application "System Events" to set bcTitles to name of every menu item of bcMenu
+        end try
+        set bcAt to 0
+        repeat with i from 1 to count of bcTitles
+            if bcAt is 0 and (my asText(item i of bcTitles)) starts with "Reply" then set bcAt to i
+        end repeat
+        if bcAt is 0 then
+            my pressEscape()
+            return "no-reply-item"
+        end if
+        tell application "System Events" to click menu item bcAt of bcMenu
+        if not my replyEngaged(bcHintBefore, bcFocusBefore) then
+            my pressEscape()
+            return "no-reply-mode"
+        end if
+        my addTrail("r:right-click")
+    on error bcErrMsg number bcErrNum
+        return "error:" & (bcErrNum as text)
+    end try
+    return my typeReply(bcReply, bcHintBefore, bcFocusBefore)
 end act
 """
 
@@ -2189,7 +2331,11 @@ INSPECT_MAIN += "end run\n"
 MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + EMOJI_PICKER + TAPBACK_ACT)
-REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + MENUS + REPLY_ACT)
+REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + MENUS
+                      + REPLY_TYPING + REPLY_ACT)
+REPLY_AIM_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + MENUS + REPLY_AIM_ACT)
+REPLY_FINISH_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + TEXT_FIELDS + CLIPBOARD + MENUS + REPLY_TYPING
+                            + REPLY_FINISH_ACT)
 COMPOSE_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + TEXT_FIELDS + CLIPBOARD + COMPOSE_ACT)
 INSPECT_SCRIPT = lines(INSPECT_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + MENUS + INSPECT_HANDLERS)
 REPLY_TEST_SCRIPT = lines(USE_APPKIT + REPLY_TEST_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD

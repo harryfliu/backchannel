@@ -390,10 +390,15 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
 - Thread reply (`threadRepliesViaMessages`): when a send (immediate or
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root
-  bubble and start replying: focus and select the bubble's row, then the menu
-  bar's Reply command (on macOS 26.3 the only way that switches Messages into
-  reply mode: the placeholder turns "Reply"); else its "Reply…" action, else
-  its right-click menu's Reply. Reply mode counts only when the text field's
+  bubble and start replying from the bubble's own right-click menu: the script
+  scrolls it into view and reports where it is on screen (`aim:x,y`, Messages
+  stays in front), the server right-clicks there with a real mouse event
+  (`server/mouse.py`, Quartz; the pointer is put back), and a second script
+  chooses "Reply…" in the menu that opened. (On macOS 26.3 the bubble's
+  "Reply…" accessibility action and AXShowMenu do nothing, and the menu bar's
+  Reply is "Reply to Last Message", which always answers the newest message;
+  that one is only used when the right-click couldn't open a menu and the
+  root is the newest message anyway.) Reply mode counts only when the text field's
   placeholder changes or another text field takes the focus (the action alone
   changed an inner group of the entry area while the placeholder stayed
   "iMessage", and the text went out unthreaded); otherwise nothing is typed

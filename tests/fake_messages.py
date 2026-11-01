@@ -27,6 +27,8 @@ class FakeMessages:
             "tapback": Outcome(0, "chosen-overlay", ""),
             "reply": Outcome(0, "sent-paste|shown t0 r:menu", ""),
             "compose": Outcome(0, "sent-paste|shown", ""),
+            "reply-aim": Outcome(0, "aim:400,300|shown t0\nfront\tcom.example.backchannel\nhint\tiMessage", ""),
+            "reply-finish": Outcome(0, "sent-paste|r:right-click", ""),
             "probe": Outcome(0, "ready", ""),
             "inspect": Outcome(0, "", ""),
         }
@@ -54,6 +56,8 @@ class FakeMessages:
             if self.gate is not None:
                 assert self.gate.wait(10)
             effect = self.effects.get(name)
+            if effect is None and name == "reply-finish":
+                effect = self.effects.get("reply")  # the step that types and sends a reply
             if effect is not None:
                 effect(list(argv))
             return self.answers[name]

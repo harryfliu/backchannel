@@ -163,12 +163,15 @@ def test_candidate_names():
 
 SCRIPTS = {"mark-read": MARK_READ_SCRIPT, "tapback": TAPBACK_SCRIPT, "reply": REPLY_SCRIPT, "inspect": INSPECT_SCRIPT,
            "probe": PROBE_SCRIPT, "mark-unread": MARK_UNREAD_SCRIPT,
-           "reply-test": messages_scripts.REPLY_TEST_SCRIPT, "compose": messages_scripts.COMPOSE_SCRIPT}
+           "reply-test": messages_scripts.REPLY_TEST_SCRIPT, "compose": messages_scripts.COMPOSE_SCRIPT,
+           "reply-aim": messages_scripts.REPLY_AIM_SCRIPT, "reply-finish": messages_scripts.REPLY_FINISH_SCRIPT}
 KEYS = {"mark-read": {"key code 53"}, "tapback": {"key code 53"}, "inspect": {"key code 53"}, "probe": set(),
         "mark-unread": {"key code 53"},
         "reply": {"key code 53", "key code 36", "key code 9 using command down"},
         "reply-test": {"key code 53", "key code 36", "key code 9 using command down"},
-        "compose": {"key code 53", "key code 36", "key code 9 using command down"}}
+        "compose": {"key code 53", "key code 36", "key code 9 using command down"},
+        "reply-aim": {"key code 53"},
+        "reply-finish": {"key code 53", "key code 36", "key code 9 using command down"}}
 
 
 def _check_blocks(lines: tuple[str, ...]) -> None:
@@ -298,7 +301,7 @@ def test_only_the_reply_script_puts_text_into_messages():
         writes = re.findall(r"set value of (\w+) to", source)
         attribute_writes = re.findall(r'set value of attribute "(\w+)" of (\w+) to', source)
         clipboard = "set the clipboard to" in source
-        if name == "reply":
+        if name in ("reply", "reply-finish"):
             assert writes == ["bcBox"] and clipboard and attribute_writes == []
         elif name in ("reply-test", "compose"):  # the doctor's reply test (own chat); a link with its preview
             assert writes == [] and clipboard and attribute_writes == []
@@ -307,7 +310,7 @@ def test_only_the_reply_script_puts_text_into_messages():
 
 
 def test_return_is_only_pressed_on_our_own_text():
-    act = messages_scripts.REPLY_ACT
+    act = messages_scripts.REPLY_TYPING
     before_return = act[:act.index("key code 36")]
     assert "if not bcReady then return" in before_return  # the focused field must hold exactly the reply
     assert before_return.rindex("considering case") > before_return.rindex("set bcFocused to my focusedTextField()")
@@ -630,7 +633,9 @@ def test_scripts_open_the_chat_by_title_link_or_sidebar():
 
 
 def test_reply_is_pasted_never_set_and_only_sent_while_still_replying():
-    act = messages_scripts.REPLY_ACT
+    for act in (messages_scripts.REPLY_ACT, messages_scripts.REPLY_FINISH_ACT):
+        assert act.rstrip().endswith("return my typeReply(bcReply, bcHintBefore, bcFocusBefore)\nend act")
+    act = messages_scripts.REPLY_TYPING
     assert "set value of bcBox to bcReply" not in act  # that went out as a regular text on macOS 26.3
     assert "AXSelectedText" not in act  # did nothing on macOS 26.3
     assert act.count("set value of bcBox to") == 1 and 'set value of bcBox to ""' in act  # only to take it back out
@@ -648,7 +653,7 @@ def test_the_clipboard_is_saved_whole_with_appkit():
     assert "pasteboardItems()" in clip and "dataForType:" in clip and "writeObjects:bcSaved" in clip
     assert "clipboard info" not in clip  # nothing is refused for what kind it is any more
     for name, script in SCRIPTS.items():
-        if name not in ("reply", "reply-test", "compose"):
+        if name not in ("reply", "reply-test", "compose", "reply-finish"):
             assert not any(line.startswith("use ") for line in script), name
 
 
@@ -775,3 +780,19 @@ def test_a_link_is_only_sent_from_an_empty_field_holding_it():
     assert "my clipRestore(bcSaved)" in before_return
     assert messages_ui.only_a_link(" https://www.target.com/p/thing ") and messages_ui.only_a_link("www.target.com")
     assert not messages_ui.only_a_link("lunch? https://x.com") and not messages_ui.only_a_link("target.com")
+
+
+def test_older_messages_are_aimed_at_and_answered_from_their_own_menu():
+    """macOS 26.3: the menu bar's Reply is "Reply to Last Message" (always the newest), and the message's
+    "Reply…" action and AXShowMenu do nothing, so the script finds the message and the server
+    right-clicks it (server/mouse.py); Messages stays in front in between."""
+    aim = messages_scripts.REPLY_AIM_ACT
+    assert "set bcKeepFront to true" in aim and 'return "aim:" & ' in aim
+    assert aim.index("set bcKeepFront to true") > aim.index('return "bubble-not-found"')  # only when it found it
+    assert "key code" not in aim and "set the clipboard" not in aim  # it only looks
+    finish = messages_scripts.REPLY_FINISH_ACT
+    assert 'whose role is "AXMenu"' in finish and 'starts with "Reply" then set bcAt to i' in finish
+    assert finish.index("my replyEngaged(bcHintBefore, bcFocusBefore)") < finish.index("return my typeReply(")
+    run = messages_scripts.RUN
+    assert "if not bcKeepFront then my restoreFront(bcPrevApp)" in run
+    assert "if bcRestoreTo is not \"\" then set bcPrevApp to bcRestoreTo" in run

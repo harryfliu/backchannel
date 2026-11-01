@@ -33,13 +33,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import fakedb
+from . import fakedb, mouse
 from . import heuristics as H
 from .chatdb import ChatDB, ChatDBError, NOT_REACTION_SQL
 from .conversations import Conv, NotFound, conv_title, message_text
 from .handles import format_handle
 from .linkpreview import URL_BALLOON
-from .messages_scripts import (COMPOSE_SCRIPT, INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT,
+from .messages_scripts import (COMPOSE_SCRIPT, INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT,
+                               REPLY_AIM_SCRIPT, REPLY_FINISH_SCRIPT, REPLY_SCRIPT,
                                REPLY_TEST_SCRIPT, TAPBACK_SCRIPT)
 from .state import State
 from .timeutil import iso
@@ -433,6 +434,7 @@ class ReplyJob:
     bubble: Bubble
     root_chat_id: int | None = None
     root_text: str = ""
+    root_is_newest: bool = False  # Messages' "Reply to Last Message" answers it; older ones need a right-click
     state: str = "queued"  # queued | running | done | cancelled
     ran_script: bool = False
     result: ReplyResult | None = None
@@ -675,6 +677,7 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "no-reply-field": ("granted", "Messages didn't open its reply field.", "nothing"),
     "no-reply-mode": ("granted", "Messages didn't switch to replying to that message, so nothing was sent.",
                       "nothing"),
+    "not-visible": ("granted", "The message you're replying to isn't in view in Messages.", "nothing"),
     "field-busy": ("granted", "Messages' reply field already had text in it.", "nothing"),
     "clipboard-busy": ("granted", "The clipboard holds an image or a file, so Backchannel didn't paste your "
                        "reply.", "nothing"),
@@ -780,6 +783,10 @@ class MessagesUI:
         self.contacts = contacts
         self.check_after = check_after
         self.verify_seconds = VERIFY_SECONDS
+        # A real right-click opens an older message's own menu (server/mouse.py); tests swap these.
+        self.can_click: Callable[[], bool] = mouse.available
+        self.right_click: Callable[[float, float], tuple[float, float] | None] = mouse.right_click
+        self.move_pointer: Callable[[float, float], None] = mouse.move
         self._jobs: queue.PriorityQueue[tuple[int, int, Any]] = queue.PriorityQueue()
         self._order = itertools.count()
         self._queued: set[tuple] = set()
@@ -972,7 +979,8 @@ class MessagesUI:
         return ReplyJob(client_id, conv.id, title, names, loose, list(conv.chat_ids), root_id, text,
                         self.bubble_for(conv, message), root_chat_id=row["chat_id"],
                         root_text=message.get("text") or "", links=[link] if link else [],
-                        members=self._members(conv))
+                        members=self._members(conv),
+                        root_is_newest=not self._newer_than_root(conv, root_id, message.get("text") or ""))
 
     def compose_job(self, conv: Conv, text: str, client_id: str) -> ComposeJob:
         title, names, loose = self._names(conv)
@@ -1272,9 +1280,15 @@ class MessagesUI:
             self.simulator.reply(job)
             interp = Interp(None, "Sent as a reply in Messages.", "done", "simulated")
         else:
-            job.ran_script = True
-            outcome = self.runner(REPLY_SCRIPT, job.argv(), REPLY_TIMEOUT)
-            interp = interpret_reply(outcome, job.title)
+            # Every reply aims at its own message with a right-click (Harry: "i want it to pick the right
+            # one"). Only if that couldn't start and the root is the newest message anyway, the menu
+            # bar's "Reply to Last Message" (which always answers the newest).
+            interp = self._reply_by_right_click(job)
+            if interp.state == "nothing" and job.root_is_newest:
+                log.info("Reply in Messages: right-click didn't start (%s); newest message, menu bar instead", interp.code)
+                job.ran_script = True
+                outcome = self.runner(REPLY_SCRIPT, job.argv(), REPLY_TIMEOUT)
+                interp = interpret_reply(outcome, job.title)
             if interp.state == "nothing":
                 self._record(interp, interp.sentence, "Reply")
                 return ReplyResult("nothing", interp.sentence)
@@ -1302,20 +1316,65 @@ class MessagesUI:
                 self.note_reply_proof(False)
         return result
 
+    def _reply_by_right_click(self, job: ReplyJob) -> Interp:
+        """Older messages: find it and get its place on screen (Messages stays in front), right-click
+        there, then choose Reply… in its menu and send (REPLY_AIM / REPLY_FINISH)."""
+        if not self.can_click():
+            return Interp(None, "Backchannel can't click in Messages on this Mac.", "nothing", "no-click")
+        aimed = self.runner(REPLY_AIM_SCRIPT, ["reply-aim", *job.argv()[1:]], REPLY_TIMEOUT)
+        first, _, rest = aimed.stdout.strip().partition("\n")
+        code, trail = _split(Outcome(aimed.returncode, first, aimed.stderr, aimed.timed_out))
+        point = re.fullmatch(r"aim:(-?\d{1,6}),(-?\d{1,6})", code)
+        if point is None:  # nothing happened in Messages yet: say why
+            interp = interpret_reply(aimed, job.title)
+            if interp.state != "nothing":  # a timeout or an odd answer while only looking: still nothing typed
+                interp = Interp(interp.permission, interp.sentence, "nothing", interp.code)
+            return interp
+        extras = dict(line.split("\t", 1) for line in rest.splitlines() if "\t" in line)
+        front = extras.get("front", "")
+        hint = (extras.get("hint") or "iMessage").split("\t")[0] or "iMessage"
+        x, y = float(point.group(1)), float(point.group(2))
+        try:
+            before = self.right_click(x, y)
+        except OSError as exc:
+            log.info("Right-click failed: %s", exc)
+            return Interp(None, "Backchannel couldn't click in Messages.", "nothing", "click-failed")
+        time.sleep(0.5)
+        job.ran_script = True
+        try:
+            outcome = self.runner(REPLY_FINISH_SCRIPT, ["reply-finish", f"M:{job.text}", f"B:{hint}",
+                                                        *([f"F:{front}"] if re.fullmatch(r"[\w.-]{1,120}", front) else [])],
+                                  REPLY_TIMEOUT)
+        finally:
+            if before is not None:
+                try:
+                    self.move_pointer(*before)
+                except OSError:
+                    pass
+        interp = interpret_reply(outcome, job.title)
+        interp.code = (f"{interp.code} [aim {trail}]" if trail else interp.code)
+        return interp
+
     def _has_newer(self, job: ReplyJob, reply_guid: str) -> bool:
-        """Something other than the reply itself (and copies of the root, as a self-chat shows) is newer
-        than the root."""
         try:
             conv = self.convs.get(job.conversation_id)
-            recent = self.builder.recent(conv, 30)
-        except (LookupError, ChatDBError):
+        except LookupError:
             return False
+        return self._newer_than_root(conv, job.root_id, job.root_text, ignore=reply_guid)
+
+    def _newer_than_root(self, conv: Conv, root_id: str, root_text: str, ignore: str | None = None) -> bool:
+        """Something is newer than the root (besides `ignore` and copies of the root, as a self-chat
+        shows): then "Reply to Last Message" would answer the wrong message."""
+        try:
+            recent = self.builder.recent(conv, 30)
+        except ChatDBError:
+            return True
         ids = [m["id"] for m in recent]
-        if job.root_id not in ids:
+        if root_id not in ids:
             return True  # the root is older than the last 30 messages
-        root_text = _norm(job.root_text)
-        newer = recent[ids.index(job.root_id) + 1:]
-        return any(m["id"] != reply_guid and _norm(m.get("text") or "") != root_text for m in newer)
+        text = _norm(root_text)
+        newer = recent[ids.index(root_id) + 1:]
+        return any(m["id"] != ignore and _norm(m.get("text") or "") != text for m in newer)
 
     # ------------------------------------------------------------------ links with their preview
 

@@ -18,6 +18,7 @@ import pytest
 
 from fake_messages import FakeMessages, chat_of, tagged, write_reply, write_tapback
 from server import fakedb
+from server.messages_scripts import REPLY_AIM_SCRIPT, REPLY_FINISH_SCRIPT
 from server.messages_ui import (DENIED_TEXT, REPLY_SCRIPT, REPLY_TIMEOUT, TAPBACK_SCRIPT, TAPBACK_TIMEOUT, TAPBACKS_OFF,
                                 Outcome)
 from server.sending import REPLY_DONE, REPLY_UNCONFIRMED
@@ -82,6 +83,10 @@ def fake_rw(make_rw):
     rw.services.messages_ui.verify_seconds = 1.0
     turn_on(rw, tapbacksViaMessages=True, threadRepliesViaMessages=True)
     rw.services.messages_ui.note_reply_proof(True)  # most tests reply to other people (see the gate test)
+    rw.clicks = []  # right-clicks a reply asked for (server/mouse.py on a Mac)
+    rw.services.messages_ui.can_click = lambda: True
+    rw.services.messages_ui.right_click = lambda x, y: rw.clicks.append((x, y)) or (1.0, 2.0)
+    rw.services.messages_ui.move_pointer = lambda x, y: None
     rw.fake = fake
     rw.prime = rw.services.watcher.prime
     rw.services.watcher.prime()
@@ -247,10 +252,14 @@ def test_thread_reply_goes_through_messages(fake_rw, sends):
     assert done == {"type": "ui-action", "action": "reply", "conversationId": SOCCER, "messageId": root,
                     "clientId": "r-1", "result": "done", "detail": REPLY_DONE}
     assert sends == []  # never sent the AppleScript way too
-    name, script, argv, timeout = fake.calls[-1]
-    assert (name, script, timeout) == ("reply", REPLY_SCRIPT, REPLY_TIMEOUT)
-    assert argv[-1] == "M:in! bringing the pump" and argv[1] == "L:Sunday Soccer ⚽"
-    assert "pump" not in "\n".join(script)
+    # Harry's Mac: "Reply to Last Message" answered the newest message, so every reply now aims at its
+    # own: find it (reply-aim), right-click it, choose Reply… in its menu and send (reply-finish).
+    (aim_name, aim_script, aim_argv, _), (name, script, argv, timeout) = fake.calls[-2:]
+    assert (aim_name, aim_script) == ("reply-aim", REPLY_AIM_SCRIPT) and aim_argv[1] == "L:Sunday Soccer ⚽"
+    assert (name, script, timeout) == ("reply-finish", REPLY_FINISH_SCRIPT, REPLY_TIMEOUT)
+    assert argv == ["reply-finish", "M:in! bringing the pump", "B:iMessage", "F:com.example.backchannel"]
+    assert rw.clicks == [(400.0, 300.0)]
+    assert "pump" not in "\n".join(script) and "pump" not in "\n".join(aim_script)
     message = rw.services.builder.by_guid(sent[0]["messageId"])
     assert message["threadRootId"] == root and message["clientId"] == "r-1"
 
@@ -260,7 +269,7 @@ def test_reply_that_cant_be_typed_fails_instead_of_going_out_as_a_regular_text(f
     # is sent; the reply fails with the reason, and the UI offers "Send as a regular text" (regularText).
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
-    fake.answers["reply"] = Outcome(0, "no-reply-item", "")
+    fake.answers["reply-finish"] = Outcome(0, "no-reply-item", "")
     rw.post(send_url(SOCCER), {"text": "count me in", "clientId": "r-2", "threadRootId": root})
     action = wait_for(rw, ui_action("reply", clientId="r-2"))
     assert action["result"] == "failed" and action["detail"].startswith("Not sent as a reply: ")
@@ -272,13 +281,13 @@ def test_reply_that_cant_be_typed_fails_instead_of_going_out_as_a_regular_text(f
     sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "r-2b"])[0]
     assert sent["status"] == "sent" and len(sends) == 1
     assert rw.services.builder.by_guid(sent["messageId"])["threadRootId"] == root  # still threaded locally
-    assert fake.names() == ["reply"]  # Messages' Reply was only tried the first time
+    assert fake.names() == ["reply-aim", "reply-finish"]  # Messages' Reply was only tried the first time
 
 
 def test_typed_but_unconfirmed_reply_is_never_sent_twice(fake_rw, sends):
     rw, fake = fake_rw, fake_rw.fake
     root = rw.guid("soc_root")
-    fake.answers["reply"] = Outcome(0, "returned-unconfirmed", "")  # Return was pressed; no row (yet)
+    fake.answers["reply-finish"] = Outcome(0, "returned-unconfirmed", "")  # Return was pressed; no row (yet)
     rw.post(send_url(SOCCER), {"text": "on my way", "clientId": "r-3", "threadRootId": root})
     failed = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "r-3"])[0]
     assert failed["status"] == "failed" and failed["error"] == REPLY_UNCONFIRMED
@@ -287,7 +296,7 @@ def test_typed_but_unconfirmed_reply_is_never_sent_twice(fake_rw, sends):
     assert sends == []
     # Same clientId again (a retry): still never a second copy.
     assert rw.post(send_url(SOCCER), {"text": "on my way", "clientId": "r-3", "threadRootId": root})["status"] == "queued"
-    assert rw.services.messages_ui.wait_idle(5) and fake.names() == ["reply"] and sends == []
+    assert rw.services.messages_ui.wait_idle(5) and fake.names() == ["reply-aim", "reply-finish"] and sends == []
     # Messages sends it after all: the row is still matched to the clientId.
     write_reply(rw.settings.chat_db, root, "on my way")
     later = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "r-3"
@@ -300,7 +309,7 @@ def test_typing_errors_count_as_maybe_sent(fake_rw, sends):
     root = rw.guid("soc_root")
     for i, outcome in enumerate([Outcome(-1, "", "", timed_out=True), Outcome(0, "error-late:-1728", ""),
                                  Outcome(1, "", "osascript: something odd"), Outcome(0, "typed-unknown", "")]):
-        fake.answers["reply"] = outcome
+        fake.answers["reply-finish"] = outcome
         rw.post(send_url(SOCCER), {"text": f"maybe {i}", "clientId": f"m-{i}", "threadRootId": root})
         status = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == f"m-{i}"])[0]
         assert status["status"] == "failed" and status["error"] == REPLY_UNCONFIRMED, outcome
@@ -313,7 +322,7 @@ def test_nothing_typed_answers_all_fail_without_sending(fake_rw, sends):
     answers = ["not-running", "row-not-found", "not-selected", "bubble-not-found", "no-menu", "no-reply-field",
                "no-reply-mode", "field-busy", "clipboard-busy", "nothing-typed", "error:-1719"]
     for i, answer in enumerate(answers):
-        fake.answers["reply"] = Outcome(0, answer, "")
+        fake.answers["reply-finish"] = Outcome(0, answer, "")
         rw.post(send_url(SOCCER), {"text": f"plain {i}", "clientId": f"p-{i}", "threadRootId": root})
         action = wait_for(rw, ui_action("reply", clientId=f"p-{i}"))
         assert action["result"] == "failed", answer
@@ -328,7 +337,7 @@ def test_scheduled_thread_reply_goes_through_messages(fake_rw, sends):
                                           "sendAt": "2031-01-01T09:00:00Z"})
     rw.services.state._exec("UPDATE scheduled SET send_at = ? WHERE id = ?", (time.time() - 1, response["scheduledId"]))
     asyncio.run(rw.services.sending.run_due())
-    assert fake.names() == ["reply"] and sends == []
+    assert fake.names() == ["reply-aim", "reply-finish"] and sends == []
     assert rw.get("/api/scheduled")["items"][0]["status"] == "sent"
     assert wait_for(rw, ui_action("reply", clientId="s-r"))["result"] == "done"
 
@@ -621,3 +630,25 @@ def test_a_link_messages_couldnt_take_goes_the_normal_way(fake_rw, sends):
     rw.post(send_url(JORDAN), {"text": LINK, "clientId": "l-4"})
     sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "l-4"])
     assert sent[0]["status"] == "sent" and len(sends) == 1  # the link still went, just without a preview
+
+
+def test_a_reply_that_cant_be_aimed_types_nothing(fake_rw, sends):
+    rw, fake = fake_rw, fake_rw.fake
+    root = rw.guid("soc_root")
+    fake.answers["reply-aim"] = Outcome(0, "bubble-not-found|shown b6/0/0", "")
+    rw.post(send_url(SOCCER), {"text": "where?", "clientId": "a-1", "threadRootId": root})
+    action = wait_for(rw, ui_action("reply", clientId="a-1"))
+    assert action["result"] == "failed" and action["detail"].startswith("Not sent as a reply: Couldn't find")
+    assert fake.names() == ["reply-aim"] and rw.clicks == [] and sends == []
+
+
+def test_the_newest_message_falls_back_to_reply_to_last_message(fake_rw, sends):
+    """When the right-click couldn't open a menu, the menu bar's Reply is still right for the newest."""
+    rw, fake = fake_rw, fake_rw.fake
+    mine = rw.get(f"/api/conversations/{SELF}/messages")["messages"][-1]["id"]  # the only (newest) one
+    fake.answers["reply-finish"] = Outcome(0, "no-menu", "")
+    fake.effects["reply-finish"] = lambda argv: None
+    fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, mine, tagged(argv, "M")[0])
+    rw.post(send_url(SELF), {"text": "noted", "clientId": "n-1", "threadRootId": mine})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "n-1"])
+    assert sent[0]["status"] == "sent" and fake.names() == ["reply-aim", "reply-finish", "reply"]

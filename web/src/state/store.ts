@@ -388,11 +388,27 @@ function onEvent(e: ServerEvent) {
         const ms = s.messages[m.conversationId]
         const out: Partial<State> = {}
         if (ms) out.messages = { ...s.messages, [m.conversationId]: { ...ms, items: replaceMessage(ms.items, m) } }
+        const threads = { ...s.threads }
+        let touched = false
         if (m.threadRootId) {
           const k = threadKey(m.conversationId, m.threadRootId)
-          const t = s.threads[k]
-          if (t) out.threads = { ...s.threads, [k]: { ...t, replies: replaceMessage(t.replies, m) } }
+          const t = threads[k]
+          if (t) {
+            threads[k] = { ...t, replies: replaceMessage(t.replies, m) }
+            touched = true
+          }
         }
+        // A reply that landed under another message (or none) leaves its "Sending…" copy elsewhere:
+        // drop it there, the real one shows where it really is.
+        if (m.clientId) {
+          const local = `local:${m.clientId}`
+          for (const [k, t] of Object.entries(threads)) {
+            if (k === threadKey(m.conversationId, m.threadRootId ?? '') || !t.replies.some((r) => r.id === local)) continue
+            threads[k] = { ...t, replies: t.replies.filter((r) => r.id !== local) }
+            touched = true
+          }
+        }
+        if (touched) out.threads = threads
         return out
       })
       break
