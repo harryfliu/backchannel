@@ -797,3 +797,73 @@ def test_older_messages_are_aimed_at_and_answered_from_their_own_menu():
     run = messages_scripts.RUN
     assert "if not bcKeepFront then my restoreFront(bcPrevApp)" in run
     assert "if bcRestoreTo is not \"\" then set bcPrevApp to bcRestoreTo" in run
+
+
+def test_the_menu_is_found_in_the_window_and_the_click_aims_where_nothing_covers_the_chat():
+    """Harry's Mac (macOS 26.3): the right-click opened the message's menu, but as an AXMenu in the
+    window's content group, not one of the app's elements, so it went unseen ("no-menu"). And the
+    toolbar, title, entry area and sidebar float over the transcript, so the point is kept off them."""
+    menus = messages_scripts.MENUS
+    find = menus[menus.index("on findMenu("):menus.index("end findMenu")]
+    assert "set bcMenu to menu 1 of UI element 1 of bcWin" in find
+    assert find.index("menu 1 of UI element 1 of bcWin") < find.index('whose role is "AXMenu"')
+    finish = messages_scripts.REPLY_FINISH_ACT
+    no_menu = finish[finish.index("if bcMenu is missing value then\n"):finish.index('return "no-menu"')]
+    assert "my pressEscape()" in no_menu and "my contentRoles(bcWin)" in no_menu  # a second click can't hit it
+    aim = messages_scripts.REPLY_AIM_ACT
+    assert "set bcArea to my freeArea(bcWin, bcTranscript, bcList, bcEntry)" in aim
+    assert aim.index("set bcArea to my freeArea(") < aim.index("set bcPoint to my visiblePoint(bcBubble, bcArea)")
+    free = aim[aim.index("on freeArea("):aim.index("end freeArea")]
+    for cover in ("toolbar 1 of bcWin", "my spotTitle(bcWin)", "my frameOf(bcEntry)", "my rightEdge(bcList)"):
+        assert cover in free, cover
+    assert '"box" & tab & my joinWith(my frameOf(bcBubble), ",")' in aim and '"pid" & tab' in aim
+
+
+def test_a_thread_left_open_is_closed_and_never_with_a_draft():
+    """After a reply Messages keeps that thread open: only the thread shows (so nothing else can be
+    found) and its field goes on replying in it (a link pasted next would go there). Closed with
+    Escape, before looking for a message or pasting a link and right after a reply is sent."""
+    sidebar = messages_scripts.SIDEBAR
+    leave = sidebar[sidebar.index("on leaveThread("):sidebar.index("end leaveThread")]
+    assert 'my attrText(bcField, "AXPlaceholderValue") starts with "Reply"' in leave
+    assert leave.index('if my asText(bcDraft) is not "" then return') < leave.index("my pressEscape()")
+    for act in (messages_scripts.TAPBACK_ACT, messages_scripts.REPLY_ACT, messages_scripts.REPLY_AIM_ACT):
+        assert act.index("set bcTranscript to my leaveThread(bcWin, bcTranscript)") < act.index("my locateBubble(")
+    compose = messages_scripts.COMPOSE_ACT
+    assert compose.index("my leaveThread(bcWin, my spotTranscript(bcWin))") < compose.index("my setClip(")
+    typing = messages_scripts.REPLY_TYPING
+    assert typing.index("key code 36") < typing.index("my leaveThread(") < typing.index('return "sent-" & bcHow')
+
+
+def test_a_bubble_is_checked_again_right_before_its_used_and_the_chat_pages_itself():
+    """System Events finds elements by their place among the transcript's items, which shift while
+    Messages scrolls or loads (Harry's Mac: a reply went to the message next to the one aimed at).
+    And paging the first item stalled on a time header, so the transcript itself is paged."""
+    bubbles = messages_scripts.BUBBLES
+    check = bubbles[bubbles.index("on stillTheMessage("):bubbles.index("end stillTheMessage")]
+    assert "my matchesBubble(bcLabel, bcNeedles, bcExacts)" in check and "my mentionsAny(bcLabel, bcTimes)" in check
+    aim = messages_scripts.REPLY_AIM_ACT
+    first = aim.index("set bcBubble to my checkedBubble(")
+    assert first < aim.index('if not my hasAction(bcBubble, {"Reply"}) then return "no-reply-item"')
+    assert aim.index("AXScrollToVisible") < aim.rindex("set bcBubble to my checkedBubble(") < \
+        aim.index("set bcPoint to my visiblePoint(bcBubble, bcArea)")
+    assert 'if bcBubble is missing value then return "bubble-moved"' in aim
+    tapback = messages_scripts.TAPBACK_ACT
+    assert tapback.index("set bcBubble to my checkedBubble(") < tapback.index("my customAction(bcBubble, bcSynonyms)")
+    for handler in ("on locateBubble(", "on transcriptEnd("):
+        body = bubbles[bubbles.index(handler):]
+        body = body[:body.index("\nend ")]
+        assert "my pageTranscript(bcTranscript," in body and "my pageList(" not in body, handler
+    assert {"bubble-moved"} <= set(messages_ui.REPLY_ANSWERS) & set(messages_ui.TAPBACK_ANSWERS)
+
+
+def test_a_replys_quote_of_its_message_is_never_taken_for_the_message():
+    """macOS 26.3 shows each reply with a quote of the message it answers ("Harry Liu, Reply Preview,
+    Todo: wash bed sheets, 8:09 AM"): same text and minute, no tapbacks. Harry's Mac: a tapback found
+    the quote first and answered no-tapback-item."""
+    bubbles = messages_scripts.BUBBLES
+    match = bubbles[bubbles.index("on matchesBubble("):bubbles.index("end matchesBubble")]
+    assert match.index('if bcLabel contains ", Reply Preview, " then return false') < match.index("repeat with bcN")
+    for handler in ("on timedIndex(", "on findBubble(", "on stillTheMessage("):
+        body = bubbles[bubbles.index(handler):]
+        assert "my matchesBubble(bcLabel, bcNeedles, bcExacts)" in body[:body.index("\nend ")], handler

@@ -79,6 +79,7 @@ DRY_RUN_TEXT = "Backchannel is in dry-run mode, so it doesn't drive the Messages
 TAPBACKS_OFF = "Sending tapbacks is off. Turn it on in Settings › Messages helpers."
 TAPBACK_UNCONFIRMED = "Messages didn't confirm the tapback."
 REPLY_UNCONFIRMED = "Messages didn't confirm your reply. Check Messages before you try again."
+TWIN_NANOSECONDS = 3_000_000_000  # a self-chat's sent and received copies of one message: ≤ 3 s apart
 # Real replies to other people wait until one has threaded on this Mac (in the user's own chat).
 REPLY_PROOF_KEY = "reply_proof_v2"  # v1 came from a test reply to the newest message: proved nothing about aiming
 REPLY_UNPROVEN = ("real replies haven't worked on this Mac yet. Reply in a thread to an older message in your own "
@@ -652,6 +653,8 @@ TAPBACK_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
     "not-selected": ("granted", "Couldn't open {title} in Messages.", "nothing"),
     "bubble-not-found": ("granted", "Couldn't find that message in Messages, even after scrolling up.", "nothing"),
+    "bubble-moved": ("granted", "That message moved in Messages before Backchannel could reach it, so the tapback "
+                     "wasn't sent.", "nothing"),
     "no-menu": ("granted", "Messages didn't open a menu for that message.", "nothing"),
     "no-tapback-item": ("granted", "Messages didn't offer that tapback.", "nothing"),
     "no-tapback-button": ("granted", "Messages didn't offer that tapback.", "nothing"),
@@ -679,6 +682,8 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
     "not-selected": ("granted", "Couldn't open {title} in Messages.", "nothing"),
     "bubble-not-found": ("granted", "Couldn't find the message you're replying to in Messages.", "nothing"),
+    "bubble-moved": ("granted", "The message you're replying to moved in Messages before Backchannel could click it.",
+                     "nothing"),
     "no-menu": ("granted", "Messages didn't open a menu for that message.", "nothing"),
     "no-reply-item": ("granted", "Messages didn't offer Reply for that message.", "nothing"),
     "no-reply-field": ("granted", "Messages didn't open its reply field.", "nothing"),
@@ -796,6 +801,8 @@ class MessagesUI:
         self.move_pointer: Callable[[float, float], None] = mouse.move
         self.control_click: Callable[[float, float], tuple[float, float] | None] = mouse.control_click
         self.pointer_now: Callable[[], tuple[float, float] | None] = mouse.pointer
+        self.element_at: Callable[[float, float], tuple[int, tuple[float, float, float, float] | None] | None] = \
+            mouse.element_at
         self._jobs: queue.PriorityQueue[tuple[int, int, Any]] = queue.PriorityQueue()
         self._order = itertools.count()
         self._queued: set[tuple] = set()
@@ -1178,12 +1185,15 @@ class MessagesUI:
 
     # ------------------------------------------------------------------ tapbacks
 
-    def current_tapback(self, message_id: str) -> tuple[str, str | None] | None:
-        """Your tapback on this message right now, from chat.db: (kind, emoji for an emoji one)."""
-        message = self.builder.by_guid(message_id)
-        for reaction in (message or {}).get("reactions", []):
-            if "me" in reaction["from"] and (reaction["kind"] in TAPBACK_KINDS or reaction["kind"] == EMOJI_KIND):
-                return reaction["kind"], (reaction.get("emoji") if reaction["kind"] == EMOJI_KIND else None)
+    def current_tapback(self, message_id: str, conversation_id: str | None = None) -> tuple[str, str | None] | None:
+        """Your tapback on this message right now, from chat.db: (kind, emoji for an emoji one). In
+        your own chat, on either copy of it."""
+        copies = self.copies_of(conversation_id, message_id) if conversation_id else [message_id]
+        for guid in copies:
+            message = self.builder.by_guid(guid)
+            for reaction in (message or {}).get("reactions", []):
+                if "me" in reaction["from"] and (reaction["kind"] in TAPBACK_KINDS or reaction["kind"] == EMOJI_KIND):
+                    return reaction["kind"], (reaction.get("emoji") if reaction["kind"] == EMOJI_KIND else None)
         return None
 
     @staticmethod
@@ -1198,13 +1208,17 @@ class MessagesUI:
         else:
             want = (3000 if job.remove else 2000) + TAPBACK_KINDS.index(job.kind)
         fields = ("associated_message_type", "associated_message_emoji")
+        # In your own chat either copy of the message counts, and so do the received-side rows: both
+        # sides are you (Harry's Mac: a removed tapback left only the received-side row).
+        targets = self.copies_of(job.conversation_id, job.message_id)
+        own_chat = self._is_self(job.conversation_id)
+        pointing = " OR ".join(["m.associated_message_guid = ? OR m.associated_message_guid LIKE ?"] * len(targets))
         deadline = time.monotonic() + self.verify_seconds
         while True:
             rows = self.db.query(
                 f"""SELECT {self.db.message_select(fields=fields)} FROM message m
-                   WHERE m.ROWID > ? AND m.is_from_me = 1
-                     AND (m.associated_message_guid = ? OR m.associated_message_guid LIKE ?)""",
-                (start, "bp:" + job.message_id, "p:%/" + job.message_id),
+                   WHERE m.ROWID > ? {"" if own_chat else "AND m.is_from_me = 1"} AND ({pointing})""",
+                (start, *[p for t in targets for p in ("bp:" + t, "p:%/" + t)]),
             )
             for r in rows:
                 if r["associated_message_type"] != want:
@@ -1224,7 +1238,7 @@ class MessagesUI:
         if not self.tapbacks_on:
             return answer("failed", TAPBACKS_OFF)
         try:
-            current = self.current_tapback(job.message_id)
+            current = self.current_tapback(job.message_id, job.conversation_id)
             start = self.db.max_rowid()
         except ChatDBError as exc:
             return answer("failed", str(exc))
@@ -1308,7 +1322,7 @@ class MessagesUI:
         if row is None:
             result = ReplyResult("unconfirmed", REPLY_UNCONFIRMED)
             interp.code += ", not in chat.db"
-        elif row["thread_originator_guid"] == job.root_id:
+        elif self._is_root(job, row["thread_originator_guid"]):
             result = ReplyResult("done", "Sent as a reply in Messages.", row["guid"])
             interp.code += ", verified"
         elif row["thread_originator_guid"]:
@@ -1328,9 +1342,26 @@ class MessagesUI:
                 self.note_reply_proof(False)
         return result
 
+    def _covered(self, x: float, y: float, box: list[float] | None, pid: int | None) -> str | None:
+        """Why a click at (x, y) wouldn't land on the message, or None: what's under the point has to
+        belong to Messages and lie inside the message's frame (`box`: left, top, width, height)."""
+        hit = self.element_at(x, y)
+        if hit is None:
+            return "hit-unknown"
+        owner, frame = hit
+        if pid and owner != pid:
+            return "covered"
+        if box and frame:
+            left, top, width, height = box
+            fx, fy, fw, fh = frame
+            if fx < left - 3 or fy < top - 3 or fx + fw > left + width + 3 or fy + fh > top + height + 3:
+                return "off-bubble"
+        return None
+
     def _reply_by_right_click(self, job: ReplyJob) -> Interp:
-        """Older messages: find it and get its place on screen (Messages stays in front), right-click
-        there, then choose Reply… in its menu and send (REPLY_AIM / REPLY_FINISH)."""
+        """Older messages: find it and get its place on screen (Messages stays in front), check that
+        the point is that message in Messages, right-click there, then choose Reply… in its menu and
+        send (REPLY_AIM / REPLY_FINISH)."""
         if not self.can_click():
             return Interp(None, "Backchannel can't click in Messages on this Mac.", "nothing", "no-click")
         aimed = self.runner(REPLY_AIM_SCRIPT, ["reply-aim", *job.argv()[1:]], REPLY_TIMEOUT)
@@ -1348,6 +1379,8 @@ class MessagesUI:
         extras = dict(line.split("\t", 1) for line in rest.splitlines() if "\t" in line)
         front = extras.get("front", "")
         hint = (extras.get("hint") or "iMessage").split("\t")[0] or "iMessage"
+        box = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", extras.get("box", ""))]
+        pid = int(extras["pid"]) if re.fullmatch(r"\d{1,9}", extras.get("pid", "")) else None
         x, y = float(point.group(1)), float(point.group(2))
         finish_argv = ["reply-finish", f"M:{job.text}", f"B:{hint}",
                        *([f"F:{front}"] if re.fullmatch(r"[\w.-]{1,120}", front) else [])]
@@ -1356,8 +1389,14 @@ class MessagesUI:
         try:
             outcome = None
             # A right-click, then (if no menu showed up) a Control-click: both are how macOS opens a
-            # context menu. Nothing is typed until a menu's Reply… is chosen, so a second try is safe.
+            # context menu. Nothing is typed until a menu's Reply… is chosen, and the finish script
+            # presses Escape when it sees no menu, so a second try is safe. Each click only goes ahead
+            # when the point is the message, in Messages (not a window in front of it).
             for click, name in ((self.right_click, "right"), (self.control_click, "ctrl")):
+                why = self._covered(x, y, box if len(box) == 4 else None, pid)
+                if why:
+                    notes.append(f"{name}:{why}")
+                    break
                 try:
                     was = click(x, y)
                 except OSError as exc:
@@ -1379,10 +1418,51 @@ class MessagesUI:
                 except OSError:
                     pass
         if outcome is None:
+            if any(n.endswith(("covered", "off-bubble", "hit-unknown")) for n in notes):
+                return Interp(None, "Something was in front of that message in Messages, so Backchannel didn't "
+                              "click it.", "nothing", f"not-clicked [aim {trail}; {' '.join(notes)}]")
             return Interp(None, "Backchannel couldn't click in Messages.", "nothing", "click-failed " + " ".join(notes))
         interp = interpret_reply(outcome, job.title)
         interp.code = f"{interp.code} [aim {trail}; {' '.join(notes)}]"
         return interp
+
+    def _conv(self, conversation_id: str) -> Conv | None:
+        try:
+            return self.convs.get(conversation_id) if self.convs is not None else None
+        except LookupError:
+            return None
+
+    def _is_self(self, conversation_id: str) -> bool:
+        conv = self._conv(conversation_id)
+        return bool(conv is not None and conv.is_self)
+
+    def copies_of(self, conversation_id: str, guid: str) -> list[str]:
+        """The message's guid and, in your own chat, its other copy. chat.db keeps every message
+        there twice (sent and received: other guids, same text, same second or the next), Messages
+        shows both, and a reply or tapback lands on whichever copy was used."""
+        conv = self._conv(conversation_id)
+        if conv is None or not conv.is_self:
+            return [guid]
+        rows = [r for r in self.db.messages_by_guid([guid]) if r["chat_id"] in conv.chat_ids]
+        if not rows:
+            return [guid]
+        row = rows[0]
+        marks = ",".join("?" * len(conv.chat_ids))
+        fields = ("guid", "text", "attributedBody", "is_from_me")
+        near = self.db.query(
+            f"""SELECT {self.db.message_select(fields=fields)} FROM message m
+                JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+                WHERE cmj.chat_id IN ({marks}) AND m.date BETWEEN ? AND ? AND m.is_from_me != ?
+                  AND m.associated_message_type = 0""",
+            (*conv.chat_ids, (row["date"] or 0) - TWIN_NANOSECONDS, (row["date"] or 0) + TWIN_NANOSECONDS,
+             1 if row["is_from_me"] else 0),
+        )
+        text = _norm(message_text(row))
+        return [guid, *[r["guid"] for r in near if _norm(message_text(r)) == text]]
+
+    def _is_root(self, job: ReplyJob, guid: str | None) -> bool:
+        """The reply's thread root is the message replied to (either copy, in your own chat)."""
+        return bool(guid) and (guid == job.root_id or guid in self.copies_of(job.conversation_id, job.root_id))
 
     def _has_newer(self, job: ReplyJob, reply_guid: str) -> bool:
         try:

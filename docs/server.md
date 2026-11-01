@@ -238,7 +238,7 @@ turned on in Settings › Messages helpers (`PATCH /api/settings`):
 |---|---|---|
 | `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: find the conversation's row in Messages' list (scrolling to it if needed, then back) and use its "Mark as Read" action | 3 s later the messages that were unread are read |
 | `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: open the chat (see below), find the bubble, use its action for the tapback ("Heart", "Thumbs up"…) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
-| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): open the chat, bring Messages forward, find the root bubble, use its "Reply…" action, check the reply field opened, paste the text, press Return | within ~5 s your row with the same text and `thread_originator_guid` = the root |
+| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): open the chat, bring Messages forward, find the root bubble, right-click it (a real click, `server/mouse.py`), choose "Reply…" in its menu, check the reply field opened, paste the text, press Return, close the thread Messages leaves open | within ~5 s your row with the same text and `thread_originator_guid` = the root (in your own chat, either copy of it) |
 
 **Permissions.** Two macOS prompts, both for the app that runs the server
 (Backchannel.app, or your terminal): *Accessibility* (System Settings › Privacy
@@ -306,25 +306,54 @@ mode (see below).
   "Sticker"…). The label must also show the minute it was sent (" 1:37" or
   " 13:37", 12- and 24-hour clocks; the leading space keeps " 1:37" from
   matching "11:37"); newer look-alikes from the same minute are counted from
-  chat.db and skipped (a self-chat shows every message twice). When it isn't on
-  screen, the chat is scrolled up a page at a time (at most 6) until it shows
-  up, and back down after a tapback. If fewer same-minute look-alikes show than
-  chat.db counts (a self-chat may show a message once though chat.db keeps a
-  sent and a received copy), the oldest one showing is used. If no label shows that minute, the older
-  rule applies on screen only: labels that also name the sender are preferred,
-  and newer messages with the same text are counted and skipped, so "ok" finds
-  the right "ok". The log line ends with what the search saw
-  (`b<items>/<text matches>/<text and minute matches>`, `t<pages up>`).
+  chat.db and skipped (a self-chat shows every message twice). A reply's quote
+  of the message it answers (`Name, Reply Preview, <text>, 8:09 AM` on macOS
+  26.3: same text and minute, no tapbacks) never counts. When it isn't on
+  screen, the chat is scrolled up a page at a time (at most 12; the transcript
+  itself is paged, since its first item may be a time header that takes the
+  action without moving) until it shows up, and back down after a tapback. If
+  fewer same-minute look-alikes show than chat.db counts (a self-chat may show a
+  message once though chat.db keeps a sent and a received copy), the oldest one
+  showing is used. If no label shows that minute, the older rule applies on
+  screen only: labels that also name the sender are preferred, and newer
+  messages with the same text are counted and skipped, so "ok" finds the right
+  "ok". System Events finds an element by its place among the transcript's
+  items, and those shift while Messages scrolls or loads older messages, so the
+  bubble's own label (text and minute) is read again right before it's used;
+  if it changed, the message is looked for once more on screen, else
+  `bubble-moved`. The log line ends with what the search saw
+  (`b<items>/<text matches>/<text and minute matches>`, `t<pages up>` when found,
+  `u<pages up>` when not, `again` when it was found a second time).
+- *A thread left open*: after a reply Messages keeps showing just that thread,
+  and its text field goes on replying in it (placeholder "Reply" instead of
+  "iMessage"; the "Dismiss replies" button isn't among System Events' elements
+  and pressing it through accessibility does nothing). Before looking for a
+  message (tapbacks, replies) or pasting a link, and right after a reply is
+  sent, Escape closes it, only while the field is empty so a draft is never
+  lost (`thread-closed` in the log).
 - *Tapbacks*: the bubble's own accessibility action whose title is one of:
   Heart/Love, Thumbs up/Like, Thumbs down/Dislike, Ha ha/Haha/Laugh, Exclamation
   mark/Emphasize/!!, Question mark/Question/? (works with Messages in the
   background). Choosing a tapback toggles it, so chat.db is checked first:
   adding one you have, or removing one you don't, is answered `done` without
   touching Messages.
-- *Replies*: Messages comes to the front first (its "Reply…" action does
-  nothing in the background), then the bubble's "Reply…" action; the reply
-  field counts as open only when the entry area shows the reply preview (on
-  macOS 26.3 a group in it goes from one child to two), else Escape and
+- *Replies*: on macOS 26.3 the bubble's "Reply…" accessibility action and
+  AXShowMenu do nothing, and the menu bar's Reply is "Reply to Last Message"
+  (always the newest), so a reply takes a real right-click. `REPLY_AIM` finds
+  the bubble and brings Messages forward. On macOS 26 the transcript fills the
+  window and the toolbar, the chat's title, the entry area and the sidebar
+  float over it, so the point is the middle of the part of the bubble none of
+  them covers (scrolled into view only when too little shows). It answers
+  `aim:x,y` plus the bubble's frame and Messages' pid. The server asks
+  accessibility what's under the point (`mouse.element_at`) and clicks only
+  when it's that bubble (inside its frame) in Messages, never a window in
+  front (`covered`, `off-bubble`, `hit-unknown`: nothing clicked). Then a
+  right-click (Quartz, the pointer put back), and `REPLY_FINISH` finds the menu:
+  an AXMenu in the window's content group (`menu 1 of UI element 1 of window
+  1`), not one of the app's elements. It chooses "Reply…". With no menu it
+  presses Escape (a menu it can't see may still be open) and the server tries a
+  Control-click the same way. Reply mode counts only when the text field's
+  placeholder changes or another field takes the focus, else Escape and
   `no-reply-mode`. The focused text field must be empty (so a draft is never
   overwritten). The text is pasted with ⌘V (never set as the field's value:
   that dropped the reply on macOS 26.3 and sent a regular text; setting its
@@ -333,7 +362,14 @@ mode (see below).
   (text, images, files) and put them back once the field shows the reply.
   Return is pressed only when the focused field holds exactly the reply and the
   reply preview is still there; if it's gone, the text is taken back out
-  (`reply-mode-lost`). The app that was in front gets focus back.
+  (`reply-mode-lost`). After sending, the thread Messages leaves open is
+  closed (see above), and the app that was in front gets focus back.
+- *Your own chat*: chat.db keeps every message there twice (sent and
+  received copies: other guids, same text, same second or the next) and
+  Messages shows both. A reply threads under, and a tapback lands on, whichever
+  copy was used, and a removed tapback may leave only the received-side row. So
+  there either copy (and either side) counts when checking chat.db, and "you
+  already have that tapback" looks at both copies.
 
 **Outcomes.** Every tapback and reply ends with one `ui-action` event
 (`done` / `fallback` / `failed` + a sentence); read sync only reports failures

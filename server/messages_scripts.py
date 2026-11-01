@@ -362,6 +362,28 @@ on spotTranscript(bcWin)
     return my searchId(bcWin, "TranscriptCollectionView")
 end spotTranscript
 
+-- After a reply Messages keeps that thread open (macOS 26.3): the transcript shows only the thread
+-- and the text field goes on replying in it, its placeholder "Reply" instead of "iMessage". (Its
+-- "Dismiss replies" button isn't among System Events' elements, and pressing it through
+-- accessibility does nothing.) Close it with Escape, but only while the field is empty, so a draft
+-- is never lost. Returns the transcript, found again after closing.
+on leaveThread(bcWin, bcTranscript)
+    set bcField to my searchId(my spotEntry(bcWin), "messageBodyField")
+    if bcField is missing value then return bcTranscript
+    if not (my attrText(bcField, "AXPlaceholderValue") starts with "Reply") then return bcTranscript
+    set bcDraft to "?"
+    try
+        tell application "System Events" to set bcDraft to value of bcField
+    end try
+    if my asText(bcDraft) is not "" then return bcTranscript
+    my pressEscape()
+    delay 0.4
+    my addTrail("thread-closed")
+    set bcAgain to my spotTranscript(bcWin)
+    if bcAgain is missing value then return bcTranscript
+    return bcAgain
+end leaveThread
+
 on spotTitle(bcWin)
     set bcEl to missing value
     try
@@ -790,7 +812,11 @@ end titleIndex
 # Find a message bubble in the transcript (right of the sidebar), newest first: walk the window
 # backwards; nested elements of one bubble (same or enclosing frame) count once.
 BUBBLES = """
+-- A reply shows a quote of the message it answers, labelled "Name, Reply Preview, <its text>, 8:09 AM"
+-- (macOS 26.3): the message's text and minute, but not the message (no tapbacks). Harry's Mac: the
+-- search, going up from the newest, found the quote first.
 on matchesBubble(bcLabel, bcNeedles, bcExacts)
+    if bcLabel contains ", Reply Preview, " then return false
     repeat with bcN in bcNeedles
         if bcLabel contains (bcN as text) then return true
     end repeat
@@ -888,11 +914,70 @@ on bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes)
     return "b" & ((count of bcDescs) as text) & "/" & (bcHits as text) & "/" & (bcTimed as text)
 end bubbleStats
 
+-- Page the open chat up or down. The transcript itself scrolls; its first item may be a time
+-- header that takes the action and doesn't move (Harry's Mac: the search stopped after one page).
+on pageTranscript(bcTranscript, bcAction)
+    try
+        if bcAction is "AXScrollUpByPage" then
+            tell application "System Events" to perform action "AXScrollUpByPage" of bcTranscript
+        else
+            tell application "System Events" to perform action "AXScrollDownByPage" of bcTranscript
+        end if
+        return true
+    end try
+    return my pageList(bcTranscript, bcAction)
+end pageTranscript
+
+-- The bubble still shows the message: its label has the text and, when known, the minute it was
+-- sent. System Events finds an element by its place among the transcript's items, and those shift
+-- while Messages scrolls or loads older messages, so a bubble found a moment ago can be its
+-- neighbour now (Harry's Mac: a reply went to the message next to the one aimed at). A bubble with
+-- no label goes by its row's.
+on stillTheMessage(bcBubble, bcNeedles, bcExacts, bcTimes)
+    if bcBubble is missing value then return false
+    set bcLabel to my attrText(bcBubble, "AXDescription")
+    if bcLabel is "" then
+        set bcRow to missing value
+        try
+            tell application "System Events" to set bcRow to value of attribute "AXParent" of bcBubble
+        end try
+        set bcLabel to my attrText(bcRow, "AXDescription")
+    end if
+    if bcLabel is "" then return false
+    if not my matchesBubble(bcLabel, bcNeedles, bcExacts) then return false
+    if bcTimes is {} then return true
+    return my mentionsAny(bcLabel, bcTimes)
+end stillTheMessage
+
+-- The message among what's on screen now (no scrolling), or missing value.
+on bubbleOnScreen(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+    if bcTimes is not {} then
+        set bcAt to my timedIndex(bcTranscript, bcNeedles, bcExacts, bcTimes, bcSkipMinute)
+        if bcAt > 0 then return my balloonOf(my atPath(bcTranscript, {bcAt}))
+    end if
+    return my findBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny)
+end bubbleOnScreen
+
+-- Make sure bcBubble is still the message; if it moved, find it again on screen once. The bubble,
+-- or missing value.
+on checkedBubble(bcBubble, bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+    if my stillTheMessage(bcBubble, bcNeedles, bcExacts, bcTimes) then return bcBubble
+    repeat 2 times
+        delay 0.5
+        set bcAgain to my bubbleOnScreen(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+        if my stillTheMessage(bcAgain, bcNeedles, bcExacts, bcTimes) then
+            my addTrail("again")
+            return bcAgain
+        end if
+    end repeat
+    return missing value
+end checkedBubble
+
 -- Scroll the open chat back to its newest messages (at most bcPages pages).
 on transcriptEnd(bcTranscript, bcPages)
     set bcSeen to my listKey(bcTranscript)
     repeat bcPages times
-        if not my pageList(bcTranscript, "AXScrollDownByPage") then exit repeat
+        if not my pageTranscript(bcTranscript, "AXScrollDownByPage") then exit repeat
         delay 0.3
         set bcNow to my listKey(bcTranscript)
         if bcNow is bcSeen then exit repeat
@@ -901,26 +986,27 @@ on transcriptEnd(bcTranscript, bcPages)
 end transcriptEnd
 
 -- The message's balloon, or missing value. With the minute it was sent (bcTimes), it's matched by
--- text and minute, scrolling the chat up a page at a time (at most 6) until it shows up; bcUp says
+-- text and minute, scrolling the chat up a page at a time (at most 12) until it shows up; bcUp says
 -- how far. Otherwise (or if that finds nothing) the older way: text, sender and skips, on screen.
 on locateBubble(bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
     set bcUp to 0
     if bcTimes is not {} then
         set bcSeen to my listKey(bcTranscript)
-        repeat 7 times
+        repeat 13 times
             set bcAt to my timedIndex(bcTranscript, bcNeedles, bcExacts, bcTimes, bcSkipMinute)
             if bcAt > 0 then
                 my addTrail("t" & (bcUp as text))
                 return my balloonOf(my atPath(bcTranscript, {bcAt}))
             end if
-            if bcUp is 6 then exit repeat
-            if not my pageList(bcTranscript, "AXScrollUpByPage") then exit repeat
+            if bcUp is 12 then exit repeat
+            if not my pageTranscript(bcTranscript, "AXScrollUpByPage") then exit repeat
             delay 0.4
             set bcNow to my listKey(bcTranscript)
             if bcNow is bcSeen then exit repeat
             set bcSeen to bcNow
             set bcUp to bcUp + 1
         end repeat
+        my addTrail("u" & (bcUp as text))
         if bcUp > 0 then
             my transcriptEnd(bcTranscript, bcUp + 2)
             set bcUp to 0
@@ -1099,12 +1185,18 @@ use scripting additions
 
 # Starting a reply (the reply script and the doctor's reply test).
 MENUS = """
+-- An open context menu. On macOS 26.3 a message's menu (after a real right-click) is an AXMenu in
+-- the window's content group (UI element 1 of the window), not one of the app's own elements.
 on findMenu(bcEl, bcWin)
     set bcMenu to missing value
     try
         tell application "System Events" to set bcMenu to menu 1 of bcEl
     end try
     if bcMenu is not missing value then return {bcMenu, "element"}
+    try
+        tell application "System Events" to set bcMenu to menu 1 of UI element 1 of bcWin
+    end try
+    if bcMenu is not missing value then return {bcMenu, "content"}
     try
         tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
     end try
@@ -1123,6 +1215,15 @@ on topRoles()
     end try
     return my cleanNames(bcRoles)
 end topRoles
+
+-- The roles in the window's content group (where a message's menu shows up), for the log.
+on contentRoles(bcWin)
+    set bcRoles to {}
+    try
+        tell application "System Events" to set bcRoles to role of every UI element of UI element 1 of bcWin
+    end try
+    return my cleanNames(bcRoles)
+end contentRoles
 
 -- The focused text field's placeholder ("iMessage"; replying changes it), or "-".
 on hintNow()
@@ -1386,6 +1487,7 @@ on act(argv)
             set bcTranscript to my spotTranscript(bcWin)
         end if
         if bcTranscript is missing value then return "no-transcript"
+        set bcTranscript to my leaveThread(bcWin, bcTranscript)
         set bcTimes to my tagged(argv, "H")
         set bcSkipMinute to my taggedNumber(argv, "Q")
         repeat 4 times
@@ -1397,6 +1499,8 @@ on act(argv)
             my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
             return "bubble-not-found"
         end if
+        set bcBubble to my checkedBubble(bcBubble, bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+        if bcBubble is missing value then return "bubble-moved"
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
@@ -1448,6 +1552,7 @@ on act(argv)
             set bcTranscript to my spotTranscript(bcWin)
         end if
         if bcTranscript is missing value then return "no-transcript"
+        set bcTranscript to my leaveThread(bcWin, bcTranscript)
         set bcTimes to my tagged(argv, "H")
         set bcSkipMinute to my taggedNumber(argv, "Q")
         repeat 4 times
@@ -1540,7 +1645,15 @@ on typeReply(bcReply, bcHintBefore, bcFocusBefore)
     if not bcReady then return "typed-not-sent"
     tell application "System Events" to key code 36
     delay 0.6
-    if (my fieldText(bcFocused)) is "" then return "sent-" & bcHow
+    if (my fieldText(bcFocused)) is "" then
+        -- Messages keeps the thread open after a reply; close it so the whole chat shows again and
+        -- the field stops replying in that thread.
+        try
+            tell application "System Events" to set bcWin to window 1 of process "Messages"
+            my leaveThread(bcWin, my spotTranscript(bcWin))
+        end try
+        return "sent-" & bcHow
+    end if
     return "returned-unconfirmed"
 end typeReply
 """
@@ -1548,8 +1661,10 @@ end typeReply
 # --------------------------------------------------------------------------- reply to an older message
 # "Reply to Last Message" only answers the newest message, and accessibility can't open a message's
 # own menu on macOS 26.3 (its "Reply…" action and AXShowMenu do nothing). So: this script finds the
-# message and says where it is on screen (aim:x,y; Messages stays in front), the server right-clicks
-# there (server/mouse.py), and REPLY_FINISH_ACT chooses Reply… in the menu that opened and sends.
+# message and says where it is on screen (aim:x,y, plus its frame and Messages' pid; Messages stays
+# in front), the server checks that the point is that message and right-clicks there
+# (server/mouse.py), and REPLY_FINISH_ACT chooses Reply… in the menu that opened (an AXMenu in the
+# window's content group) and sends. Verified on Harry's Mac (macOS 26.3) in his own chat.
 
 REPLY_AIM_ACT = """
 on act(argv)
@@ -1574,6 +1689,7 @@ on act(argv)
             set bcTranscript to my spotTranscript(bcWin)
         end if
         if bcTranscript is missing value then return "no-transcript"
+        set bcTranscript to my leaveThread(bcWin, bcTranscript)
         set bcTimes to my tagged(argv, "H")
         set bcSkipMinute to my taggedNumber(argv, "Q")
         repeat 4 times
@@ -1585,40 +1701,87 @@ on act(argv)
             my addTrail(my bubbleStats(bcTranscript, bcNeedles, bcExacts, bcTimes))
             return "bubble-not-found"
         end if
+        set bcBubble to my checkedBubble(bcBubble, bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+        if bcBubble is missing value then return "bubble-moved"
         if not my hasAction(bcBubble, {"Reply"}) then return "no-reply-item"
         my bringForward()
-        try
-            tell application "System Events" to perform action "AXScrollToVisible" of bcBubble
-        end try
-        delay 0.4
-        set bcPoint to my visiblePoint(bcBubble, bcTranscript)
+        set bcEntry to my spotEntry(bcWin)
+        set bcArea to my freeArea(bcWin, bcTranscript, bcList, bcEntry)
+        -- Scrolled into view only when too little of it shows: scrolling moves the items around.
+        if my visiblePoint(bcBubble, bcArea) is missing value then
+            try
+                tell application "System Events" to perform action "AXScrollToVisible" of bcBubble
+            end try
+            delay 0.5
+        end if
+        set bcBubble to my checkedBubble(bcBubble, bcTranscript, bcNeedles, bcExacts, bcSenders, bcSkipSender, bcSkipAny, bcTimes, bcSkipMinute)
+        if bcBubble is missing value then return "bubble-moved"
+        if not my hasAction(bcBubble, {"Reply"}) then return "no-reply-item"
+        set bcPoint to my visiblePoint(bcBubble, bcArea)
         if bcPoint is missing value then return "not-visible"
-        set bcField to my searchId(my spotEntry(bcWin), "messageBodyField")
+        set bcField to my searchId(bcEntry, "messageBodyField")
         set bcHint to my attrText(bcField, "AXPlaceholderValue")
+        set bcPid to 0
+        try
+            tell application "System Events" to set bcPid to unix id of process "Messages"
+        end try
         set bcKeepFront to true
-        set bcExtra to "front" & tab & bcFrontWas & linefeed & "hint" & tab & bcHint
+        -- The server checks that the element under the point is this bubble, in Messages, before it clicks.
+        set bcExtra to "front" & tab & bcFrontWas & linefeed & "hint" & tab & bcHint & linefeed & "box" & tab & my joinWith(my frameOf(bcBubble), ",") & linefeed & "pid" & tab & (bcPid as text)
         return "aim:" & ((item 1 of bcPoint) as text) & "," & ((item 2 of bcPoint) as text)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
 end act
 
--- The middle of the part of an element that's inside the view, in screen points, or missing value.
-on visiblePoint(bcEl, bcView)
+-- Where the transcript isn't covered, {left, top, right, bottom} in screen points. On macOS 26 the
+-- transcript fills the window and the toolbar, the chat's title, the entry area and the sidebar
+-- float over it (Harry's Mac: a click aimed at a tall bubble's middle landed on the title button).
+on freeArea(bcWin, bcTranscript, bcList, bcEntry)
+    set bcV to my frameOf(bcTranscript)
+    if bcV is missing value then return missing value
+    set bcLeft to item 1 of bcV
+    set bcTop to item 2 of bcV
+    set bcRight to bcLeft + (item 3 of bcV)
+    set bcBottom to bcTop + (item 4 of bcV)
+    set bcMiddle to (bcTop + bcBottom) / 2
+    set bcBar to missing value
+    try
+        tell application "System Events" to set bcBar to toolbar 1 of bcWin
+    end try
+    repeat with bcCover in {bcBar, my spotTitle(bcWin)}
+        set bcF to my frameOf(contents of bcCover)
+        if bcF is not missing value then
+            set bcEdge to (item 2 of bcF) + (item 4 of bcF) + 2
+            if bcEdge > bcTop and bcEdge < bcMiddle then set bcTop to bcEdge
+        end if
+    end repeat
+    set bcF to my frameOf(bcEntry)
+    if bcF is not missing value then
+        set bcEdge to (item 2 of bcF) - 2
+        if bcEdge < bcBottom and bcEdge > bcMiddle then set bcBottom to bcEdge
+    end if
+    set bcEdge to (my rightEdge(bcList)) + 2
+    if bcEdge > bcLeft and bcEdge < (bcLeft + bcRight) / 2 then set bcLeft to bcEdge
+    return {bcLeft, bcTop, bcRight, bcBottom}
+end freeArea
+
+-- The middle of the part of an element inside an area ({left, top, right, bottom}), in screen
+-- points, or missing value.
+on visiblePoint(bcEl, bcArea)
     set bcF to my frameOf(bcEl)
     if bcF is missing value then return missing value
     set bcLeft to item 1 of bcF
     set bcTop to item 2 of bcF
     set bcRight to bcLeft + (item 3 of bcF)
     set bcBottom to bcTop + (item 4 of bcF)
-    set bcV to my frameOf(bcView)
-    if bcV is not missing value then
-        if (item 1 of bcV) > bcLeft then set bcLeft to item 1 of bcV
-        if (item 2 of bcV) > bcTop then set bcTop to item 2 of bcV
-        if (item 1 of bcV) + (item 3 of bcV) < bcRight then set bcRight to (item 1 of bcV) + (item 3 of bcV)
-        if (item 2 of bcV) + (item 4 of bcV) < bcBottom then set bcBottom to (item 2 of bcV) + (item 4 of bcV)
+    if bcArea is not missing value then
+        if (item 1 of bcArea) > bcLeft then set bcLeft to item 1 of bcArea
+        if (item 2 of bcArea) > bcTop then set bcTop to item 2 of bcArea
+        if (item 3 of bcArea) < bcRight then set bcRight to item 3 of bcArea
+        if (item 4 of bcArea) < bcBottom then set bcBottom to item 4 of bcArea
     end if
-    if bcBottom - bcTop < 6 or bcRight - bcLeft < 6 then return missing value
+    if bcBottom - bcTop < 12 or bcRight - bcLeft < 12 then return missing value
     return {round ((bcLeft + bcRight) / 2), round ((bcTop + bcBottom) / 2)}
 end visiblePoint
 """
@@ -1643,7 +1806,10 @@ on act(argv)
             delay 0.2
         end repeat
         if bcMenu is missing value then
-            my addTrail("top:" & my joinWith(my topRoles(), ",") & " w" & ((my windowTotal()) as text))
+            my addTrail("top:" & my joinWith(my topRoles(), ",") & " in:" & my joinWith(my contentRoles(bcWin), ",") & " w" & ((my windowTotal()) as text))
+            -- A menu these lookups can't see may still be open: close it, so a second click can't
+            -- land on one of its items.
+            my pressEscape()
             return "no-menu"
         end if
         set bcTitles to {}
@@ -1693,6 +1859,8 @@ on act(argv)
         set bcOpened to my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, "U"))
         if bcOpened is not "ok" then return bcOpened
         my bringForward()
+        -- A thread left open would send the link as a reply in it.
+        my leaveThread(bcWin, my spotTranscript(bcWin))
         set bcEntry to my spotEntry(bcWin)
         if bcEntry is missing value then return "no-field"
         set bcBox to my searchId(bcEntry, "messageBodyField")

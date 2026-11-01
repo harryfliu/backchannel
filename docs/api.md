@@ -364,7 +364,9 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   choosing a tapback toggles it, chat.db is checked first: adding one you
   already have, or removing one you don't, is `done` without touching
   Messages. Verify a new row with `associated_message_guid` pointing at the
-  target and the right `associated_message_type` within ~5 s, then emit
+  target and the right `associated_message_type` within ~5 s (in the user's
+  own chat, where chat.db keeps every message twice, either copy and either
+  side's row counts), then emit
   `ui-action` (`done` or `failed`). The new reaction itself reaches the UI as
   the target's normal `message-updated`, the same as anyone else's tapback. One
   tapback per person per message, like iMessage: picking a different one
@@ -391,10 +393,16 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root
   bubble and start replying from the bubble's own right-click menu: the script
-  scrolls it into view and reports where it is on screen (`aim:x,y`, Messages
-  stays in front), the server right-clicks there with a real mouse event
+  reports where the bubble is on screen (`aim:x,y`, the middle of the part the
+  toolbar, title, entry area and sidebar don't cover, plus its frame and
+  Messages' pid; Messages stays in front), the server checks with
+  accessibility that the point is that bubble in Messages and not a window in
+  front of it (else nothing is clicked: "Something was in front of that
+  message in Messages…"), right-clicks there with a real mouse event
   (`server/mouse.py`, Quartz; the pointer is put back), and a second script
-  chooses "Reply…" in the menu that opened. (On macOS 26.3 the bubble's
+  chooses "Reply…" in the menu that opened (an AXMenu in the window's content
+  group on macOS 26.3). After sending, the thread Messages keeps open is closed
+  with Escape, so its field stops replying in it. (On macOS 26.3 the bubble's
   "Reply…" accessibility action and AXShowMenu do nothing, and the menu bar's
   Reply is "Reply to Last Message", which always answers the newest message;
   that one is only used when the right-click couldn't open a menu and the
@@ -416,8 +424,9 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   focused field holds exactly the reply and the reply preview is still there
   (if Messages let go of the message being answered, the text is taken back
   out: `reply-mode-lost`, nothing sent); then the app that was in front gets
-  focus back. Verify the sent row has `thread_originator_guid` = root and
-  reconcile it to the clientId as usual (`ui-action` `done`; if the row arrived
+  focus back. Verify the sent row has `thread_originator_guid` = root (in the
+  user's own chat, either copy of the root: Messages shows both and threads
+  under the one that was clicked) and reconcile it to the clientId as usual (`ui-action` `done`; if the row arrived
   without a thread, `fallback`). If nothing was typed (the chat isn't in
   Messages' list, the message isn't loaded there, the reply field didn't
   open…), nothing is sent: `ui-action` `failed` and `send-status` failed with

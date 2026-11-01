@@ -89,6 +89,7 @@ def fake_rw(make_rw):
     rw.services.messages_ui.move_pointer = lambda x, y: None
     rw.services.messages_ui.control_click = lambda x, y: rw.clicks.append(("ctrl", x, y)) or (1.0, 2.0)
     rw.services.messages_ui.pointer_now = lambda: (400.0, 300.0)
+    rw.services.messages_ui.element_at = lambda x, y: (1, None)  # what's under the point (accessibility)
     rw.fake = fake
     rw.prime = rw.services.watcher.prime
     rw.services.watcher.prime()
@@ -700,3 +701,72 @@ def test_no_menu_after_a_right_click_tries_a_control_click(fake_rw, sends):
     assert sent[0]["status"] == "sent"
     assert rw.clicks == [(400.0, 300.0), ("ctrl", 400.0, 300.0)]
     assert fake.names() == ["reply-aim", "reply-finish", "reply-finish"] and sends == []
+
+
+AIMED = "aim:400,300|shown t0\nfront\tcom.example.backchannel\nhint\tiMessage\nbox\t350,250,100,100\npid\t42"
+
+
+def test_a_click_only_goes_where_the_message_is(fake_rw, sends):
+    """Harry's Mac: Messages sat behind Backchannel's own window, and on macOS 26 the toolbar, the title
+    and the sidebar float over the chat (a click aimed at a tall bubble's middle hit the title). What's
+    under the point has to be the message (inside its frame), in Messages, or nothing is clicked."""
+    rw, fake = fake_rw, fake_rw.fake
+    root = rw.guid("soc_root")
+    fake.answers["reply-aim"] = Outcome(0, AIMED, "")
+    for hit, why in (((7, (350.0, 250.0, 100.0, 100.0)), "covered"), ((42, (0.0, 30.0, 661.0, 811.0)), "off-bubble"),
+                     (None, "hit-unknown")):
+        rw.services.messages_ui.element_at = lambda x, y, hit=hit: hit
+        rw.post(send_url(SOCCER), {"text": "where?", "clientId": f"h-{why}", "threadRootId": root})
+        action = wait_for(rw, ui_action("reply", clientId=f"h-{why}"))
+        assert action["result"] == "failed" and "in front of that message" in action["detail"], why
+    assert rw.clicks == [] and "reply-finish" not in fake.names() and sends == []
+    rw.services.messages_ui.element_at = lambda x, y: (42, (360.0, 260.0, 80.0, 40.0))  # inside the bubble
+    fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, root, tagged(argv, "M")[0])
+    rw.post(send_url(SOCCER), {"text": "there", "clientId": "h-ok", "threadRootId": root})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "h-ok"])
+    assert sent[0]["status"] == "sent" and rw.clicks == [(400.0, 300.0)]
+
+
+def test_in_your_own_chat_either_copy_of_the_root_counts(fake_rw, sends):
+    """chat.db keeps each message of your own chat twice (sent and received: other guids, same text,
+    same second), Messages shows both, and the reply threads under the copy that was clicked."""
+    rw, fake = fake_rw, fake_rw.fake
+    db = rw.settings.chat_db
+    chat = chat_of(db, rw.get(f"/api/conversations/{SELF}/messages")["messages"][-1]["id"])
+    _, sent_copy = fakedb.write_as_messages_app(db, chat, text="pick up the dry cleaning")
+    _, received_copy = fakedb.write_as_messages_app(db, chat, text="pick up the dry cleaning")
+    _, other = fakedb.write_as_messages_app(db, chat, text="buy stamps")
+    with closing(fakedb.connect(db)) as conn:
+        date = conn.execute("SELECT date FROM message WHERE guid = ?", (sent_copy,)).fetchone()[0]
+        conn.execute("UPDATE message SET is_from_me = 0, date = ? WHERE guid = ?", (date + 1_000_000_000, received_copy))
+    for root, threaded_under, client, result in ((sent_copy, received_copy, "t-1", "done"),
+                                                 (sent_copy, other, "t-2", "fallback")):
+        fake.effects["reply"] = lambda argv, under=threaded_under: write_reply(db, under, tagged(argv, "M")[0])
+        rw.post(send_url(SELF), {"text": f"on it {client}", "clientId": client, "threadRootId": root})
+        action = wait_for(rw, ui_action("reply", clientId=client))
+        assert action["result"] == result, (client, action)
+    assert sends == []
+
+
+def test_in_your_own_chat_a_tapback_on_the_other_copy_counts(fake_rw):
+    """Harry's Mac: a Heart aimed at one copy landed on the other, and once taken off only the
+    received-side row was left. Both copies and both sides are you there."""
+    rw, fake = fake_rw, fake_rw.fake
+    db = rw.settings.chat_db
+    chat = chat_of(db, rw.get(f"/api/conversations/{SELF}/messages")["messages"][-1]["id"])
+    _, sent_copy = fakedb.write_as_messages_app(db, chat, text="water the plants")
+    _, received_copy = fakedb.write_as_messages_app(db, chat, text="water the plants")
+    with closing(fakedb.connect(db)) as conn:
+        conn.execute("UPDATE message SET is_from_me = 0 WHERE guid = ?", (received_copy,))
+
+    def effect(argv):
+        guid = write_tapback(db, received_copy, 2000)
+        with closing(fakedb.connect(db)) as conn:
+            conn.execute("UPDATE message SET is_from_me = 0 WHERE guid = ?", (guid,))
+
+    fake.effects["tapback"] = effect
+    fake.answers["tapback"] = Outcome(0, "chosen-action|shown t0", "")
+    assert rw.client.post(tapback_url(SELF, sent_copy), json={"kind": "love", "remove": False}).status_code == 202
+    assert wait_for(rw, ui_action("tapback", messageId=sent_copy))["result"] == "done"
+    assert rw.services.messages_ui.copies_of(SELF, sent_copy) == [sent_copy, received_copy]
+    assert rw.services.messages_ui.copies_of(SOCCER, rw.guid("soc_root")) == [rw.guid("soc_root")]
