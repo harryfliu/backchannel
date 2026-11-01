@@ -32,7 +32,7 @@ import {
   timedArrivals,
 } from './data'
 import { emojiArt, stickerArt } from './art'
-import { applyTapback, tapbackEmoji } from '../../lib/tapbacks'
+import { applyTapback, choiceEmoji, type TapbackChoice } from '../../lib/tapbacks'
 import { prioritize } from './priority'
 
 const wait = (ms: number) => new Promise((res) => setTimeout(res, ms))
@@ -47,7 +47,13 @@ export function createMockApi(): Api {
   const listeners = new Set<(e: ServerEvent) => void>()
   let started = false
   let nextId = 1000
-  let serverSettings = { markReadInMessages: false, tapbacksViaMessages: false, threadRepliesViaMessages: false }
+  let serverSettings = {
+    markReadInMessages: false,
+    tapbacksViaMessages: false,
+    threadRepliesViaMessages: false,
+    // What Messages offers as quick tapbacks (its recent emoji), as on Harry's Mac.
+    tapbackQuick: ['😂', '👀', '😭', '🤔', '😱'],
+  }
   const seededAt = new Date(Date.now() - 20 * 86400000).toISOString()
   const emojiItem = (name: string, url: string, mimeType = 'image/svg+xml'): CustomEmoji => ({
     name,
@@ -456,13 +462,15 @@ export function createMockApi(): Api {
     async addChiefLoop(_cid, _mid, title) {
       return { id: nextLoop++, title }
     },
-    async sendTapback(cid, mid, kind, remove) {
+    async sendTapback(cid, mid, kind, remove, emoji) {
       if (!serverSettings.tapbacksViaMessages) throw new Error('Sending tapbacks is off. Turn it on in Settings.')
       const m = (db.messages.get(cid) ?? []).find((x) => x.id === mid)
       if (!m) throw new Error('That message is gone.')
+      if (kind === 'emoji' && !emoji) throw new Error("That isn't an emoji Messages can use as a tapback.")
+      const choice: TapbackChoice = kind === 'emoji' ? { kind, emoji: emoji! } : { kind }
       setTimeout(() => {
-        updateMessage(cid, mid, { reactions: applyTapback(m.reactions, kind, remove) })
-        const detail = remove ? 'Removed your tapback in Messages' : `Sent ${tapbackEmoji(kind)} in Messages`
+        updateMessage(cid, mid, { reactions: applyTapback(m.reactions, choice, remove) })
+        const detail = remove ? 'Removed your tapback in Messages' : `Sent ${choiceEmoji(choice)} in Messages`
         emit({ type: 'ui-action', action: 'tapback', conversationId: cid, messageId: mid, clientId: null, result: 'done', detail })
       }, 700)
       return { status: 'queued' as const }

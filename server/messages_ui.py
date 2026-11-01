@@ -84,6 +84,34 @@ REPLY_UNPROVEN = ("real replies haven't worked on this Mac yet. Reply in a threa
 # The six classic tapbacks, their chat.db offsets (2000 + k adds, 3000 + k removes) and what the
 # Messages app may call them (button descriptions or menu titles).
 TAPBACK_KINDS = ("love", "like", "dislike", "laugh", "emphasize", "question")
+EMOJI_KIND = "emoji"  # any emoji as a tapback (iOS 18 / macOS 15): 2006 adds, 3006 removes
+TAPBACK_QUICK_KEY = "tapback_quick"
+_VS16 = "\ufe0f"
+_KEYCAP = "\u20e3"
+
+
+def clean_tapback_emoji(value: str | None) -> str | None:
+    """The emoji for an emoji tapback, or None when it isn't one: 1–16 characters, at least one
+    beyond ASCII, no letters or spaces (digits only in keycaps like 1️⃣)."""
+    text = (value or "").strip()
+    if not 1 <= len(text) <= 16 or all(ord(ch) < 128 for ch in text):
+        return None
+    if any(ch.isspace() or (ord(ch) < 128 and ch.isalpha()) for ch in text):
+        return None
+    if any(ord(ch) < 128 and ch.isdigit() for ch in text) and _KEYCAP not in text:
+        return None
+    return text
+
+
+def same_emoji(a: str | None, b: str | None) -> bool:
+    """Equal apart from the emoji presentation selector (U+FE0F), which Messages may add or drop."""
+    return (a or "").replace(_VS16, "") == (b or "").replace(_VS16, "")
+
+
+def emoji_titles(emoji: str) -> list[str]:
+    """How Messages may title the tapback action for this emoji: as given, without U+FE0F, with it."""
+    bare = emoji.replace(_VS16, "")
+    return list(dict.fromkeys([emoji, bare, bare + _VS16 if len(bare) == 1 else emoji]))
 SYNONYMS: dict[str, tuple[str, ...]] = {
     "love": ("Heart", "Love", "Loved"),
     "like": ("Thumbs up", "Like", "Liked"),
@@ -349,14 +377,20 @@ class TapbackJob:
     target_text: str = ""
     links: list[str] = field(default_factory=list)  # Messages' own link to the chat (one-to-one chats)
     members: list[str] = field(default_factory=list)
+    emoji: str | None = None  # kind "emoji": which one
     action = "tapback"
 
     def key(self) -> tuple | None:
         return None
 
+    def titles(self) -> list[str]:
+        """The tapback action's title in Messages: its words for the classics, the emoji itself for
+        an emoji (Messages offers its recent ones as actions titled with the emoji)."""
+        return emoji_titles(self.emoji or "") if self.kind == EMOJI_KIND else list(SYNONYMS[self.kind])
+
     def argv(self) -> list[str]:
         return ["tapback", *names_argv(self.candidates, self.loose), *self.bubble.argv(),
-                *[f"R:{s}" for s in SYNONYMS[self.kind]], *[f"U:{u}" for u in self.links],
+                *[f"R:{s}" for s in self.titles()], *[f"U:{u}" for u in self.links],
                 *[f"G:{m}" for m in self.members]]
 
 
@@ -425,8 +459,20 @@ _TRAIL_JUNK = re.compile(r"[^a-z0-9:,/ -]")
 def _split(outcome: Outcome) -> tuple[str, str]:
     """(answer, trail). Scripts may add "|<trail>": how they got to the chat, as step names and
     item positions ("link no row3/0 p:3,14 o:3"), never names or text."""
-    answer, _, trail = outcome.stdout.strip().partition("|")
+    first = (outcome.stdout.strip().splitlines() or [""])[0]  # later lines are data (see quick_emoji)
+    answer, _, trail = first.partition("|")
     return answer.strip(), _TRAIL_JUNK.sub("", trail.lower()).strip()[:120]
+
+
+def quick_emoji(outcome: Outcome) -> list[str] | None:
+    """The emoji Messages offered as quick tapbacks on that message (the script's "quick" line), or
+    None when the script didn't say."""
+    for line in outcome.stdout.strip().splitlines()[1:]:
+        key, _, rest = line.partition("\t")
+        if key == "quick":
+            found = [e for e in (clean_tapback_emoji(part) for part in rest.split()) if e]
+            return list(dict.fromkeys(found))[:8]
+    return None
 
 
 def _answer(outcome: Outcome) -> tuple[str, int | None]:
@@ -609,16 +655,22 @@ class Simulator:
         self.my_handle = my_handle
 
     def tapback(self, job: TapbackJob) -> str:
-        index = TAPBACK_KINDS.index(job.kind)
         quoted = f"“{job.target_text}”" if job.target_text else "a message"
-        if job.remove:
-            kind_type, text = 3000 + index, f"Removed {H.REMOVED_NOUNS[3000 + index]} from {quoted}"
+        extra: dict[str, Any] = {}
+        if job.kind == EMOJI_KIND:
+            kind_type = 3006 if job.remove else 2006
+            text = f"Removed {job.emoji} from {quoted}" if job.remove else f"Reacted {job.emoji} to {quoted}"
+            extra["associated_message_emoji"] = job.emoji
         else:
-            kind_type, text = 2000 + index, f"{H.TAPBACKS[2000 + index][2]} {quoted}"
+            index = TAPBACK_KINDS.index(job.kind)
+            if job.remove:
+                kind_type, text = 3000 + index, f"Removed {H.REMOVED_NOUNS[3000 + index]} from {quoted}"
+            else:
+                kind_type, text = 2000 + index, f"{H.TAPBACKS[2000 + index][2]} {quoted}"
         _, guid = fakedb.write_as_messages_app(
             self.chat_db, job.target_chat_id, text=text, my_handle=self.my_handle(),
             associated_message_guid=f"p:0/{job.message_id}", associated_message_type=kind_type,
-            associated_message_range_location=0, associated_message_range_length=len(job.target_text),
+            associated_message_range_location=0, associated_message_range_length=len(job.target_text), **extra,
         )
         return guid
 
@@ -800,8 +852,15 @@ class MessagesUI:
         return Bubble(needles, exacts, senders, skip_sender=sum(1 for m in hits if same_sender(m)),
                       skip_any=len(hits), times=times, skip_minute=same_minute)
 
-    def tapback_job(self, conv: Conv, message_id: str, kind: str, remove: bool) -> TapbackJob:
-        if kind not in TAPBACK_KINDS:
+    def tapback_job(self, conv: Conv, message_id: str, kind: str, remove: bool,
+                    emoji: str | None = None) -> TapbackJob:
+        if kind == EMOJI_KIND:
+            emoji = clean_tapback_emoji(emoji)
+            if emoji is None:
+                raise ValueError("That isn't an emoji Messages can use as a tapback.")
+        elif kind in TAPBACK_KINDS:
+            emoji = None
+        else:
             raise ValueError("That isn't one of Messages' tapbacks.")
         row, message = self.target(conv, message_id)
         title, names, loose = self._names(conv)
@@ -809,7 +868,12 @@ class MessagesUI:
         return TapbackJob(conv.id, title, names, loose, list(conv.chat_ids), message_id, kind, remove,
                           self.bubble_for(conv, message), target_chat_id=row["chat_id"],
                           target_text=message.get("text") or "", links=[link] if link else [],
-                          members=self._members(conv))
+                          members=self._members(conv), emoji=emoji)
+
+    def tapback_quick(self) -> list[str]:
+        """The emoji Messages offered as quick tapbacks the last time one was sent (its recent ones)."""
+        stored = self.state.get_kv(TAPBACK_QUICK_KEY) or []
+        return [e for e in (clean_tapback_emoji(x) for x in stored if isinstance(x, str)) if e][:8]
 
     def reply_job(self, conv: Conv, root_id: str, text: str, client_id: str) -> ReplyJob | None:
         """None when the root can't be found in Messages' terms (the reply is then not sent: "Not sent as a reply")."""
@@ -1003,26 +1067,41 @@ class MessagesUI:
 
     # ------------------------------------------------------------------ tapbacks
 
-    def current_tapback(self, message_id: str) -> str | None:
-        """Your classic tapback on this message right now, from chat.db."""
+    def current_tapback(self, message_id: str) -> tuple[str, str | None] | None:
+        """Your tapback on this message right now, from chat.db: (kind, emoji for an emoji one)."""
         message = self.builder.by_guid(message_id)
         for reaction in (message or {}).get("reactions", []):
-            if "me" in reaction["from"] and reaction["kind"] in TAPBACK_KINDS:
-                return reaction["kind"]
+            if "me" in reaction["from"] and (reaction["kind"] in TAPBACK_KINDS or reaction["kind"] == EMOJI_KIND):
+                return reaction["kind"], (reaction.get("emoji") if reaction["kind"] == EMOJI_KIND else None)
         return None
 
+    @staticmethod
+    def _is_current(job: TapbackJob, current: tuple[str, str | None] | None) -> bool:
+        if current is None or current[0] != job.kind:
+            return False
+        return job.kind != EMOJI_KIND or same_emoji(current[1], job.emoji)
+
     def verify_tapback(self, job: TapbackJob, start: int) -> bool:
-        want = (3000 if job.remove else 2000) + TAPBACK_KINDS.index(job.kind)
+        if job.kind == EMOJI_KIND:
+            want = 3006 if job.remove else 2006
+        else:
+            want = (3000 if job.remove else 2000) + TAPBACK_KINDS.index(job.kind)
+        fields = ("associated_message_type", "associated_message_emoji")
         deadline = time.monotonic() + self.verify_seconds
         while True:
             rows = self.db.query(
-                """SELECT associated_message_type AS kind FROM message
-                   WHERE ROWID > ? AND is_from_me = 1
-                     AND (associated_message_guid = ? OR associated_message_guid LIKE ?)""",
+                f"""SELECT {self.db.message_select(fields=fields)} FROM message m
+                   WHERE m.ROWID > ? AND m.is_from_me = 1
+                     AND (m.associated_message_guid = ? OR m.associated_message_guid LIKE ?)""",
                 (start, "bp:" + job.message_id, "p:%/" + job.message_id),
             )
-            if any(r["kind"] == want for r in rows):
-                return True
+            for r in rows:
+                if r["associated_message_type"] != want:
+                    continue
+                # An emoji tapback must be the one asked for (a removal may leave the emoji out).
+                if job.kind != EMOJI_KIND or same_emoji(r["associated_message_emoji"], job.emoji) \
+                        or (job.remove and not r["associated_message_emoji"]):
+                    return True
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.25)
@@ -1038,9 +1117,9 @@ class MessagesUI:
             start = self.db.max_rowid()
         except ChatDBError as exc:
             return answer("failed", str(exc))
-        if not job.remove and current == job.kind:
+        if not job.remove and self._is_current(job, current):
             return answer("done", "That tapback is already there.")
-        if job.remove and current != job.kind:
+        if job.remove and not self._is_current(job, current):
             return answer("done", "That tapback was already removed.")
         done_text = "Removed your tapback in Messages." if job.remove else "Sent the tapback in Messages."
         if self.runner is None:
@@ -1054,10 +1133,16 @@ class MessagesUI:
             return answer("done" if ok else "failed", done_text if ok else TAPBACK_UNCONFIRMED)
         outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
         interp = interpret_tapback(outcome, job.title)
+        quick = quick_emoji(outcome)
+        if quick:  # what Messages offers, for the app's tapback picker (kept in state, never logged)
+            self.state.set_kv(TAPBACK_QUICK_KEY, quick)
         ok = interp.state != "nothing" and self.verify_tapback(job, start)
         if ok:
             sentence = done_text
             interp.code += ", verified"
+        elif interp.state == "nothing" and job.kind == EMOJI_KIND and interp.code.startswith("no-tapback-item"):
+            sentence = (f"Messages only offers its most recent emoji as quick tapbacks, and {job.emoji} isn't one of "
+                        "them yet. React with it once in Messages and it will be.")
         elif interp.state == "nothing":
             sentence = interp.sentence
         else:

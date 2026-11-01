@@ -512,3 +512,78 @@ def test_an_unnamed_groups_members_go_along(fake_rw):
     assert [f"G:{m}" for m in members] == [a for a in helpers.mark_read_job(conv).argv() if a.startswith("G:")]
     named = rw.services.convs.get(SOCCER)
     assert helpers._members(named) == []  # a named group goes by its name
+
+
+# --------------------------------------------------------------------------- emoji tapbacks
+
+
+def mine(message: dict) -> tuple[str, str] | None:
+    return next(((r["kind"], r["emoji"]) for r in message["reactions"] if "me" in r["from"]), None)
+
+
+def test_emoji_tapback_route_checks_the_emoji(rw):
+    turn_on(rw, tapbacksViaMessages=True)
+    url = tapback_url(JORDAN, rw.guid("j_hike"))
+    for bad in (None, "", "lol", "🔥 🔥", "1", "a🔥"):
+        body = {"kind": "emoji", "remove": False, **({"emoji": bad} if bad is not None else {})}
+        assert rw.client.post(url, json=body).status_code == 400, bad
+    for good in ("🔥", "❤️", "1️⃣", "👍🏽", "🏳️‍🌈"):
+        assert rw.client.post(url, json={"kind": "emoji", "emoji": good}).status_code == 202, good
+
+
+def test_emoji_tapback_is_chosen_by_its_emoji_and_verified(fake_rw, caplog):
+    rw, fake = fake_rw, fake_rw.fake
+    target = rw.guid("j_hike")
+    fake.effects["tapback"] = lambda argv: write_tapback(rw.settings.chat_db, target, 2006, "🔥")
+    assert rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🔥"}).status_code == 202
+    done = wait_for(rw, ui_action("tapback", messageId=target))
+    assert done["result"] == "done" and done["detail"] == "Sent the tapback in Messages."
+    assert tagged(fake.argv("tapback"), "R") == ["🔥", "🔥\ufe0f"]  # Messages titles its recent emoji with the emoji
+    message = rw.services.builder.by_guid(target)
+    assert mine(message) == ("emoji", "🔥")
+    # The same one again is already there (no Messages); removing it chooses it again.
+    calls = len(fake.calls)
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🔥"})
+    assert wait_for(rw, ui_action("tapback", messageId=target, detail="That tapback is already there."))
+    assert len(fake.calls) == calls
+    fake.effects["tapback"] = lambda argv: write_tapback(rw.settings.chat_db, target, 3006, "🔥")
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🔥", "remove": True})
+    assert wait_for(rw, ui_action("tapback", messageId=target, detail="Removed your tapback in Messages."))
+    assert mine(rw.services.builder.by_guid(target)) is None
+    assert "🔥" not in caplog.text  # the log gets codes, never the emoji
+
+
+def test_emoji_tapback_ignores_the_presentation_selector(fake_rw):
+    rw, fake = fake_rw, fake_rw.fake
+    target = rw.guid("j_hike")
+    fake.effects["tapback"] = lambda argv: write_tapback(rw.settings.chat_db, target, 2006, "\u2764")  # no FE0F
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "❤️"})
+    assert wait_for(rw, ui_action("tapback", messageId=target))["result"] == "done"
+    assert tagged(fake.argv("tapback"), "R") == ["❤️", "\u2764"]
+
+
+def test_an_emoji_messages_doesnt_offer_says_so_and_the_quick_ones_are_remembered(fake_rw, caplog):
+    rw, fake = fake_rw, fake_rw.fake
+    target = rw.guid("j_hike")
+    assert rw.get("/api/settings")["tapbackQuick"] == []
+    fake.answers["tapback"] = Outcome(0, "no-tapback-item|shown t0\nquick\t😂 👀 😭 🤔 😱", "")
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🔥"})
+    failed = wait_for(rw, ui_action("tapback", messageId=target))
+    assert failed["result"] == "failed"
+    assert failed["detail"] == ("Messages only offers its most recent emoji as quick tapbacks, and 🔥 isn't one of "
+                                "them yet. React with it once in Messages and it will be.")
+    settings = rw.get("/api/settings")
+    assert settings["tapbackQuick"] == ["😂", "👀", "😭", "🤔", "😱"] and not validate(settings, "ServerSettings")
+    assert "😂" not in caplog.text and "🔥" not in caplog.text
+    # A classic that Messages didn't offer keeps the usual sentence.
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "like"})
+    assert wait_for(rw, ui_action("tapback", messageId=target, detail="Messages didn't offer that tapback."))
+
+
+def test_the_simulator_writes_emoji_tapbacks(make_rw):
+    rw = make_rw(BACKCHANNEL_SEND_MODE="dry-run", BACKCHANNEL_FAKE_DB="1")
+    turn_on(rw, tapbacksViaMessages=True)
+    target = rw.guid("j_hike")
+    rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🎉"})
+    assert wait_for(rw, ui_action("tapback", messageId=target))["result"] == "done"
+    assert mine(rw.services.builder.by_guid(target)) == ("emoji", "🎉")

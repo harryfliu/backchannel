@@ -63,7 +63,7 @@ not be able to drive it.
 | GET | `/api/ai/catchup?refresh=0` | `CatchUp` |
 | GET | `/api/people/{handle}/chief` | `ChiefCard`, or `null` when Chief doesn't know them or isn't installed |
 | POST | `/api/chief/loops` | body `{ conversationId, messageId, title }` → `{ id, title }` |
-| POST | `/api/conversations/{id}/messages/{messageId}/tapback` | body `{ kind, remove }` → 202 `{ status: 'queued' }` (needs `tapbacksViaMessages`, else 409) |
+| POST | `/api/conversations/{id}/messages/{messageId}/tapback` | body `{ kind, remove, emoji? }` → 202 `{ status: 'queued' }` (needs `tapbacksViaMessages`, else 409; `kind: 'emoji'` needs `emoji`, else 400) |
 | GET | `/api/settings` | `ServerSettings` |
 | PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` |
 | GET | `/api/emoji` | `{ items: CustomEmoji[] }` |
@@ -356,6 +356,18 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   the target's normal `message-updated`, the same as anyone else's tapback. One
   tapback per person per message, like iMessage: picking a different one
   replaces yours.
+- Emoji tapbacks (`kind: 'emoji'` with `emoji`; 1–16 characters, at least one
+  beyond ASCII, no letters or spaces, digits only in keycaps): Messages offers
+  its few most recent emoji as tapback actions titled with the emoji itself
+  ("😂", "👀"…), so the script looks for that title (with and without U+FE0F).
+  It also reports which emoji the bubble offered (a second output line
+  `quick<TAB>😂 👀 …`, never logged); the server keeps the newest list as
+  `ServerSettings.tapbackQuick` (read-only, at most 8) for the app's tapback
+  picker. chat.db: 2006 adds, 3006 removes, `associated_message_emoji` names it
+  (compared without U+FE0F). An emoji Messages doesn't offer is `failed` with
+  "Messages only offers its most recent emoji as quick tapbacks, and 🔥 isn't
+  one of them yet. React with it once in Messages and it will be." Custom
+  (image) emoji and stickers can't be sent as tapbacks.
 - Thread reply (`threadRepliesViaMessages`): when a send (immediate or
   scheduled) has `threadRootId` and not `regularText`, open the chat as above,
   bring Messages to the front (its Reply only works there), find the root

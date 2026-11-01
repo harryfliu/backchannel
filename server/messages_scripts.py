@@ -69,6 +69,7 @@ RUN = """
 property bcTrail : ""
 property bcUp : 0
 property bcMembers : {}
+property bcExtra : ""
 
 on run argv
     set bcMembers to my tagged(argv, "G")
@@ -80,8 +81,10 @@ on run argv
         set bcAnswer to "error-late:" & (bcErrNum as text)
     end try
     my restoreFront(bcPrevApp)
-    if bcTrail is not "" then return bcAnswer & "|" & bcTrail
-    return bcAnswer
+    set bcLine to bcAnswer
+    if bcTrail is not "" then set bcLine to bcAnswer & "|" & bcTrail
+    if bcExtra is not "" then set bcLine to bcLine & linefeed & bcExtra
+    return bcLine
 end run
 """
 
@@ -714,6 +717,32 @@ on customAction(bcEl, bcTitles)
     return bcDone
 end customAction
 
+-- The element's actions titled with an emoji (Messages offers its recent emoji as tapbacks that
+-- way: "😂", "👀"…), space-separated. Titles of up to 8 characters, every one beyond Latin-1.
+on emojiActions(bcEl)
+    set bcDescs to {}
+    try
+        tell application "System Events" to set bcDescs to description of every action of bcEl
+    end try
+    set bcOut to {}
+    repeat with bcD in bcDescs
+        set bcText to my asText(contents of bcD)
+        if bcText is not "" and (length of bcText) is less than or equal to 8 then
+            set bcIds to {}
+            try
+                set bcIds to id of bcText
+            end try
+            if class of bcIds is not list then set bcIds to {bcIds}
+            set bcWide to (count of bcIds) > 0
+            repeat with bcId in bcIds
+                if (contents of bcId) < 256 then set bcWide to false
+            end repeat
+            if bcWide then set bcOut to bcOut & {bcText}
+        end if
+    end repeat
+    return my joinWith(bcOut, " ")
+end emojiActions
+
 on hasAction(bcEl, bcTitles)
     return (my actionIndex(bcEl, bcTitles)) > 0
 end hasAction
@@ -1235,6 +1264,7 @@ on act(argv)
     on error bcErrMsg number bcErrNum
         return "error:" & (bcErrNum as text)
     end try
+    set bcExtra to "quick" & tab & my emojiActions(bcBubble)
     set bcAnswer to "no-tapback-item"
     if my customAction(bcBubble, bcSynonyms) then set bcAnswer to "chosen-action"
     if bcUp > 0 then
