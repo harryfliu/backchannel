@@ -758,6 +758,7 @@ button.avatar:hover {
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding-bottom: 16px;
   scrollbar-width: thin;
@@ -962,6 +963,9 @@ button.avatar:hover {
   flex: 1;
   min-width: 0;
   display: grid;
+  /* One column no wider than the row: an auto column grew to the longest name (a long group title),
+     pushing its time out of view and making the whole list scroll sideways. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
 }
 .dm-card-top {
@@ -1001,6 +1005,7 @@ button.avatar:hover {
 
 .activity-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   width: calc(100% - 16px);
   margin: 0 8px 6px;
