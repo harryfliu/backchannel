@@ -16,10 +16,14 @@ _APP_SERVICES = "/System/Library/Frameworks/ApplicationServices.framework/Applic
 _CORE_FOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 
 MOUSE_MOVED = 5
+LEFT_DOWN = 1
+LEFT_UP = 2
 RIGHT_DOWN = 3
 RIGHT_UP = 4
+LEFT_BUTTON = 0
 RIGHT_BUTTON = 1
 HID_TAP = 0
+CONTROL_FLAG = 1 << 18  # kCGEventFlagMaskControl
 
 
 class CGPoint(ctypes.Structure):
@@ -42,6 +46,8 @@ def _quartz() -> tuple[ctypes.CDLL, ctypes.CDLL]:
         cg.CGEventCreateMouseEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32, CGPoint, ctypes.c_uint32]
         cg.CGEventPost.restype = None
         cg.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        cg.CGEventSetFlags.restype = None
+        cg.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
         cf.CFRelease.restype = None
         cf.CFRelease.argtypes = [ctypes.c_void_p]
         _lib = (cg, cf)
@@ -74,12 +80,14 @@ def pointer() -> tuple[float, float] | None:
         cf.CFRelease(event)
 
 
-def _post(kind: int, x: float, y: float, button: int) -> None:
+def _post(kind: int, x: float, y: float, button: int, flags: int = 0) -> None:
     cg, cf = _quartz()
     event = cg.CGEventCreateMouseEvent(None, kind, CGPoint(x, y), button)
     if not event:
         raise OSError("couldn't make a mouse event")
     try:
+        if flags:
+            cg.CGEventSetFlags(event, flags)
         cg.CGEventPost(HID_TAP, event)
     finally:
         cf.CFRelease(event)
@@ -98,4 +106,15 @@ def right_click(x: float, y: float) -> tuple[float, float] | None:
     _post(RIGHT_DOWN, x, y, RIGHT_BUTTON)
     time.sleep(0.05)
     _post(RIGHT_UP, x, y, RIGHT_BUTTON)
+    return before
+
+
+def control_click(x: float, y: float) -> tuple[float, float] | None:
+    """A Control-click at (x, y), the other way macOS opens a context menu."""
+    before = pointer()
+    move(x, y)
+    time.sleep(0.08)
+    _post(LEFT_DOWN, x, y, LEFT_BUTTON, CONTROL_FLAG)
+    time.sleep(0.05)
+    _post(LEFT_UP, x, y, LEFT_BUTTON, CONTROL_FLAG)
     return before

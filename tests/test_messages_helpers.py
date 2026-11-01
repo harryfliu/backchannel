@@ -87,6 +87,8 @@ def fake_rw(make_rw):
     rw.services.messages_ui.can_click = lambda: True
     rw.services.messages_ui.right_click = lambda x, y: rw.clicks.append((x, y)) or (1.0, 2.0)
     rw.services.messages_ui.move_pointer = lambda x, y: None
+    rw.services.messages_ui.control_click = lambda x, y: rw.clicks.append(("ctrl", x, y)) or (1.0, 2.0)
+    rw.services.messages_ui.pointer_now = lambda: (400.0, 300.0)
     rw.fake = fake
     rw.prime = rw.services.watcher.prime
     rw.services.watcher.prime()
@@ -651,7 +653,8 @@ def test_the_newest_message_falls_back_to_reply_to_last_message(fake_rw, sends):
     fake.effects["reply"] = lambda argv: write_reply(rw.settings.chat_db, mine, tagged(argv, "M")[0])
     rw.post(send_url(SELF), {"text": "noted", "clientId": "n-1", "threadRootId": mine})
     sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "n-1"])
-    assert sent[0]["status"] == "sent" and fake.names() == ["reply-aim", "reply-finish", "reply"]
+    assert sent[0]["status"] == "sent"
+    assert fake.names() == ["reply-aim", "reply-finish", "reply-finish", "reply"]  # right-click, Control-click, menu bar
 
 
 def test_a_chat_still_opening_from_its_link_is_tried_once_more(fake_rw):
@@ -677,3 +680,23 @@ def test_a_chat_still_opening_from_its_link_is_tried_once_more(fake_rw):
     finally:
         mui.time.sleep = original
     assert done["result"] == "done" and fake.names().count("tapback") == 2
+
+
+
+def test_no_menu_after_a_right_click_tries_a_control_click(fake_rw, sends):
+    rw, fake = fake_rw, fake_rw.fake
+    root = rw.guid("soc_root")
+    answers = iter([Outcome(0, "no-menu|top:AXWindow,AXMenuBar w1", ""), Outcome(0, "sent-paste|r:right-click", "")])
+    fake.answers["reply-finish"] = Outcome(0, "no-menu", "")
+
+    def effect(argv):
+        fake.answers["reply-finish"] = next(answers)
+        if fake.answers["reply-finish"].stdout.startswith("sent"):
+            write_reply(rw.settings.chat_db, root, tagged(argv, "M")[0])
+
+    fake.effects["reply-finish"] = effect
+    rw.post(send_url(SOCCER), {"text": "second try", "clientId": "c-1", "threadRootId": root})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "c-1"])
+    assert sent[0]["status"] == "sent"
+    assert rw.clicks == [(400.0, 300.0), ("ctrl", 400.0, 300.0)]
+    assert fake.names() == ["reply-aim", "reply-finish", "reply-finish"] and sends == []

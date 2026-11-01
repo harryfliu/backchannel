@@ -625,8 +625,13 @@ on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
         my pressItem(bcList, bcAt)
         delay 0.7
     end if
-    set bcTrace to bcTrace & {"p:" & my selectedList(bcList)}
+    set bcSelected to my selectedList(bcList)
+    set bcTrace to bcTrace & {"p:" & bcSelected}
     if my chatShown(bcWin, bcList, bcStrictNames, bcLooseNames) then return my traced("ok", bcTrace)
+    -- The item we found by name and pressed is the only one selected: its chat is on screen, even if
+    -- the list moved or relabelled it so it isn't found by name again (the message search that
+    -- follows still checks the chat's content).
+    if bcSelected is (bcAt as text) then return my traced("ok", bcTrace & {"pressed"})
     set bcAt to my findRowIndex(bcList, bcStrictNames, bcLooseNames)
     if bcAt is 0 then return my traced("not-selected", bcTrace & {"lost"})
     set bcSels to my selectedFlags(bcList)
@@ -1610,15 +1615,17 @@ on act(argv)
     if bcHints is not {} then set bcHintBefore to item 1 of bcHints
     set bcFocusBefore to "AXTextField|messageBodyField"
     try
+        tell application "System Events" to set bcWin to window 1 of process "Messages"
         set bcMenu to missing value
-        repeat 8 times
-            try
-                tell application "System Events" to set bcMenu to first UI element of process "Messages" whose role is "AXMenu"
-            end try
+        repeat 10 times
+            set bcMenu to item 1 of (my findMenu(bcWin, bcWin))
             if bcMenu is not missing value then exit repeat
             delay 0.2
         end repeat
-        if bcMenu is missing value then return "no-menu"
+        if bcMenu is missing value then
+            my addTrail("top:" & my joinWith(my topRoles(), ",") & " w" & ((my windowTotal()) as text))
+            return "no-menu"
+        end if
         set bcTitles to {}
         try
             tell application "System Events" to set bcTitles to name of every menu item of bcMenu

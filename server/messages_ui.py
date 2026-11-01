@@ -794,6 +794,8 @@ class MessagesUI:
         self.can_click: Callable[[], bool] = mouse.available
         self.right_click: Callable[[float, float], tuple[float, float] | None] = mouse.right_click
         self.move_pointer: Callable[[float, float], None] = mouse.move
+        self.control_click: Callable[[float, float], tuple[float, float] | None] = mouse.control_click
+        self.pointer_now: Callable[[], tuple[float, float] | None] = mouse.pointer
         self._jobs: queue.PriorityQueue[tuple[int, int, Any]] = queue.PriorityQueue()
         self._order = itertools.count()
         self._queued: set[tuple] = set()
@@ -1347,25 +1349,39 @@ class MessagesUI:
         front = extras.get("front", "")
         hint = (extras.get("hint") or "iMessage").split("\t")[0] or "iMessage"
         x, y = float(point.group(1)), float(point.group(2))
+        finish_argv = ["reply-finish", f"M:{job.text}", f"B:{hint}",
+                       *([f"F:{front}"] if re.fullmatch(r"[\w.-]{1,120}", front) else [])]
+        before = None
+        notes = []
         try:
-            before = self.right_click(x, y)
-        except OSError as exc:
-            log.info("Right-click failed: %s", exc)
-            return Interp(None, "Backchannel couldn't click in Messages.", "nothing", "click-failed")
-        time.sleep(0.5)
-        job.ran_script = True
-        try:
-            outcome = self.runner(REPLY_FINISH_SCRIPT, ["reply-finish", f"M:{job.text}", f"B:{hint}",
-                                                        *([f"F:{front}"] if re.fullmatch(r"[\w.-]{1,120}", front) else [])],
-                                  REPLY_TIMEOUT)
+            outcome = None
+            # A right-click, then (if no menu showed up) a Control-click: both are how macOS opens a
+            # context menu. Nothing is typed until a menu's Reply… is chosen, so a second try is safe.
+            for click, name in ((self.right_click, "right"), (self.control_click, "ctrl")):
+                try:
+                    was = click(x, y)
+                except OSError as exc:
+                    log.info("Click failed: %s", exc)
+                    notes.append(f"{name}:failed")
+                    continue
+                before = before or was
+                now = self.pointer_now()
+                notes.append(f"{name}:" + ("at" if now and abs(now[0] - x) < 3 and abs(now[1] - y) < 3 else "off"))
+                time.sleep(0.5)
+                job.ran_script = True
+                outcome = self.runner(REPLY_FINISH_SCRIPT, finish_argv, REPLY_TIMEOUT)
+                if _split(outcome)[0] != "no-menu":
+                    break
         finally:
             if before is not None:
                 try:
                     self.move_pointer(*before)
                 except OSError:
                     pass
+        if outcome is None:
+            return Interp(None, "Backchannel couldn't click in Messages.", "nothing", "click-failed " + " ".join(notes))
         interp = interpret_reply(outcome, job.title)
-        interp.code = (f"{interp.code} [aim {trail}]" if trail else interp.code)
+        interp.code = f"{interp.code} [aim {trail}; {' '.join(notes)}]"
         return interp
 
     def _has_newer(self, job: ReplyJob, reply_guid: str) -> bool:

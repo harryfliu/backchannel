@@ -791,7 +791,8 @@ def test_older_messages_are_aimed_at_and_answered_from_their_own_menu():
     assert aim.index("set bcKeepFront to true") > aim.index('return "bubble-not-found"')  # only when it found it
     assert "key code" not in aim and "set the clipboard" not in aim  # it only looks
     finish = messages_scripts.REPLY_FINISH_ACT
-    assert 'whose role is "AXMenu"' in finish and 'starts with "Reply" then set bcAt to i' in finish
+    assert "my findMenu(bcWin, bcWin)" in finish and 'starts with "Reply" then set bcAt to i' in finish
+    assert 'my addTrail("top:" & ' in finish  # what was there when no menu showed up
     assert finish.index("my replyEngaged(bcHintBefore, bcFocusBefore)") < finish.index("return my typeReply(")
     run = messages_scripts.RUN
     assert "if not bcKeepFront then my restoreFront(bcPrevApp)" in run
