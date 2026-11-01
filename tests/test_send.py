@@ -188,3 +188,59 @@ def test_files_are_staged_under_attachments_backchannel(tmp_path):
     assert staged.parent.parent == tmp_path / "Attachments" / "Backchannel"
     assert staged.name == "evil name_.pdf" and staged.read_bytes() == b"x"
     assert isinstance(staged, Path)
+
+
+def _fake_messages(monkeypatch, *, loads: bool):
+    """subprocess.run as Messages would answer for a group it hasn't loaded (-1728) until its link is opened."""
+    import server.sender as sender_mod
+
+    calls, state = [], {"opened": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "open":
+            state["opened"] = True
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        lines = [cmd[i + 1] for i, p in enumerate(cmd) if p == "-e"]
+        if lines == list(sender_mod.CHAT_LOADED):
+            return subprocess.CompletedProcess(cmd, 0, "true\n" if state["opened"] and loads else "false\n", "")
+        if state["opened"] and loads:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "execution error: Messages got an error: Can’t get chat id \"x\". (-1728)")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sender_mod.time, "sleep", lambda s: None)
+    sender = Sender("applescript")
+    sender.osascript = "/usr/bin/osascript"
+    return sender, calls
+
+
+def test_an_older_group_messages_hasnt_loaded_is_opened_with_its_link_then_sent(monkeypatch):
+    """Harry's Mac: Messages keeps ~215 recent conversations ready for scripting; a group last active two
+    months ago answered "can't get chat id" (-1728) until it was opened."""
+    import server.sender as sender_mod
+
+    sender, calls = _fake_messages(monkeypatch, loads=True)
+    members = ["+14155550134", "grace@example.com"]
+    result = sender.send_text("any;+;chat42", "congrats again", members=members)
+    assert result.ok
+    sends = [c for c in calls if c[0] != "open" and [c[i + 1] for i, p in enumerate(c) if p == "-e"] == list(SEND_TO_CHAT)]
+    assert len(sends) == 2 and all(c[-2:] == ["any;+;chat42", "congrats again"] for c in sends)  # same chat both times
+    opened = [c for c in calls if c[0] == "open"]
+    assert opened == [["open", "-g", "imessage://open?addresses=%2B14155550134,grace@example.com"]]
+    positions = [i for i, c in enumerate(calls) if c in sends]
+    assert positions[0] < calls.index(opened[0]) < positions[1]  # opened between the two tries
+    assert sender_mod.members_link(["+1 415 555", "a@b.co"]) is None  # only plain numbers and addresses
+    assert sender_mod.members_link(["x@y.com&body=hi"]) is None and sender_mod.members_link([]) is None
+
+
+def test_a_group_that_still_wont_load_fails_without_a_second_send(monkeypatch):
+    sender, calls = _fake_messages(monkeypatch, loads=False)
+    result = sender.send_text("any;+;chat42", "hi", members=["+14155550134"])
+    assert not result.ok and "couldn't find that conversation" in result.error
+    sends = [c for c in calls if c[0] != "open" and [c[i + 1] for i, p in enumerate(c) if p == "-e"] == list(SEND_TO_CHAT)]
+    assert len(sends) == 1
+    file_result = sender.send_file("any;+;chat42", Path("/tmp/x.jpg"), members=["+14155550134"])
+    assert not file_result.ok
+    no_members, calls2 = _fake_messages(monkeypatch, loads=True)
+    assert not no_members.send_text("any;+;chat42", "hi").ok and not any(c[0] == "open" for c in calls2)  # DMs etc.

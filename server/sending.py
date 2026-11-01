@@ -97,6 +97,14 @@ class SendService:
 
     # ------------------------------------------------------------------ helpers
 
+    def _group_members(self, conv: Conv, chat: ChatInfo) -> list[str] | None:
+        """A group's member handles as Messages knows them (for its link when Messages hasn't loaded it)."""
+        if conv.kind != "group":
+            return None
+        directory = self.convs.directory()
+        handles = [info.raw for info in (directory.handle(r) for r in chat.handle_rowids) if info and info.raw]
+        return handles or None
+
     def _fallback_handle(self, conv: Conv, chat: ChatInfo) -> str | None:
         if conv.kind != "dm":
             return None
@@ -191,7 +199,7 @@ class SendService:
                 return handled
         result = await asyncio.to_thread(
             self.sender.send_text, chat.guid, text,
-            dm_handle=self._fallback_handle(conv, chat), service=chat.service,
+            dm_handle=self._fallback_handle(conv, chat), service=chat.service, members=self._group_members(conv, chat),
         )
         if not result.ok:
             self._fail(client_id, conv.id, result.error or "Couldn't send the message.")
@@ -298,7 +306,8 @@ class SendService:
 
     async def dispatch_file(self, conv: Conv, chat: ChatInfo, staged: Path, client_id: str, mime: str | None) -> SendResult:
         result = await asyncio.to_thread(
-            self.sender.send_file, chat.guid, staged, dm_handle=self._fallback_handle(conv, chat)
+            self.sender.send_file, chat.guid, staged, dm_handle=self._fallback_handle(conv, chat),
+            members=self._group_members(conv, chat),
         )
         if not result.ok:
             self._fail(client_id, conv.id, result.error or "Couldn't send the file.")

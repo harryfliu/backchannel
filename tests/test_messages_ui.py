@@ -224,7 +224,8 @@ def test_scripts_are_well_formed_and_harmless(name):
 
 
 SENDER_SCRIPTS = {name: getattr(sender, name) for name in
-                  ("SEND_TO_CHAT", "SEND_TO_PARTICIPANT", "SEND_TO_BUDDY", "SEND_FILE_TO_CHAT", "SEND_FILE_TO_PARTICIPANT")}
+                  ("SEND_TO_CHAT", "SEND_TO_PARTICIPANT", "SEND_TO_BUDDY", "SEND_FILE_TO_CHAT", "SEND_FILE_TO_PARTICIPANT",
+                   "CHAT_LOADED")}
 LOCAL_NAMES = (re.compile(r"\bset (\w+) to\b"), re.compile(r"\brepeat with (\w+) (?:in|from)\b"),
                re.compile(r"\bon error (\w+) number (\w+)"), re.compile(r"^property (\w+) :"))
 

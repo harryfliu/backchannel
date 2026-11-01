@@ -7,7 +7,13 @@ them off the event loop.
 
 Order of attempts for text:
  1. `send bcText to chat id bcChatGuid`
- 2. DMs only: `send bcText to participant handle of (1st account whose service type = iMessage)`
+ 2. Groups, when Messages answers "can't get chat id" (-1728): Messages only keeps a couple of hundred
+    recent conversations ready for scripting (215 on Harry's Mac), so an older group can't be sent to
+    until it's opened. Open Messages' link to its members in the background
+    (`imessage://open?addresses=…`, which brings up that unnamed group), wait until
+    `exists chat id bcChatGuid`, and send to that same chat id once more. Nothing ever goes to another
+    chat: if the link opened a different conversation, the retry fails like the first try.
+ 3. DMs only: `send bcText to participant handle of (1st account whose service type = iMessage)`
     (or SMS for SMS chats), then the pre-Monterey `buddy … of 1st service` form.
 """
 
@@ -18,7 +24,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
+from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +79,16 @@ SEND_FILE_TO_CHAT = (
     "end tell",
     "end run",
 )
+CHAT_LOADED = (
+    "on run argv",
+    "set bcChatGuid to item 1 of argv",
+    'tell application "Messages"',
+    "set bcFound to exists chat id bcChatGuid",
+    "end tell",
+    "return bcFound",
+    "end run",
+)
+
 SEND_FILE_TO_PARTICIPANT = (
     "on run argv",
     "set bcHandle to item 1 of argv",
@@ -83,12 +101,25 @@ SEND_FILE_TO_PARTICIPANT = (
 )
 
 _SAFE_FILE = re.compile(r"[^\w.\- ()]+", re.UNICODE)
+_LINK_PHONE = re.compile(r"^\+?\d{3,15}$")
+_LINK_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+LOAD_SECONDS = 8.0  # how long to wait for Messages to load a chat after opening its link
+
+
+def members_link(handles: list[str]) -> str | None:
+    """Messages' link to a conversation with these people (imessage://open?addresses=…), or None unless
+    every handle is a plain phone number or address (nothing else may end up in the link)."""
+    if not handles or not all(_LINK_PHONE.match(h) or _LINK_EMAIL.match(h) for h in handles):
+        return None
+    return "imessage://open?addresses=" + ",".join(quote(h, safe="@.") for h in handles)
 
 
 @dataclass
 class SendResult:
     ok: bool
     error: str | None = None
+    output: str = ""
+    chat_missing: bool = False  # Messages said it can't get that chat id (-1728)
 
 
 def friendly_error(stderr: str) -> str:
@@ -138,14 +169,38 @@ class Sender:
         except OSError as exc:
             return SendResult(False, f"Couldn't run osascript: {exc}")
         if result.returncode == 0:
-            return SendResult(True)
-        return SendResult(False, friendly_error(result.stderr))
+            return SendResult(True, output=(result.stdout or "").strip())
+        stderr = result.stderr or ""
+        missing = "-1728" in stderr or "Can’t get" in stderr or "Can't get" in stderr
+        return SendResult(False, friendly_error(stderr), chat_missing=missing)
 
-    def send_text(self, chat_guid: str, text: str, *, dm_handle: str | None = None, service: str = "iMessage") -> SendResult:
+    def _load_chat(self, chat_guid: str, members: list[str] | None) -> bool:
+        """Get Messages to load a group it isn't keeping ready (see the module doc): open its members' link
+        in the background and wait until the chat id answers. True when it does."""
+        url = members_link(members or [])
+        if url is None:
+            return False
+        try:
+            subprocess.run(["open", "-g", url], capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.info("Couldn't open Messages' link: %s", exc)
+            return False
+        deadline = time.monotonic() + LOAD_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if self._run(CHAT_LOADED, chat_guid).output == "true":
+                return True
+        return False
+
+    def send_text(self, chat_guid: str, text: str, *, dm_handle: str | None = None, service: str = "iMessage",
+                  members: list[str] | None = None) -> SendResult:
         if self.mode == "dry-run":
             log.info("[dry-run] would send to %s: %r", chat_guid, text)
             return SendResult(True)
         result = self._run(SEND_TO_CHAT, chat_guid, text)
+        if not result.ok and result.chat_missing and members and self._load_chat(chat_guid, members):
+            log.info("Messages hadn't loaded that group; opened it with its link and sent again")
+            result = self._run(SEND_TO_CHAT, chat_guid, text)
         if result.ok or not dm_handle:
             return result
         log.info("chat id send failed (%s); trying participant %s", result.error, dm_handle)
@@ -180,11 +235,15 @@ class Sender:
         shutil.copyfile(data_path, dest)
         return dest
 
-    def send_file(self, chat_guid: str, path: Path, *, dm_handle: str | None = None) -> SendResult:
+    def send_file(self, chat_guid: str, path: Path, *, dm_handle: str | None = None,
+                  members: list[str] | None = None) -> SendResult:
         if self.mode == "dry-run":
             log.info("[dry-run] would send file %s to %s", path, chat_guid)
             return SendResult(True)
         result = self._run(SEND_FILE_TO_CHAT, chat_guid, str(path))
+        if not result.ok and result.chat_missing and members and self._load_chat(chat_guid, members):
+            log.info("Messages hadn't loaded that group; opened it with its link and sent the file again")
+            result = self._run(SEND_FILE_TO_CHAT, chat_guid, str(path))
         if result.ok or not dm_handle:
             return result
         fallback = self._run(SEND_FILE_TO_PARTICIPANT, dm_handle, str(path))

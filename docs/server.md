@@ -468,8 +468,13 @@ and Linux.
 - **`/api/health` says chat.db isn't readable** — Full Disk Access is missing
   for the app that started the server. Grant it, quit the terminal, `tmux kill-server`, `backchannel on`.
 - **Sends fail with "macOS blocked Backchannel from controlling Messages"** — allow
-  Automation (step 5). "Couldn't find that conversation" usually means the chat
-  isn't open in Messages on this Mac; open it once there and retry.
+  Automation (step 5). "Couldn't find that conversation" means Messages hasn't
+  loaded that chat: it keeps only a couple of hundred recent conversations ready
+  for other apps (215 on Harry's Mac). For a group, the server first opens
+  Messages' link to its members in the background (`imessage://open?addresses=…`,
+  which brings that group up), waits up to 8 s for its chat id to answer, and
+  sends to that same chat once more; DMs fall back to sending to the person. If
+  it still fails, open the chat once in Messages and retry.
 - **A send shows as failed after ~2 minutes** — Messages accepted it but no row
   appeared in chat.db; check Messages itself.
 - **People show as phone numbers** — check `contacts.count` in `/api/health`.
