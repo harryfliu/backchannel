@@ -264,11 +264,29 @@ def fetch_image(
     timeout: float = FETCH_TIMEOUT,
 ) -> bytes:
     """Download an image link safely (see the module docstring). Raises EmojiError."""
+    return fetch_url(url, resolver=resolver, allowed=allowed, max_bytes=max_bytes, timeout=timeout)[0]
+
+
+def fetch_url(
+    url: str,
+    *,
+    resolver: Callable[[str, int], list[str]] = resolve,
+    allowed: Callable[[str], bool] = public_address,
+    max_bytes: int = MAX_BYTES,
+    timeout: float = FETCH_TIMEOUT,
+    accept: str = "image/avif,image/webp,image/apng,image/png,image/gif,image/*;q=0.8",
+    what: str = "image",
+    truncate: bool = False,
+) -> tuple[bytes, str, str]:
+    """GET a link safely (see the module docstring): (body, content type, final URL). With
+    `truncate`, a body over `max_bytes` is cut there instead of refused (enough of a page's <head>).
+    Raises EmojiError."""
     deadline = time.monotonic() + timeout
+    noun = what
     for _hop in range(MAX_REDIRECTS + 1):
         parts = urlsplit(url.strip())
         if parts.scheme not in ("http", "https"):
-            raise EmojiError(400, "Only http:// and https:// image links work.")
+            raise EmojiError(400, f"Only http:// and https:// {noun} links work.")
         if not parts.hostname:
             raise EmojiError(400, "That link has no host name.")
         if parts.username or parts.password:
@@ -284,7 +302,7 @@ def fetch_image(
             raise EmojiError(400, "That link points at a private or local address, so Backchannel won't fetch it.")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise EmojiError(504, "Downloading the image took longer than 15 seconds.")
+            raise EmojiError(504, f"Downloading the {noun} took longer than {int(timeout)} seconds.")
         if parts.scheme == "https":
             conn: http.client.HTTPConnection = _PinnedHTTPS(parts.hostname, port, addresses, remaining, tls_context())
         else:
@@ -293,7 +311,7 @@ def fetch_image(
         try:
             conn.request("GET", target, headers={
                 "User-Agent": USER_AGENT,
-                "Accept": "image/avif,image/webp,image/apng,image/png,image/gif,image/*;q=0.8",
+                "Accept": accept,
                 "Accept-Encoding": "identity",
             })
             response = conn.getresponse()
@@ -306,30 +324,33 @@ def fetch_image(
             if response.status != 200:
                 raise EmojiError(502, f"The link answered with HTTP {response.status}.")
             declared = response.getheader("Content-Length")
-            if declared and declared.isdigit() and int(declared) > max_bytes:
-                raise EmojiError(413, "That image is larger than 5 MB.")
+            if not truncate and declared and declared.isdigit() and int(declared) > max_bytes:
+                raise EmojiError(413, f"That {noun} is larger than {max_bytes // (1024 * 1024)} MB.")
             chunks: list[bytes] = []
             total = 0
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    raise EmojiError(504, "Downloading the image took longer than 15 seconds.")
+                    raise EmojiError(504, f"Downloading the {noun} took longer than {int(timeout)} seconds.")
                 if conn.sock is not None:
-                    conn.sock.settimeout(left)  # a slow trickle can't stretch the 15 s
+                    conn.sock.settimeout(left)  # a slow trickle can't stretch the timeout
                 chunk = response.read(65536)
                 if not chunk:
                     break
                 total += len(chunk)
                 if total > max_bytes:
-                    raise EmojiError(413, "That image is larger than 5 MB.")
+                    if truncate:
+                        chunks.append(chunk[:max_bytes - (total - len(chunk))])
+                        break
+                    raise EmojiError(413, f"That {noun} is larger than {max_bytes // (1024 * 1024)} MB.")
                 chunks.append(chunk)
-            return b"".join(chunks)
+            return b"".join(chunks), (response.getheader("Content-Type") or "").lower(), url
         except (socket.timeout, TimeoutError):
-            raise EmojiError(504, "Downloading the image took longer than 15 seconds.") from None
+            raise EmojiError(504, f"Downloading the {noun} took longer than {int(timeout)} seconds.") from None
         except ssl.SSLError as exc:
             raise EmojiError(502, f"Couldn't make a secure connection to {parts.hostname} ({exc.reason}).") from None
         except (OSError, http.client.HTTPException) as exc:
-            raise EmojiError(502, f"Couldn't download the image: {exc}.") from None
+            raise EmojiError(502, f"Couldn't download the {noun}: {exc}.") from None
         finally:
             conn.close()
     raise EmojiError(502, "That link redirected too many times (more than 3).")

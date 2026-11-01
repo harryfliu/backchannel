@@ -29,6 +29,7 @@ from .conversations import ConversationService, NotFound, build_me, conv_title, 
 from .emoji import EmojiError, EmojiStore, clean_name
 from .messages_ui import HELPER_SETTINGS, TAPBACKS_OFF, MessagesUI, Runner, Simulator, osascript_runner
 from .stickers import StickerLibrary
+from .unfurl import Unfurler
 from .vips import VipBook
 from .media import Media, guess_mime, kind_of, serving_headers
 from .handles import parse_handle
@@ -180,6 +181,12 @@ class Services:
         self.emoji = EmojiStore(self.state, settings.state_dir / "emoji",
                                 convert_heic=lambda data: self.media.png_bytes(data, uuid.uuid4().hex))
         self.stickers = StickerLibrary(self.db, self.tracker, self.state, self.media)
+        # Previews for links the user sent without one (AppleScript sends are plain text). Only where
+        # sends are real, so tests and the fixture dev server never fetch the web.
+        self.unfurler: Unfurler | None = None
+        if settings.link_previews and settings.send_mode == "applescript" and not settings.fake_db:
+            self.unfurler = Unfurler(self.state, settings.state_dir / "unfurl", on_ready=self._previews_ready)
+            self.builder.unfurler = self.unfurler
         # The Messages helpers only drive the real app when sends are real; with the fake chat.db they
         # write the rows the app would have written instead (tests inject a fake runner).
         simulator = None
@@ -206,7 +213,16 @@ class Services:
             discovered = []
         return build_me(name, my_handles(self.settings.me_handles, discovered), self.contacts)
 
+    def _previews_ready(self, guids: list[str]) -> None:
+        """A link preview arrived: send those messages again so the UI shows it."""
+        for guid in guids:
+            message = self.builder.by_guid(guid)
+            if message is not None:
+                self.hub.publish({"type": "message-updated", "message": message})
+
     def close(self) -> None:
+        if self.unfurler is not None:
+            self.unfurler.close()
         self.search.stop()
         self.state.close()
 
@@ -723,6 +739,15 @@ def create_app(
             elif mime == "audio/mp4" and name.lower().endswith(".caf"):
                 name = Path(name).with_suffix(".m4a").name
         mime, headers = serving_headers(mime, name)
+        return FileResponse(path, media_type=mime, headers=headers)
+
+    @app.get("/api/unfurl/{image_id}")
+    def unfurl_image(image_id: str):
+        found = s.unfurler.image_path(image_id) if s.unfurler is not None else None
+        if found is None:
+            raise ApiError(404, "That preview image isn't here.")
+        path, mime = found
+        mime, headers = serving_headers(mime, path.name)
         return FileResponse(path, media_type=mime, headers=headers)
 
     @app.get("/api/attachments/{att_id}/thumb")

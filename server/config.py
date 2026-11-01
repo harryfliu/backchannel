@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
     "port": 5556,
     "sidebar_days": 180,
     "sidebar_max": 400,
+    "link_previews": True,  # fetch a preview for links you send that Messages kept none for
     "chat_db": "~/Library/Messages/chat.db",
     "addressbook_glob": [
         "~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb",
@@ -79,6 +80,7 @@ class Settings:
     ai: dict[str, Any]
     dist_dir: Path
     dev_origins: list[str] = field(default_factory=list)
+    link_previews: bool = True
 
     @property
     def real_messages_dir(self) -> Path:
@@ -172,6 +174,8 @@ def load_settings(env: Mapping[str, str] | None = None, config_path: Path | None
         ai=ai,
         dist_dir=_expand(env.get("BACKCHANNEL_DIST_DIR") or REPO_ROOT / "web" / "dist"),
         dev_origins=_split_list(env.get("BACKCHANNEL_DEV_ORIGINS", "")),
+        link_previews=_truthy(env["BACKCHANNEL_LINK_PREVIEWS"]) if "BACKCHANNEL_LINK_PREVIEWS" in env
+        else bool(raw.get("link_previews", True)),
     )
 
 

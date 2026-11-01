@@ -77,6 +77,7 @@ not be able to drive it.
 | GET | `/api/avatar/{handle}` | contact photo (JPEG/PNG) or 404 |
 | GET | `/api/attachments/{id}` | the file (HEIC converted to JPEG) |
 | GET | `/api/attachments/{id}/thumb` | ~800px JPEG preview, falls back to the file |
+| GET | `/api/unfurl/{id}` | a link preview's image (see "Link previews") |
 | GET | `/api/events` | Server-sent events, `data: <ServerEvent JSON>` |
 | GET | `/` and `/assets/*` | the built UI from `web/dist` |
 
@@ -238,6 +239,22 @@ app instead, or not at all (see "Tapbacks and threaded replies via Messages"
 below). `regularText: true` in the `SendRequest` skips Messages and sends it the
 normal way, still kept in the thread in Backchannel: the UI's "Send as a regular
 text" on a reply that couldn't be sent as a real one.
+
+**Link previews.** `linkPreview` comes from the preview Messages keeps with a
+link (`com.apple.messages.URLBalloonProvider`, its LPLinkMetadata). Links sent
+through AppleScript (everything Backchannel sends) are plain text, so for the
+user's own messages with a link and no preview the server fetches one: the
+page's Open Graph / Twitter card tags or `<title>` (title, site name,
+description, image), once, in the background (`server/unfurl.py`). Fetching is
+the same as for custom emoji links: http(s) only, public addresses only, at
+most 3 redirects, 8 s and 768 KB for the page (10 s, 5 MB, PNG/JPEG/GIF/WebP
+only for its image). Results are kept in state.db for 7 days (a page that gave
+nothing is tried again after a day); images live in `<state_dir>/unfurl/` and
+are served at `GET /api/unfurl/{id}` (32 hex). When a preview arrives, the
+message is sent again as `message-updated`. Links other people send are never
+fetched. Only when sends are real (`send_mode` applescript, not the fake
+chat.db); `"link_previews": false` in config.json (or
+`BACKCHANNEL_LINK_PREVIEWS=0`) turns it off.
 
 **Live updates.** A watcher polls `PRAGMA data_version` about once a second.
 On change it emits `message` for new rows, `message-updated` for messages whose

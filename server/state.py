@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS kv (
     value TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS unfurl (
+    url TEXT PRIMARY KEY,              -- a link the user sent (see unfurl.py)
+    data TEXT,                         -- LinkPreview JSON, NULL when the page gave nothing
+    ok INTEGER NOT NULL,
+    fetched_at REAL NOT NULL
+);
 """
 
 DEFAULT_PREFS = {"starred": False, "muted": False, "snoozed_until": None, "section": None}
@@ -544,6 +550,18 @@ class State:
             settings.update(patch)
             self.set_kv("server_settings", settings)
             return settings
+
+    # ------------------------------------------------------------------ link previews
+
+    def get_unfurl(self, url: str) -> tuple[dict[str, Any] | None, bool, float] | None:
+        row = self._one("SELECT data, ok, fetched_at FROM unfurl WHERE url = ?", (url,))
+        if row is None:
+            return None
+        return (json.loads(row[0]) if row[0] else None), bool(row[1]), float(row[2])
+
+    def set_unfurl(self, url: str, data: dict[str, Any] | None, *, ok: bool) -> None:
+        self._exec("INSERT OR REPLACE INTO unfurl (url, data, ok, fetched_at) VALUES (?, ?, ?, ?)",
+                   (url, json.dumps(data) if data is not None else None, 1 if ok else 0, time.time()))
 
     # ------------------------------------------------------------------ key/value
 

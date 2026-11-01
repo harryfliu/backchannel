@@ -28,7 +28,7 @@ from .conversations import (
     message_text,
     normalize_service,
 )
-from .linkpreview import link_preview
+from .linkpreview import first_url, link_preview
 from .media import Media, kind_of
 from .state import State
 from .timeutil import apple_to_ns, iso_apple, now_apple_ns, parse_iso
@@ -78,6 +78,7 @@ class _Context:
 
 class MessageBuilder:
     def __init__(self, db: ChatDB, convs: ConversationService, state: State, media: Media):
+        self.unfurler: Any = None  # unfurl.Unfurler, set by the app (previews for links sent without one)
         self.db = db
         self.convs = convs
         self.state = state
@@ -260,6 +261,12 @@ class MessageBuilder:
             text = ""
             visible = []
         link = None if unsent else link_preview(row["balloon_bundle_id"], row["payload_data"], text, preview_image)
+        if (from_me and event is None and not unsent and self.unfurler is not None
+                and not (link and (link.get("title") or link.get("imageUrl")))):
+            # Sent without a preview (AppleScript sends are plain text): fetch one (unfurl.py).
+            url = (link or {}).get("url") or first_url(text)
+            if url:
+                link = self.unfurler.preview(url, row["guid"]) or link
         if event is None and not unsent and not text and not visible and not link:
             return None  # nothing to show (typing artefacts, empty plugin rows…)
 
