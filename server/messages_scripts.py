@@ -935,6 +935,26 @@ end locateBubble
 -- tapback and Reply shortcuts; fall back to the row itself.
 on balloonOf(bcRow)
     if bcRow is missing value then return missing value
+    set bcKids to {}
+    try
+        tell application "System Events" to set bcKids to UI elements of bcRow
+    end try
+    -- The child (or grandchild) that carries the Reply and tapback shortcuts: rows with a thread
+    -- line or a "2 Replies" label have other children first (Harry's Mac: the old first-child pick
+    -- had no tapbacks, and a right-click on the row's middle opened no menu).
+    repeat with bcKid in bcKids
+        if my hasAction(contents of bcKid, {"Reply"}) then return contents of bcKid
+    end repeat
+    repeat with bcKid in bcKids
+        set bcGrand to {}
+        try
+            tell application "System Events" to set bcGrand to UI elements of (contents of bcKid)
+        end try
+        repeat with bcG in bcGrand
+            if my hasAction(contents of bcG, {"Reply"}) then return contents of bcG
+        end repeat
+    end repeat
+    if my hasAction(bcRow, {"Reply"}) then return bcRow
     set bcInner to my atPath(bcRow, {1})
     if bcInner is missing value then return bcRow
     return bcInner
