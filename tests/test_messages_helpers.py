@@ -652,3 +652,28 @@ def test_the_newest_message_falls_back_to_reply_to_last_message(fake_rw, sends):
     rw.post(send_url(SELF), {"text": "noted", "clientId": "n-1", "threadRootId": mine})
     sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "n-1"])
     assert sent[0]["status"] == "sent" and fake.names() == ["reply-aim", "reply-finish", "reply"]
+
+
+def test_a_chat_still_opening_from_its_link_is_tried_once_more(fake_rw):
+    """Harry's Mac: "row-not-found [link w1/1 tl26/0 no row0/0]"; the same tapback worked a moment later."""
+    rw, fake = fake_rw, fake_rw.fake
+    target = rw.guid("j_hike")
+    answers = iter([Outcome(0, "row-not-found|link w1/1 tl26/0 no tr0 row0/0", ""), Outcome(0, "chosen-action|shown t0", "")])
+    fake.answers["tapback"] = Outcome(0, "chosen-action|shown t0", "")
+
+    def effect(argv):
+        fake.answers["tapback"] = next(answers)
+        if fake.answers["tapback"].stdout.startswith("chosen"):
+            write_tapback(rw.settings.chat_db, target, 2000)
+
+    fake.effects["tapback"] = effect
+    rw.services.messages_ui.verify_seconds = 1.0
+    import server.messages_ui as mui
+    original = mui.time.sleep
+    mui.time.sleep = lambda s: None  # don't wait in the test
+    try:
+        assert rw.client.post(tapback_url(JORDAN, target), json={"kind": "love", "remove": False}).status_code == 202
+        done = wait_for(rw, ui_action("tapback", messageId=target))
+    finally:
+        mui.time.sleep = original
+    assert done["result"] == "done" and fake.names().count("tapback") == 2

@@ -588,6 +588,13 @@ def _specific(outcome: Outcome, answers: dict[str, tuple[str | None, str, str]],
     return Interp(None, "The Messages script gave an unexpected answer.", unexpected_state, "unexpected answer" + suffix)
 
 
+def _opening_lagged(outcome: Outcome) -> bool:
+    """Messages' own link opened the chat, but it wasn't on screen (or findable) in time. Harry's
+    Mac: "row-not-found [link w1/1 tl4/0 no row0/0]", then the same tapback worked a moment later."""
+    code, trail = _split(outcome)
+    return code in ("row-not-found", "not-selected") and trail.startswith("link") and " no" in trail
+
+
 def outcome_code(outcome: Outcome) -> str:
     """A short code for the log: never names or UI text."""
     base = _common(outcome, TIMEOUT)
@@ -1234,6 +1241,9 @@ class MessagesUI:
             ok = self.verify_tapback(job, start)
             return answer("done" if ok else "failed", done_text if ok else TAPBACK_UNCONFIRMED)
         outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
+        if _opening_lagged(outcome):  # Messages was still showing the chat its link opened: once more
+            time.sleep(2.0)
+            outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
         interp = interpret_tapback(outcome, job.title)
         quick = quick_emoji(outcome)
         if quick:  # what Messages offers, for the app's tapback picker (kept in state, never logged)
@@ -1322,6 +1332,9 @@ class MessagesUI:
         if not self.can_click():
             return Interp(None, "Backchannel can't click in Messages on this Mac.", "nothing", "no-click")
         aimed = self.runner(REPLY_AIM_SCRIPT, ["reply-aim", *job.argv()[1:]], REPLY_TIMEOUT)
+        if _opening_lagged(aimed):  # nothing touched yet: once more, the chat is usually on screen by now
+            time.sleep(2.0)
+            aimed = self.runner(REPLY_AIM_SCRIPT, ["reply-aim", *job.argv()[1:]], REPLY_TIMEOUT)
         first, _, rest = aimed.stdout.strip().partition("\n")
         code, trail = _split(Outcome(aimed.returncode, first, aimed.stderr, aimed.timed_out))
         point = re.fullmatch(r"aim:(-?\d{1,6}),(-?\d{1,6})", code)

@@ -611,7 +611,10 @@ on openChat(bcWin, bcList, bcStrictNames, bcLooseNames, bcLinks)
         set bcTitleAfter to my titleText(bcWin)
         set bcTrace to bcTrace & {"w" & (bcWinsBefore as text) & "/" & ((my windowTotal()) as text), "tl" & ((length of bcTitleBefore) as text) & "/" & ((length of bcTitleAfter) as text)}
         if bcTitleAfter is not "" and bcTitleAfter is not bcTitleBefore then return my traced("ok", bcTrace & {"changed"})
-        set bcTrace to bcTrace & {"no"}
+        set bcTrace to bcTrace & {"no", "tr" & my listKey(my spotTranscript(bcWin))}
+        -- The window may have re-laid itself out: look the list up again.
+        set bcList to my spotList(bcWin)
+        if bcList is missing value then return my traced("not-selected", bcTrace & {"nolist"})
     end if
     set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
     set bcAt to item 1 of bcFound
