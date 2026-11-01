@@ -925,6 +925,109 @@ on fieldText(bcField)
 end fieldText
 """
 
+# Any emoji as a tapback (doctor --messages-emoji-picker on macOS 26.3): "Add Emoji as Tapback" opens
+# the system emoji picker, an AXPopover in Messages' window whose search field takes the focus, with
+# a table of sections, each an AXGrid (CPKCharactersSectionStaticView) holding every emoji of that
+# section. The emoji is found by its label in those grids (argv E: the emoji, Y: its names) and
+# pressed; nothing is typed.
+EMOJI_PICKER = """
+on tapbackFromPicker(bcBubble, bcEmojis, bcNames)
+    if not my customAction(bcBubble, {"Add Emoji"}) then return "no-emoji-picker"
+    set bcPopover to missing value
+    repeat 8 times
+        delay 0.25
+        set bcPopover to my pickerPopover()
+        if bcPopover is not missing value then exit repeat
+    end repeat
+    if bcPopover is missing value then
+        my pressEscape()
+        return "no-emoji-picker"
+    end if
+    set bcCell to my pickerCell(bcPopover, bcEmojis, bcNames)
+    if bcCell is missing value then
+        my pressEscape()
+        my pressEscape()
+        return "no-emoji-in-picker"
+    end if
+    my addTrail("cell:" & my roleOf(bcCell))
+    try
+        tell application "System Events" to perform action "AXPress" of bcCell
+        return "chosen-picker"
+    end try
+    try
+        tell application "System Events" to set selected of bcCell to true
+    end try
+    delay 0.2
+    my pressEscape()
+    return "no-emoji-press"
+end tapbackFromPicker
+
+-- The emoji picker: the popover holding the focused search field.
+on pickerPopover()
+    set bcField to missing value
+    try
+        tell application "System Events" to set bcField to value of attribute "AXFocusedUIElement" of process "Messages"
+    end try
+    if bcField is missing value then return missing value
+    set bcParent to missing value
+    try
+        tell application "System Events" to set bcParent to value of attribute "AXParent" of bcField
+    end try
+    if bcParent is missing value then return missing value
+    if my roleOf(bcParent) is "AXPopover" then return bcParent
+    return missing value
+end pickerPopover
+
+-- The emoji's cell: in each section's grid, a child whose label is the emoji or one of its names.
+on pickerCell(bcPopover, bcEmojis, bcNames)
+    set bcTable to my atPath(bcPopover, {1, 1})
+    if bcTable is missing value then return missing value
+    set bcRows to 0
+    try
+        tell application "System Events" to set bcRows to count of UI elements of bcTable
+    end try
+    set bcGrids to 0
+    repeat with r from 1 to bcRows
+        set bcGrid to my atPath(bcTable, {r, 1, 1})
+        if bcGrid is not missing value then
+            if my roleOf(bcGrid) is "AXGrid" then
+                set bcGrids to bcGrids + 1
+                set bcDescs to {}
+                try
+                    tell application "System Events" to set bcDescs to description of every UI element of bcGrid
+                end try
+                repeat with i from 1 to count of bcDescs
+                    set bcLabel to my asText(item i of bcDescs)
+                    if my labelIsEmoji(bcLabel, bcEmojis, bcNames) then
+                        my addTrail("grid" & (r as text) & "/" & (i as text))
+                        return my atPath(bcGrid, {i})
+                    end if
+                end repeat
+            end if
+        end if
+    end repeat
+    my addTrail("grids" & (bcGrids as text))
+    return missing value
+end pickerCell
+
+on labelIsEmoji(bcLabel, bcEmojis, bcNames)
+    if bcLabel is "" then return false
+    repeat with bcE in bcEmojis
+        set bcChar to contents of bcE
+        if bcChar is not "" then
+            considering case
+                if bcLabel is bcChar or bcLabel starts with (bcChar & ",") or bcLabel starts with (bcChar & " ") then return true
+            end considering
+        end if
+    end repeat
+    repeat with bcN in bcNames
+        set bcName to contents of bcN
+        if bcName is not "" and bcLabel is bcName then return true
+    end repeat
+    return false
+end labelIsEmoji
+"""
+
 # The reply script uses AppKit (AppleScriptObjC) for the clipboard, so it starts with these.
 USE_APPKIT = """
 use AppleScript version "2.4"
