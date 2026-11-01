@@ -71,7 +71,8 @@ Access instead.
 - **Mark as unread**: right-click a conversation in the sidebar, use the ⋮ menu at the
   top of a conversation, or ⌥-click a message (or its ⋮ › Mark unread from here). It
   stays unread until you open it again.
-- **Catch up**: what needs you, with replies drafted in your voice.
+- **Catch up**: what needs you, with replies drafted in your voice. **Open** takes the suggested reply
+  into the conversation's message box. Settings › About you tells the AI who's who and your nicknames.
 - **Waiting on you**: people who asked you something you haven't answered.
 - **Draft reply**: three suggestions in any conversation.
 - **Apps & alerts**: codes, deliveries and reminders filed away, with a copy-code button.

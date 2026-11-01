@@ -2454,6 +2454,19 @@ button.member-row:hover {
 .setting-intro {
   margin: -4px 0 4px;
 }
+.about-me {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  resize: vertical;
+}
 .composer-note .link-btn {
   font-size: 12px;
 }

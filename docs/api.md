@@ -65,7 +65,7 @@ not be able to drive it.
 | POST | `/api/chief/loops` | body `{ conversationId, messageId, title }` → `{ id, title }` |
 | POST | `/api/conversations/{id}/messages/{messageId}/tapback` | body `{ kind, remove, emoji? }` → 202 `{ status: 'queued' }` (needs `tapbacksViaMessages`, else 409; `kind: 'emoji'` needs `emoji`, else 400) |
 | GET | `/api/settings` | `ServerSettings` |
-| PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` |
+| PATCH | `/api/settings` | body `Partial<ServerSettings>` → `ServerSettings` (`aboutMe` is trimmed; over 1500 characters is 400) |
 | GET | `/api/emoji` | `{ items: CustomEmoji[] }` |
 | POST | `/api/emoji` | multipart `name`, `file` → `CustomEmoji` |
 | POST | `/api/emoji/link` | body `{ name, url }` → `CustomEmoji` (the server downloads the image) |
@@ -134,6 +134,20 @@ non-automated conversations when:
   reply to one of the user's messages.
 `awaitingSince` is the time of the first asking message in the run. The AI
 catch-up does the finer judging.
+
+**AI catch-up and drafts.** The catch-up sends each picked conversation's
+messages from the last 36 hours, after at most 8 older ones marked
+`(earlier, for context)`. It asks for summaries of what's new, written to the
+user as "you". Both prompts tell the model that `[photo]`, `[video]` and the
+like are things it can't see (no describing them unless the texts say so; a
+photo right after a question usually answers it), to keep straight who said
+what and what each message answers, and not to guess anyone's gender from a
+name or nickname. `ServerSettings.aboutMe` (Settings › About you, for the AI)
+is the user's own note on who's who and nicknames. It's appended to both
+prompts, and changing it drops the cached catch-up. In the Catch up view, a
+reply card's **Open** (or its title) opens the conversation with the suggested
+reply, as edited on the card, in the message box. A draft already started
+there is kept.
 
 **Needs you (priority).** What needs the user first, so important texts don't
 get buried in busy chats. Computed on the Mac, no AI, for every non-automated,

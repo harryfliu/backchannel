@@ -447,6 +447,7 @@ export function SettingsModal() {
             )}
           </fieldset>
         )}
+        <AboutMeSetting />
         <MessagesHelpers />
         <CustomEmojiSettings />
         <fieldset className="setting">
@@ -863,6 +864,44 @@ function AddEmojiInner({ sticker, fromSettings }: { sticker: StickerItem | null;
         </div>
       </form>
     </Modal>
+  )
+}
+
+/** A note the AI reads with your texts (catch-up and suggested replies): who's who, nicknames. Saved on blur. */
+function AboutMeSetting() {
+  const saved = useStore((s) => s.serverSettings?.aboutMe ?? '')
+  const ready = useStore((s) => !!s.serverSettings)
+  const [text, setText] = useState(saved)
+  const [editing, setEditing] = useState(false)
+  useEffect(() => {
+    if (!editing) setText(saved)
+  }, [saved, editing])
+  const save = () => {
+    setEditing(false)
+    if (text.trim() !== saved) void setServerSetting({ aboutMe: text.trim() })
+  }
+  return (
+    <fieldset className="setting">
+      <legend>About you, for the AI</legend>
+      <p className="field-help setting-intro">
+        Catch up and suggested replies read this along with your texts, so they get people right. Say who’s who and what you
+        call them, for example: “Sam is my partner. Our daughter Josephine goes by Jo (she/her). Priya is my manager.”
+      </p>
+      <textarea
+        id="about-me"
+        className="about-me"
+        rows={3}
+        maxLength={1500}
+        value={text}
+        disabled={!ready}
+        aria-label="About you, for the AI"
+        onChange={(e) => {
+          setEditing(true)
+          setText(e.target.value)
+        }}
+        onBlur={save}
+      />
+    </fieldset>
   )
 }
 

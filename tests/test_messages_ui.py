@@ -26,7 +26,8 @@ FAMILY = "g:chat100000000000000001"
 DENIED_STDERR = "execution error: System Events got an error: osascript is not allowed assistive access. (-25211)"
 AUTOMATION_STDERR = "execution error: Not authorized to send Apple events to System Events. (-1743)"
 OFF = {"markReadInMessages": False, "tapbacksViaMessages": False, "threadRepliesViaMessages": False, "linkPreviewsViaMessages": False}
-SHOWN = {**OFF, "tapbackQuick": []}  # what /api/settings answers: the switches plus Messages' quick tapbacks
+DEFAULTS = {**OFF, "aboutMe": ""}  # every server setting: the switches, and the note about you the AI reads
+SHOWN = {**DEFAULTS, "tapbackQuick": []}  # what /api/settings answers: the settings plus Messages' quick tapbacks
 
 
 def harness(make_rw, fake: FakeMessages, *, enabled: bool = True, clears: bool = False):
@@ -68,7 +69,7 @@ def test_settings_default_patch_and_persist(rw):
     assert rw.client.patch("/api/settings", json={"markReadInMessages": "maybe"}).status_code == 400
     other = State(rw.settings.state_dir / "state.db")  # it's in state.db, not memory
     try:
-        assert other.get_settings() == {**OFF, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
+        assert other.get_settings() == {**DEFAULTS, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
     finally:
         other.close()
     assert rw.client.patch("/api/settings", json={"tapbacksViaMessages": False, "threadRepliesViaMessages": False,

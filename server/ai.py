@@ -36,6 +36,8 @@ _FALLBACK_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "cl
 STYLE_KEY = "style_profile"
 # `claude -p` timeouts (seconds) per kind of call.
 CLI_TIMEOUTS = {"draft": 90.0, "catchup": 240.0, "style": 120.0}
+CATCHUP_NEW_HOURS = 36  # a catch-up summarizes messages this recent…
+CATCHUP_CONTEXT = 8  # …after at most this many older ones, marked as context
 _EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
 _BOT_PREFIXES = ("📩", "📋", "👀", "📊", "✅ Added", "✅ Done", "📝")
 _COMMANDS = ("todo:", "done ", "schedule:", "cancel:", "reschedule:", "explore ", "hangout", "ghosted",
@@ -95,10 +97,12 @@ Write exactly three short reply options to the latest message(s) in the conversa
 - Sound like {short} actually texts (style notes below): casual, usually lowercase, short.
 - Make the three options genuinely different (for example: a yes, a question back, a lighter or noncommittal take) unless his steer says otherwise.
 - Use real details from the conversation. Don't invent plans, times or facts; put anything he'd need to fill in in [brackets].
+- [photo], [video] and the like are things you can't see: don't describe what they show unless the texts say so.
+- Don't guess anyone's gender from a name or nickname; use their name unless the conversation or the notes about {short} make it clear.
 - No greetings or sign-offs unless he uses them, no hashtags, no quotation marks around the reply. One or two sentences each.
 
 {short}'s texting style:
-{profile}"""
+{profile}{about}"""
 
 CATCHUP_SYSTEM = """You're {name}'s personal assistant catching him up on his iMessages from about the last day. Sort what needs his attention into four buckets and write a one-line vibe check. {short} is the user; lines from him are labelled "{short}".
 
@@ -113,15 +117,25 @@ Rules:
 - Check who sent the LAST message in each conversation. If {short} sent it, the ball is in their court: don't put it in reply_now or reply_soon unless there's a separate unanswered question from them; note that he's waiting on them.
 - If someone only acknowledged or confirmed something ("sounds good", "ok", "got it", "will do", "yup", 👍) and nothing is needed from him, it goes in caught_up, not reply_soon.
 - Only use reply_soon when they asked him a direct question or need a response from him.
+- A transcript may start with a few older messages marked (earlier, for context), then (new). Summarize the new ones; use the older ones only to understand them, never to recap settled threads.
+- Bracketed notes ([photo], [video], [voice message], [file: …], [link: …]) stand for things you can't see or hear. Never say what a photo or video shows unless a caption in the same message, or the texts around it, say so; otherwise just say they sent a photo. A photo sent right after a question is usually the answer to it: after "did you do anything tonight?" it shows what they did.
+- Keep straight who sent what, and what each message answers. A comment is often about something someone else sent earlier (their photo, their news), not about the sender's own message just before it. Don't merge separate messages, or separate sentences of one message, into one claim.
+- Don't guess anyone's gender from a name or nickname. Use he or she only when the conversation or the notes about {short} make it clear; otherwise use their name.
 - Skip verification codes, spam and automated messages entirely.
 - Put each conversation in one bucket (the most urgent); a conversation may also appear in plans when it contains a plan.
-- title: the person's name or a short label for the topic, e.g. "Marcus Webb" or "Thanksgiving at Grace's". summary: one or two plain sentences, no markdown.
+- title: the person's name or a short label for the topic, e.g. "Marcus Webb" or "Thanksgiving at Grace's". summary: one or two plain sentences, no markdown, written to {short} ("you", never "{short}").
 - draft: for reply_now and reply_soon, a reply he could send as-is, in his voice; use [brackets] for details he must fill in. Use an empty string elsewhere. status is "none" outside plans.
 - vibe: one short line, e.g. "Nothing on fire. Two people are waiting on you."
 - Copy conversation_id exactly from the conversation header.
 
 {short}'s texting style:
-{profile}"""
+{profile}{about}"""
+
+# Appended to both prompts when the user wrote a note about themselves (ServerSettings.aboutMe).
+ABOUT_BLOCK = """
+
+About {short}, in his own words (who's who, nicknames; trust this over guesses):
+{note}"""
 
 STYLE_SYSTEM = (
     "You are analyzing someone's texting style from their real iMessage history. Produce a concise style "
@@ -429,6 +443,11 @@ class AIService:
                                       "sample_count": len(samples)})
         return profile
 
+    def about_block(self, short: str) -> str:
+        """The user's note about themselves (Settings › AI), for the prompts; empty when there's none."""
+        note = (self.state.get_settings().get("aboutMe") or "").strip()
+        return ABOUT_BLOCK.format(short=short, note=note) if note else ""
+
     # ------------------------------------------------------------------ drafts
 
     def build_draft_prompt(self, conv: Conv, thread_root_id: str | None, hint: str | None) -> tuple[str, str]:
@@ -449,7 +468,8 @@ class AIService:
         body = transcript(messages, names, me.short_name, root_text)
         steer = f"\n\nSteer from {me.short_name}: {hint.strip()}" if hint and hint.strip() else ""
         user = f"{header}\n\nTranscript (oldest first):\n{body}{steer}\n\nWrite three reply options for {me.short_name}."
-        system = DRAFT_SYSTEM.format(name=me.name, short=me.short_name, profile=self.style_profile())
+        system = DRAFT_SYSTEM.format(name=me.name, short=me.short_name, profile=self.style_profile(),
+                                     about=self.about_block(me.short_name))
         return system, user
 
     def draft(self, conv: Conv, thread_root_id: str | None = None, hint: str | None = None) -> list[str]:
@@ -484,6 +504,12 @@ class AIService:
             conv = directory.get(summary["id"])
             messages = self.builder.recent(conv, 30)
             roots = {m["id"]: m.get("text") or "" for m in messages}
+            # What's new (the last day and a half), after a few older messages for context: a long
+            # window had the model recapping threads settled weeks ago.
+            cutoff = time.time() - CATCHUP_NEW_HOURS * 3600
+            new_from = next((i for i, m in enumerate(messages) if parse_iso(m["sentAt"]) >= cutoff), len(messages))
+            older = messages[max(0, new_from - CATCHUP_CONTEXT):new_from]
+            newer = messages[new_from:]
             last = messages[-1] if messages else None
             last_by = (me.short_name if last and last["fromMe"] else names(last.get("senderHandle"))) if last else "nobody"
             kind = "group" if conv.kind == "group" else "DM"
@@ -492,11 +518,20 @@ class AIService:
             members = ", ".join(p.name for p in conv.persons)
             header = (f"### {summary['title']} — {kind}" + (f" with {members}" if conv.kind == "group" else "") +
                       f" [conversation_id: {conv.id}] ({'; '.join(details)})")
-            blocks.append(header + "\n" + transcript(messages, names, me.short_name, roots))
+            body = transcript(newer, names, me.short_name, roots)
+            if older:
+                body = ("(earlier, for context)\n" + transcript(older, names, me.short_name, roots) +
+                        "\n(new)\n" + body)
+            blocks.append(header + "\n" + body)
         now = datetime.now().strftime("%A, %b %d, %I:%M %p").replace(" 0", " ")
         user = f"Now: {now}.\n\n" + "\n\n".join(blocks)
-        system = CATCHUP_SYSTEM.format(name=me.name, short=me.short_name, profile=self.style_profile())
+        system = CATCHUP_SYSTEM.format(name=me.name, short=me.short_name, profile=self.style_profile(),
+                                       about=self.about_block(me.short_name))
         return system, user
+
+    def forget_catchup(self) -> None:
+        """Drop the cached catch-up (the note about the user changed)."""
+        self._catchup = None
 
     def catchup(self, refresh: bool = False) -> dict[str, Any]:
         self._require()

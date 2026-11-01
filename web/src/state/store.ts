@@ -775,6 +775,14 @@ export function setDraft(key: string, text: string) {
   })
 }
 
+/** Open a conversation with a suggested reply in its message box (catch-up's Open), so it's ready to
+ *  finish and send. A draft you already started there is kept. */
+export function openWithDraft(cid: string, text: string) {
+  const key = draftKey(cid)
+  if (text.trim() && !state.drafts[key]?.trim()) setDraft(key, text)
+  openConversation(cid)
+}
+
 export async function sendMessage(
   cid: string,
   text: string,

@@ -158,3 +158,40 @@ def test_parse_catchup_ignores_garbage():
     picked = [{"id": "dm:+1", "title": "A"}]
     result = parse_catchup({"vibe": "", "reply_now": [None, "x", {"conversation_id": "dm:+1"}]}, picked)
     assert result["vibe"] and result["sections"][0]["items"][0]["title"] == "A"
+
+
+def test_the_note_about_you_reaches_both_prompts(ai):
+    """Harry's catch-up said a friend's photo was "of Evie" and called Everett (Evie, his son) "she": the
+    model can't see photos and guessed a gender from a nickname. Rules now cover both, and Settings ›
+    About you tells it who's who."""
+    harness, stub = ai(CATCHUP_REPLY, CATCHUP_REPLY, {"drafts": ["a", "b", "c"]})
+    assert harness.get("/api/settings")["aboutMe"] == ""
+    assert harness.client.patch("/api/settings", json={"aboutMe": "x" * 1501}).status_code == 400
+    harness.get("/api/ai/catchup")
+    system = stub.calls[-1][1]["system"]
+    assert "can't see or hear" in system and "gender from a name or nickname" in system
+    assert "About Harry, in his own words" not in system  # no note yet
+    saved = harness.client.patch("/api/settings", json={"aboutMe": "  Our son Everett goes by Evie (he/him).  "})
+    assert saved.status_code == 200 and saved.json()["aboutMe"] == "Our son Everett goes by Evie (he/him)."
+    harness.get("/api/ai/catchup")  # a new note drops the cached catch-up
+    assert len(stub.calls) == 2
+    assert "About Harry, in his own words" in stub.calls[-1][1]["system"]
+    assert stub.calls[-1][1]["system"].endswith("Our son Everett goes by Evie (he/him).")
+    harness.post("/api/ai/draft", {"conversationId": "dm:+14155550134"})
+    draft_system = stub.calls[-1][1]["system"]
+    assert draft_system.endswith("Our son Everett goes by Evie (he/him).") and "can't see" in draft_system
+
+
+def test_catchup_sends_whats_new_after_a_little_context(ai):
+    """A 30-message window had the model recapping threads settled weeks ago."""
+    harness, stub = ai(CATCHUP_REPLY)
+    harness.get("/api/ai/catchup")
+    user = stub.calls[-1][1]["messages"][0]["content"]
+    blocks = user.split("\n\n### ")[1:]
+    assert blocks
+    for block in blocks:
+        lines = block.splitlines()[1:]
+        if "(earlier, for context)" in lines:
+            assert lines[0] == "(earlier, for context)" and "(new)" in lines
+            assert lines.index("(new)") - 1 <= 8  # at most 8 older messages
+        assert lines[-1] not in ("(new)", "(earlier, for context)")

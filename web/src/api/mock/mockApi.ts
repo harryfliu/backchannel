@@ -52,6 +52,7 @@ export function createMockApi(): Api {
     tapbacksViaMessages: false,
     threadRepliesViaMessages: false,
     linkPreviewsViaMessages: false,
+    aboutMe: '',
     // What Messages offers as quick tapbacks (its recent emoji), as on Harry's Mac.
     tapbackQuick: ['😂', '👀', '😭', '🤔', '😱'],
   }

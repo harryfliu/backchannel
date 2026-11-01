@@ -14,6 +14,7 @@ import {
   markConversationRead,
   openConversation,
   openThread,
+  openWithDraft,
   personFor,
   sendMessage,
   toast,
@@ -155,7 +156,7 @@ function ReplyCard({ it, k }: { it: CatchUpItem; k: string }) {
     <article className="cu-card">
       <header className="cu-card-head">
         <ConversationGlyph c={c} size={28} />
-        <button type="button" className="cu-card-title" onClick={() => openConversation(c.id)}>
+        <button type="button" className="cu-card-title" onClick={() => openWithDraft(c.id, sent ? '' : text)}>
           {it.title}
         </button>
         {c.awaitingSince && <span className="age-pill is-light">waiting {ageShort(c.awaitingSince)}</span>}
@@ -184,7 +185,7 @@ function ReplyCard({ it, k }: { it: CatchUpItem; k: string }) {
             <button type="button" className="btn is-quiet" onClick={() => markCatchUpDone(k)}>
               Done
             </button>
-            <button type="button" className="btn" onClick={() => openConversation(c.id)}>
+            <button type="button" className="btn" title="Open the conversation with this reply in the message box" onClick={() => openWithDraft(c.id, text)}>
               Open
             </button>
             <button type="submit" className="btn is-primary" disabled={!text.trim()}>

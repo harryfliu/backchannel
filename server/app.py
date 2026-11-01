@@ -49,6 +49,7 @@ log = logging.getLogger("backchannel")
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_EMOJI_BYTES = 5 * 1024 * 1024
 MAX_TEXT = 20000
+MAX_ABOUT_ME = 1500  # ServerSettings.aboutMe: a short note the AI reads
 KEEPALIVE_SECONDS = 15.0
 
 NOT_BUILT_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Backchannel</title>
@@ -108,6 +109,7 @@ class SettingsBody(BaseModel):
     tapbacksViaMessages: bool | None = None
     threadRepliesViaMessages: bool | None = None
     linkPreviewsViaMessages: bool | None = None
+    aboutMe: str | None = None
 
 
 class UnreadBody(BaseModel):
@@ -435,7 +437,8 @@ def create_app(
     # ------------------------------------------------------------------ server settings
 
     def server_settings() -> dict[str, Any]:
-        """`ServerSettings`: the helper switches, plus what Messages offers as quick tapbacks."""
+        """`ServerSettings`: the helper switches and the note about you, plus what Messages offers as quick
+        tapbacks."""
         return {**s.state.get_settings(), "tapbackQuick": s.messages_ui.tapback_quick()}
 
     @app.get("/api/settings")
@@ -449,11 +452,18 @@ def create_app(
             value = getattr(body, key)
             if key in body.model_fields_set and value is not None:
                 patch[key] = bool(value)
+        if "aboutMe" in body.model_fields_set and body.aboutMe is not None:
+            about = body.aboutMe.strip()
+            if len(about) > MAX_ABOUT_ME:
+                raise ApiError(400, f"Keep the note about you under {MAX_ABOUT_ME} characters.")
+            patch["aboutMe"] = about
         before = s.state.get_settings()
         after = s.state.update_settings(patch)
         if any(after[key] and not before[key] for key in HELPER_SETTINGS):
             # Ask for "control System Events" now, not in the middle of the first real action.
             s.messages_ui.probe()
+        if after["aboutMe"] != before["aboutMe"]:
+            s.ai.forget_catchup()  # the next catch-up reads the new note
         return server_settings()
 
     # ------------------------------------------------------------------ custom emoji
