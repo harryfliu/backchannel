@@ -1767,8 +1767,29 @@ button.msg-name:hover {
 }
 .tb-note {
   margin: 4px 6px 2px;
+  max-width: 252px;
   font-size: 12px;
   color: var(--fg-3);
+}
+/* Emoji tapbacks: what Messages offers right now, then "any emoji". */
+.tb-row-emoji {
+  flex-wrap: wrap;
+  max-width: 252px;
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.tb-more {
+  color: var(--fg-3);
+}
+/* The classic "Ha ha" looks like Messages' HA HA, so it isn't mistaken for the 😂 emoji tapback. */
+.tb-haha {
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  color: #2f8cf6;
+  text-align: center;
 }
 .tb-off {
   display: grid;

@@ -26,6 +26,7 @@ FAMILY = "g:chat100000000000000001"
 DENIED_STDERR = "execution error: System Events got an error: osascript is not allowed assistive access. (-25211)"
 AUTOMATION_STDERR = "execution error: Not authorized to send Apple events to System Events. (-1743)"
 OFF = {"markReadInMessages": False, "tapbacksViaMessages": False, "threadRepliesViaMessages": False}
+SHOWN = {**OFF, "tapbackQuick": []}  # what /api/settings answers: the switches plus Messages' quick tapbacks
 
 
 def harness(make_rw, fake: FakeMessages, *, enabled: bool = True, clears: bool = False):
@@ -55,14 +56,14 @@ def ui_actions(rw) -> list[dict]:
 
 
 def test_settings_default_patch_and_persist(rw):
-    assert rw.get("/api/settings") == OFF
+    assert rw.get("/api/settings") == SHOWN
     assert not validate(rw.get("/api/settings"), "ServerSettings")
     assert ui_health(rw) == {"enabled": False, "permission": "unknown", "lastResult": None, "lastAt": None}
     response = rw.client.patch("/api/settings", json={"tapbacksViaMessages": True, "somethingElse": 1})
-    assert response.status_code == 200 and response.json() == {**OFF, "tapbacksViaMessages": True}
+    assert response.status_code == 200 and response.json() == {**SHOWN, "tapbacksViaMessages": True}
     assert ui_health(rw)["enabled"] is True  # any helper counts
     assert rw.client.patch("/api/settings", json={"threadRepliesViaMessages": True}).json() == {
-        **OFF, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
+        **SHOWN, "tapbacksViaMessages": True, "threadRepliesViaMessages": True}
     assert rw.client.patch("/api/settings", json={}).json()["tapbacksViaMessages"] is True
     assert rw.client.patch("/api/settings", json={"markReadInMessages": "maybe"}).status_code == 400
     other = State(rw.settings.state_dir / "state.db")  # it's in state.db, not memory
@@ -71,7 +72,7 @@ def test_settings_default_patch_and_persist(rw):
     finally:
         other.close()
     assert rw.client.patch("/api/settings", json={"tapbacksViaMessages": False, "threadRepliesViaMessages": False,
-                                                  "markReadInMessages": True}).json() == {**OFF, "markReadInMessages": True}
+                                                  "markReadInMessages": True}).json() == {**SHOWN, "markReadInMessages": True}
     assert ui_health(rw)["enabled"] is True
     rw.client.patch("/api/settings", json={"markReadInMessages": False})
     assert ui_health(rw)["enabled"] is False
@@ -620,7 +621,7 @@ def test_scripts_open_the_chat_by_title_link_or_sidebar():
         assert "my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, \"U\"))" in source
         assert "selectOnly" not in source
         assert "open location (item 1 of bcLinks)" in source  # the link comes from argv only
-        assert 'property bcTrail : ""' in source and 'return bcAnswer & "|" & bcTrail' in source
+        assert 'property bcTrail : ""' in source and 'set bcLine to bcAnswer & "|" & bcTrail' in source
     mark = "\n".join(MARK_READ_SCRIPT)
     # Read sync runs whenever a chat is opened: at most 4 pages down (and back), not 30 s of scrolling.
     assert "my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 4)" in mark and "my listHome(bcList, 6)" in mark
@@ -722,3 +723,43 @@ def test_unnamed_groups_are_matched_by_their_members_in_any_order():
     for script in (MARK_READ_SCRIPT, TAPBACK_SCRIPT, REPLY_SCRIPT, INSPECT_SCRIPT):
         assert "property bcMembers : {}" in script
     assert 'set bcMembers to my tagged(argv, "G")' in "\n".join(TAPBACK_SCRIPT)
+
+
+def test_the_answer_is_the_first_line_and_a_tapback_may_name_the_quick_emoji():
+    outcome = Outcome(0, "chosen-action|shown t0\nquick\t😂 👀 lol ❤️ 😂", "")
+    assert messages_ui.interpret_tapback(outcome, "Jordan").code == "chosen-action [shown t0]"
+    assert messages_ui.quick_emoji(outcome) == ["😂", "👀", "❤️"]
+    assert messages_ui.quick_emoji(Outcome(0, "chosen-action", "")) is None
+    assert messages_ui.quick_emoji(Outcome(0, "chosen-action\nquick\t", "")) == []
+    tapback = "\n".join(TAPBACK_SCRIPT)
+    assert 'set bcExtra to "quick" & tab & my emojiActions(bcBubble)' in tapback
+    assert "if bcExtra is not \"\" then set bcLine to bcLine & linefeed & bcExtra" in tapback
+
+
+def test_emoji_titles_and_checks():
+    assert messages_ui.emoji_titles("🔥") == ["🔥", "🔥\ufe0f"]
+    assert messages_ui.emoji_titles("❤️") == ["❤️", "\u2764"]
+    assert messages_ui.same_emoji("❤️", "\u2764") and not messages_ui.same_emoji("❤️", "🧡")
+    assert messages_ui.clean_tapback_emoji(" 🔥 ") == "🔥"
+    for bad in ("", "a", "ok", "🔥 🔥", "1", "#"):
+        assert messages_ui.clean_tapback_emoji(bad) is None, bad
+
+
+def test_emoji_not_offered_as_a_quick_tapback_goes_through_the_emoji_picker():
+    """doctor --messages-emoji-picker on Harry's Mac: "Add Emoji as Tapback" opens an AXPopover whose
+    search field takes the focus, with every emoji in AXGrids (CPKCharactersSectionStaticView)."""
+    act = messages_scripts.TAPBACK_ACT
+    assert act.index('if my customAction(bcBubble, bcSynonyms) then set bcAnswer to "chosen-action"') \
+        < act.index('set bcAnswer to my tapbackFromPicker(bcBubble, bcPicked, my tagged(argv, "Y"))')
+    picker = messages_scripts.EMOJI_PICKER
+    assert 'my customAction(bcBubble, {"Add Emoji"})' in picker and 'is "AXPopover"' in picker
+    assert "set value of" not in picker and "keystroke" not in picker  # found by label and pressed, nothing typed
+    assert "tapbackFromPicker" in "\n".join(TAPBACK_SCRIPT)
+    assert messages_ui.clean_emoji_names(["face_with_tears_of_joy", "joy", "<script>", "x" * 200, "joy"]) == \
+        ["face with tears of joy", "joy"]
+    job = messages_ui.TapbackJob("dm:a", "A", ["A"], 1, [1], "m1", "emoji", False, messages_ui.Bubble(["hi"]),
+                                 emoji="🔥", emoji_names=["fire"])
+    argv = job.argv()
+    assert "E:🔥" in argv and "Y:fire" in argv and argv.index("R:🔥") < argv.index("E:🔥")
+    classic = messages_ui.TapbackJob("dm:a", "A", ["A"], 1, [1], "m1", "love", False, messages_ui.Bubble(["hi"]))
+    assert not [a for a in classic.argv() if a.startswith(("E:", "Y:"))]

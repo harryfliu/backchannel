@@ -301,6 +301,13 @@ export function emojiName(char: string): string {
   return data.byChar.get(char)?.names[0] ?? POPULAR.find(([, c]) => c === char)?.[0] ?? ''
 }
 
+/** An emoji's names as words ("face with tears of joy", "joy"): how Messages' emoji picker may label it. */
+export function emojiLabels(char: string): string[] {
+  const entry = data.byChar.get(char) ?? data.byChar.get(char.replace(/\uFE0F/g, ''))
+  const names = entry?.names ?? POPULAR.filter(([, c]) => c === char).map(([n]) => n)
+  return [...new Set(names.map((n) => n.replace(/_/g, ' ')))].sort((a, b) => b.length - a.length).slice(0, 6)
+}
+
 // ------------------------------------------------------------------ search
 
 export interface EmojiHit {

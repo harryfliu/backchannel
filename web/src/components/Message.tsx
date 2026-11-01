@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Attachment, LinkPreview, Message } from '../api/types'
 import { ageLong, fileSize, fullTimestamp, isEmojiOnly, segmentText, timeShort } from '../lib/format'
 import { Icon } from '../lib/icons'
-import { isClassic } from '../lib/tapbacks'
+import { isClassic, sameEmoji } from '../lib/tapbacks'
 import {
   chiefAvailable,
   displayName,
@@ -441,6 +441,7 @@ function Reactions({ m }: { m: Message }) {
         const who = reactorNames(r.from)
         const label = `${who.charAt(0).toUpperCase() + who.slice(1)} ${TAPBACK_VERB[r.kind] ?? 'reacted'}${r.kind === 'emoji' ? ` with ${r.emoji}` : ' this'}`
         const isPending = !!pending && mine && r.kind === pending.kind && !pending.remove
+          && (r.kind !== 'emoji' || sameEmoji(r.emoji, pending.emoji))
         const face =
           r.kind === 'sticker' && r.stickerUrl ? (
             <img className="reaction-sticker" src={r.stickerUrl} alt="" />
@@ -449,7 +450,8 @@ function Reactions({ m }: { m: Message }) {
           )
         const count = <span className="reaction-count">{r.from.length}</span>
         const kind = r.kind
-        if (!canReact || !isClassic(kind)) {
+        // Classic and emoji tapbacks can be added or removed from their pill; stickers can't.
+        if (!canReact || !(isClassic(kind) || kind === 'emoji')) {
           return (
             <span key={i} className={`reaction ${mine ? 'is-mine' : ''}`} title={label} aria-label={label}>
               {face}
@@ -466,7 +468,7 @@ function Reactions({ m }: { m: Message }) {
             title={`${label}. ${action}`}
             aria-label={`${label}. ${action}`}
             aria-pressed={mine}
-            onClick={(e) => (on ? void sendTapback(m, kind) : setPicker(e.currentTarget))}
+            onClick={(e) => (on ? void sendTapback(m, kind, kind === 'emoji' ? r.emoji : undefined) : setPicker(e.currentTarget))}
           >
             {face}
             {count}

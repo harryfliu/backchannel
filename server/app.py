@@ -116,8 +116,10 @@ class UnreadBody(BaseModel):
 
 class TapbackBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    kind: Literal["love", "like", "dislike", "laugh", "emphasize", "question"]
+    kind: Literal["love", "like", "dislike", "laugh", "emphasize", "question", "emoji"]
     remove: bool = False
+    emoji: str | None = None  # kind "emoji": which one
+    names: list[str] = []  # kind "emoji": its names, to find it in Messages' emoji picker
 
 
 class EmojiLinkBody(BaseModel):
@@ -425,15 +427,19 @@ def create_app(
         if not s.messages_ui.tapbacks_on:
             raise ApiError(409, TAPBACKS_OFF)
         conv = s.convs.get(conv_id)
-        job = s.messages_ui.tapback_job(conv, message_id, body.kind, body.remove)  # 404 / 400
+        job = s.messages_ui.tapback_job(conv, message_id, body.kind, body.remove, body.emoji, body.names)  # 404 / 400
         s.messages_ui.request(job)
         return JSONResponse({"status": "queued"}, status_code=202)
 
     # ------------------------------------------------------------------ server settings
 
+    def server_settings() -> dict[str, Any]:
+        """`ServerSettings`: the helper switches, plus what Messages offers as quick tapbacks."""
+        return {**s.state.get_settings(), "tapbackQuick": s.messages_ui.tapback_quick()}
+
     @app.get("/api/settings")
     def get_settings():
-        return s.state.get_settings()
+        return server_settings()
 
     @app.patch("/api/settings")
     def patch_settings(body: SettingsBody):
@@ -447,7 +453,7 @@ def create_app(
         if any(after[key] and not before[key] for key in HELPER_SETTINGS):
             # Ask for "control System Events" now, not in the middle of the first real action.
             s.messages_ui.probe()
-        return after
+        return server_settings()
 
     # ------------------------------------------------------------------ custom emoji
 

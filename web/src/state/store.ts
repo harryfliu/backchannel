@@ -23,7 +23,8 @@ import type {
   ServerEvent,
 } from '../api/types'
 import { uid, whenLabel } from '../lib/format'
-import { applyTapback, myTapback, tapbackEmoji } from '../lib/tapbacks'
+import { applyTapback, choiceEmoji, myTapback, sameChoice, type TapbackChoice } from '../lib/tapbacks'
+import { emojiLabels } from '../lib/emoji'
 
 export type View =
   | { kind: 'conversation'; id: string }
@@ -131,8 +132,7 @@ export interface State {
   failReasons: Record<string, string>
 }
 
-export interface PendingTapback {
-  kind: ClassicTapback
+export type PendingTapback = TapbackChoice & {
   remove: boolean
   at: number
 }
@@ -1283,8 +1283,8 @@ export async function setServerSetting(patch: Partial<ServerSettings>) {
 // ------------------------------------------------------------------ tapbacks (through the Messages app)
 
 function tapbackLanded(m: Message, p: PendingTapback) {
-  const mine = myTapback(m.reactions)
-  return p.remove ? mine !== p.kind : mine === p.kind
+  const landed = sameChoice(myTapback(m.reactions), p)
+  return p.remove ? !landed : landed
 }
 
 function clearPendingTapback(mid: string) {
@@ -1298,13 +1298,14 @@ function clearPendingTapback(mid: string) {
 
 /** What to draw: the message's reactions with your just-sent tapback applied. */
 export function shownReactions(m: Message, p: PendingTapback | undefined) {
-  return p ? applyTapback(m.reactions, p.kind, p.remove) : m.reactions
+  return p ? applyTapback(m.reactions, p, p.remove) : m.reactions
 }
 
 export const tapbacksOn = () => !!state.serverSettings?.tapbacksViaMessages
 
-/** Add a tapback, or remove it if it's already yours. Messages allows one per person, so a new one replaces yours. */
-export async function sendTapback(m: Message, kind: ClassicTapback) {
+/** Add a tapback (a classic, or an emoji), or remove it if it's already yours. Messages allows one per
+ *  person, so a new one replaces yours. */
+export async function sendTapback(m: Message, kind: ClassicTapback | 'emoji', emoji?: string) {
   if (!tapbacksOn()) {
     toast('Turn on tapbacks in Settings › Messages helpers first.')
     return
@@ -1314,14 +1315,17 @@ export async function sendTapback(m: Message, kind: ClassicTapback) {
     return
   }
   if (m.event || m.unsent) return
-  const remove = myTapback(shownReactions(m, state.pendingTapbacks[m.id])) === kind
-  const p: PendingTapback = { kind, remove, at: Date.now() }
+  if (kind === 'emoji' && !emoji) return
+  const choice: TapbackChoice = kind === 'emoji' ? { kind, emoji: emoji! } : { kind }
+  const remove = sameChoice(myTapback(shownReactions(m, state.pendingTapbacks[m.id])), choice)
+  const p: PendingTapback = { ...choice, remove, at: Date.now() }
   setState((s) => ({ pendingTapbacks: { ...s.pendingTapbacks, [m.id]: p } }))
   try {
-    await api.sendTapback(m.conversationId, m.id, kind, remove)
+    await api.sendTapback(m.conversationId, m.id, kind, remove, choice.emoji,
+      choice.emoji ? emojiLabels(choice.emoji) : undefined)
   } catch (err) {
     if (state.pendingTapbacks[m.id]?.at === p.at) clearPendingTapback(m.id)
-    toast(err instanceof Error ? err.message : `Couldn't send ${tapbackEmoji(kind)}.`, 'error')
+    toast(err instanceof Error ? err.message : `Couldn't send ${choiceEmoji(choice)}.`, 'error')
     return
   }
   // If the result never arrives (say the connection dropped), stop showing it as pending.

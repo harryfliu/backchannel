@@ -93,7 +93,8 @@ iMessage only accepts tapbacks, real thread replies and "mark as read" from the
 Messages app itself. Backchannel can do them by operating Messages for you through
 macOS Accessibility. Turn each one on in Settings (⌘,) › Messages helpers, and allow
 Backchannel in System Settings › Privacy & Security › Accessibility.
-- **Send tapbacks**: ❤️ 👍 👎 😂 ‼️ ❓ from the smiley on any text, or click a reaction to add yours.
+- **Send tapbacks**: ❤️ 👍 👎 HA HA ‼️ ❓ and emoji from the smiley on any text, or click a reaction to add yours.
+  Messages offers its recent emoji as quick tapbacks (that row updates as you use them); others are in "Any emoji".
 - **Send thread replies as real replies**: they thread on everyone's phone. Messages
   comes to the front for a few seconds while it sends. If it can't be sent as a real
   reply, nothing is sent: the message says why, with Try again and Send as a regular

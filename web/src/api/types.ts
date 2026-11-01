@@ -327,6 +327,9 @@ export interface ServerSettings {
   tapbacksViaMessages: boolean
   /** Send thread replies as real inline replies by driving the Messages app (right-click › Reply). Experimental. */
   threadRepliesViaMessages: boolean
+  /** The emoji Messages offers as quick tapbacks (its recent ones), as seen the last time a tapback was sent.
+   *  Read-only; empty until then. Other emoji may not be available as tapbacks yet. */
+  tapbackQuick: string[]
 }
 
 /** The six classic tapbacks, the ones the Messages app can send from a right-click. */
@@ -468,7 +471,9 @@ export interface Api {
   /** Track a message as an open loop in Chief. */
   addChiefLoop(conversationId: string, messageId: string, title: string): Promise<{ id: number; title: string }>
   /** Add or remove one of your tapbacks by driving the Messages app (needs tapbacksViaMessages). */
-  sendTapback(conversationId: string, messageId: string, kind: ClassicTapback, remove: boolean): Promise<{ status: 'queued' }>
+  /** A classic tapback, or kind 'emoji' with the emoji (Messages offers its recent ones; see ServerSettings.tapbackQuick). */
+  sendTapback(conversationId: string, messageId: string, kind: ClassicTapback | 'emoji', remove: boolean,
+              emoji?: string, names?: string[]): Promise<{ status: 'queued' }>
   serverSettings(): Promise<ServerSettings>
   setServerSettings(patch: Partial<ServerSettings>): Promise<ServerSettings>
   customEmoji(): Promise<CustomEmoji[]>

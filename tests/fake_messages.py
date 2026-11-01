@@ -77,11 +77,13 @@ def chat_of(chat_db: Path, guid: str) -> int:
                             "WHERE m.guid = ?", (guid,)).fetchone()[0]
 
 
-def write_tapback(chat_db: Path, target: str, kind_type: int) -> str:
-    """What Messages writes when you pick a tapback: a row of yours pointing at the target."""
+def write_tapback(chat_db: Path, target: str, kind_type: int, emoji: str | None = None) -> str:
+    """What Messages writes when you pick a tapback: a row of yours pointing at the target (an emoji
+    tapback, 2006/3006, names its emoji)."""
+    extra = {"associated_message_emoji": emoji} if emoji is not None else {}
     _, guid = fakedb.write_as_messages_app(chat_db, chat_of(chat_db, target), text="Loved “…”",
                                            associated_message_guid=f"p:0/{target}",
-                                           associated_message_type=kind_type)
+                                           associated_message_type=kind_type, **extra)
     return guid
 
 
