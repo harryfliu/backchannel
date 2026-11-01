@@ -293,7 +293,7 @@ Messages app to do it through macOS Accessibility (System Events), but only when
 chat.db still has unread incoming messages in that conversation. It runs in the
 background, never blocks the request, at most one at a time, and gives up after
 30 s. It finds the conversation's row in Messages' conversation list by its
-display name (scrolling the list a page at a time when it isn't in view, then
+display name (scrolling the list at most 4 pages when it isn't in view, then
 back to the top) and uses the row's own "Mark as Read" accessibility action (no
 selecting, no menus; works with Messages in the background). It never types
 into Messages and never sends anything. Results go to the log and to
@@ -383,7 +383,8 @@ only) or `failed`, and `detail` is a sentence the UI shows as a toast.
   success → `lastResult: "Ready"` (permission stays as it was: Accessibility
   isn't proven until a real action works).
 - At most one Messages action at a time (queue: read sync, tapbacks, replies
-  and the permission check share it); timeouts 30 s (read sync), 45 s (tapback),
+  and the permission check share it; tapbacks and replies go ahead of read sync
+  and the permission check); timeouts 30 s (read sync), 45 s (tapback),
   60 s (reply), since finding a chat may mean scrolling Messages' list. Never in
   dry-run/fake-DB mode: there, a tapback or reply is simulated by writing the
   row it would have produced into the fake chat.db (like simulated sends), so

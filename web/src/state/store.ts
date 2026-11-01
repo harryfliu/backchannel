@@ -1330,7 +1330,7 @@ export async function sendTapback(m: Message, kind: ClassicTapback) {
     clearPendingTapback(m.id)
     const now = findMessage(m.conversationId, m.id)
     if (!now || !tapbackLanded(now, p)) toast('Messages didn’t confirm that tapback. It may not have gone through.')
-  }, 25000)
+  }, 60000) // the server gives a tapback up to 45 s (finding the chat can mean scrolling Messages' sidebar)
 }
 
 // ------------------------------------------------------------------ unreads

@@ -283,7 +283,10 @@ mode (see below).
   and then down a page at a time (AXScrollDownByPage through its items, at most
   12 pages, stopping when the list stops moving; the list ends with section
   groups that can't scroll, so the next few items from that end are tried).
-  Names also include Contacts' short format "First L." Read sync scrolls back to the
+  Names also include Contacts' short format "First L.". An unnamed group's item
+  (and its title) is matched by its members in any order (argv `G:`, each
+  "nickname|first|full name"): every member named, starting with one of them.
+  Read sync scrolls at most 4 pages. Read sync scrolls back to the
   top afterwards.
 - *Opening the chat* (tapbacks, replies): nothing happens unless Messages' main
   window shows that conversation, checked by the title at the top of the chat

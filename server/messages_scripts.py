@@ -68,8 +68,10 @@ def spot_ref(path: tuple[int, ...], base: str = "bcWin") -> str:
 RUN = """
 property bcTrail : ""
 property bcUp : 0
+property bcMembers : {}
 
 on run argv
+    set bcMembers to my tagged(argv, "G")
     set bcPrevApp to my frontBundle()
     set bcAnswer to "error-late:unknown"
     try
@@ -204,6 +206,14 @@ on cleanNames(bcList)
     end repeat
     return bcOut
 end cleanNames
+
+on splitOn(bcText, bcSep)
+    set bcSaved to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to bcSep
+    set bcItems to text items of bcText
+    set AppleScript's text item delimiters to bcSaved
+    return bcItems
+end splitOn
 
 on joinWith(bcList, bcSep)
     set bcSaved to AppleScript's text item delimiters
@@ -402,8 +412,47 @@ on findRowIndex(bcList, bcStrictNames, bcLooseNames)
         end if
     end repeat
     if bcBestAt is 0 then set bcBestAt to bcLooseAt
+    if bcBestAt is 0 and bcMembers is not {} then set bcBestAt to my membersIndex(bcDescs, bcRoles)
     return bcBestAt
 end findRowIndex
+
+-- An unnamed group's item: its label names every member (argv G:, each "nickname|first|full name"),
+-- in any order, starting with one of them. The shortest such label wins.
+on membersIndex(bcDescs, bcRoles)
+    set bcPick to 0
+    set bcPickLen to 0
+    repeat with i from 1 to count of bcDescs
+        set bcRole to ""
+        if i is less than or equal to (count of bcRoles) then set bcRole to my asText(item i of bcRoles)
+        if bcRole is not "AXGroup" then
+            set bcLabel to my asText(item i of bcDescs)
+            if my namesAll(bcLabel) then
+                if bcPick is 0 or (length of bcLabel) < bcPickLen then
+                    set bcPick to i
+                    set bcPickLen to length of bcLabel
+                end if
+            end if
+        end if
+    end repeat
+    return bcPick
+end membersIndex
+
+on namesAll(bcLabel)
+    if bcMembers is {} or bcLabel is "" then return false
+    set bcFirst to false
+    repeat with bcMember in bcMembers
+        set bcFound to false
+        repeat with bcAlt in my splitOn(contents of bcMember, "|")
+            set bcName to my asText(contents of bcAlt)
+            if bcName is not "" and bcLabel contains bcName then
+                set bcFound to true
+                if bcLabel starts with bcName then set bcFirst to true
+            end if
+        end repeat
+        if not bcFound then return false
+    end repeat
+    return bcFirst
+end namesAll
 
 -- ---- opening a conversation (tapbacks, replies)
 
@@ -419,7 +468,7 @@ on titleMatches(bcWin, bcStrictNames, bcLooseNames)
         set bcWant to my asText(contents of bcName)
         if bcWant is not "" and bcTitle is bcWant then return true
     end repeat
-    return false
+    return my namesAll(bcTitle)
 end titleMatches
 
 -- The chat on screen is this conversation: its title says so, or its item is the only one selected.
@@ -1095,11 +1144,11 @@ on act(argv)
     tell application "System Events" to set bcWin to window 1 of process "Messages"
     set bcList to my spotList(bcWin)
     if bcList is missing value then return "no-list"
-    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
+    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 4)
     set bcAt to item 1 of bcFound
     set bcTrail to "row" & (bcAt as text) & "/" & ((item 2 of bcFound) as text)
     if bcAt is 0 then
-        my listHome(bcList, 12)
+        my listHome(bcList, 6)
         return "row-not-found"
     end if
     set bcRowEl to my atPath(bcList, {bcAt})
@@ -1109,7 +1158,7 @@ on act(argv)
     else if my hasAction(bcRowEl, {"Mark as Unread"}) then
         set bcAnswer to "already-read"
     end if
-    if (item 2 of bcFound) > 0 then my listHome(bcList, 12)
+    if (item 2 of bcFound) > 0 then my listHome(bcList, 6)
     return bcAnswer
 end act
 """
@@ -1126,11 +1175,11 @@ on act(argv)
     tell application "System Events" to set bcWin to window 1 of process "Messages"
     set bcList to my spotList(bcWin)
     if bcList is missing value then return "no-list"
-    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)
+    set bcFound to my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 4)
     set bcAt to item 1 of bcFound
     set bcTrail to "row" & (bcAt as text) & "/" & ((item 2 of bcFound) as text)
     if bcAt is 0 then
-        my listHome(bcList, 12)
+        my listHome(bcList, 6)
         return "row-not-found"
     end if
     set bcRowEl to my atPath(bcList, {bcAt})
@@ -1140,7 +1189,7 @@ on act(argv)
     else if my hasAction(bcRowEl, {"Mark as Read"}) then
         set bcAnswer to "already-unread"
     end if
-    if (item 2 of bcFound) > 0 then my listHome(bcList, 12)
+    if (item 2 of bcFound) > 0 then my listHome(bcList, 6)
     return bcAnswer
 end act
 """
@@ -1321,6 +1370,7 @@ REPLY_TEST_MAIN = """
 property bcBudget : 320
 property bcTrail : ""
 property bcUp : 0
+property bcMembers : {}
 
 on run argv
     set bcRunning to false
@@ -1417,6 +1467,7 @@ end run
 INSPECT_RUN = """
 property bcBudget : 320
 property bcTrail : ""
+property bcMembers : {}
 
 on run argv
     set bcAccessErr to 0
@@ -1457,6 +1508,7 @@ on run argv
         else if bcMode is "title" then
             set bcReport to bcReport & {"title_text" & tab & my titleText(bcWin)}
         else if bcMode is "open" then
+            set bcMembers to my tagged(argv, "G")
             set bcPrevApp to my frontBundle()
             set bcList to my spotList(bcWin)
             if bcList is missing value then
@@ -1572,13 +1624,6 @@ on sidebarReport(bcList)
     return bcOut
 end sidebarReport
 
-on splitOn(bcText, bcSep)
-    set bcSaved to AppleScript's text item delimiters
-    set AppleScript's text item delimiters to bcSep
-    set bcItems to text items of bcText
-    set AppleScript's text item delimiters to bcSaved
-    return bcItems
-end splitOn
 
 -- Button labels under an element, a few levels deep (the tapback picker's buttons).
 on collectButtons(bcRoot, bcDepth)

@@ -622,7 +622,8 @@ def test_scripts_open_the_chat_by_title_link_or_sidebar():
         assert "open location (item 1 of bcLinks)" in source  # the link comes from argv only
         assert 'property bcTrail : ""' in source and 'return bcAnswer & "|" & bcTrail' in source
     mark = "\n".join(MARK_READ_SCRIPT)
-    assert "my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 12)" in mark and "my listHome(bcList, 12)" in mark
+    # Read sync runs whenever a chat is opened: at most 4 pages down (and back), not 30 s of scrolling.
+    assert "my findRowScrolling(bcList, bcStrictNames, bcLooseNames, 4)" in mark and "my listHome(bcList, 6)" in mark
     assert "openChat" not in messages_scripts.MARK_READ_ACT  # read sync never changes which chat Messages shows
 
 
@@ -692,3 +693,32 @@ def test_the_reply_test_only_runs_in_your_own_chat():
         < main.index("key code 36")
     printed = [line for line in main.splitlines() if "set bcOut to bcOut & {" in line]
     assert printed and not any(re.search(r"\b(description|value) of\b|fieldText", line) for line in printed)
+
+
+def test_tapbacks_and_replies_go_ahead_of_read_sync():
+    """Harry's Mac: a tapback waited behind two mark-reads that each timed out after 30 s."""
+    helpers = messages_ui.MessagesUI.__new__(messages_ui.MessagesUI)
+    helpers._jobs = messages_ui.queue.PriorityQueue()
+    helpers._order = messages_ui.itertools.count()
+    helpers._queued, helpers._latest, helpers._lock = set(), {}, threading.Lock()
+    helpers._thread = threading.current_thread()  # looks alive: nothing starts working
+    read_a = Job("dm:a", "A", ["A"], [1])
+    read_b = Job("dm:b", "B", ["B"], [2])
+    tap = messages_ui.TapbackJob("dm:c", "C", ["C"], 1, [3], "m1", "love", False, messages_ui.Bubble(["hi"]))
+    for job in (read_a, read_b, tap):
+        assert helpers._enqueue(job)
+    order = [helpers._jobs.get()[2] for _ in range(3)]
+    assert order == [tap, read_a, read_b]
+
+
+def test_unnamed_groups_are_matched_by_their_members_in_any_order():
+    """Messages may list an unnamed group's people in another order than Backchannel
+    ("Josiah, Wifey 4 Lifey & Christina")."""
+    sidebar = messages_scripts.SIDEBAR
+    index = sidebar[sidebar.index("on findRowIndex("):sidebar.index("end findRowIndex")]
+    assert "if bcBestAt is 0 and bcMembers is not {} then set bcBestAt to my membersIndex(bcDescs, bcRoles)" in index
+    title = sidebar[sidebar.index("on titleMatches("):sidebar.index("end titleMatches")]
+    assert title.rstrip().endswith("return my namesAll(bcTitle)")
+    for script in (MARK_READ_SCRIPT, TAPBACK_SCRIPT, REPLY_SCRIPT, INSPECT_SCRIPT):
+        assert "property bcMembers : {}" in script
+    assert 'set bcMembers to my tagged(argv, "G")' in "\n".join(TAPBACK_SCRIPT)

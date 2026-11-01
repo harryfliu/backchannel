@@ -18,6 +18,7 @@ produced into the fake chat.db (tests inject a fake runner instead).
 
 from __future__ import annotations
 
+import itertools
 import logging
 import queue
 import re
@@ -304,13 +305,14 @@ class Job:
     chat_ids: list[int] = field(default_factory=list)
     loose: int | None = None  # how many of `candidates` may match a label's beginning (default: all)
     force: bool = False  # run even when chat.db shows nothing unread (it was marked unread)
+    members: list[str] = field(default_factory=list)  # an unnamed group's people (G:, "nickname|first|full")
     action = "mark-read"
 
     def key(self) -> tuple | None:
         return ("read-state", self.conversation_id)  # shared with UnreadJob: the newest wish wins
 
     def argv(self) -> list[str]:
-        return ["mark-read", *names_argv(self.candidates, self.loose)]
+        return ["mark-read", *names_argv(self.candidates, self.loose), *[f"G:{m}" for m in self.members]]
 
 
 @dataclass
@@ -322,13 +324,14 @@ class UnreadJob:
     candidates: list[str]
     chat_ids: list[int] = field(default_factory=list)
     loose: int | None = None
+    members: list[str] = field(default_factory=list)
     action = "mark-unread"
 
     def key(self) -> tuple | None:
         return ("read-state", self.conversation_id)
 
     def argv(self) -> list[str]:
-        return ["mark-unread", *names_argv(self.candidates, self.loose)]
+        return ["mark-unread", *names_argv(self.candidates, self.loose), *[f"G:{m}" for m in self.members]]
 
 
 @dataclass
@@ -345,6 +348,7 @@ class TapbackJob:
     target_chat_id: int | None = None
     target_text: str = ""
     links: list[str] = field(default_factory=list)  # Messages' own link to the chat (one-to-one chats)
+    members: list[str] = field(default_factory=list)
     action = "tapback"
 
     def key(self) -> tuple | None:
@@ -352,7 +356,8 @@ class TapbackJob:
 
     def argv(self) -> list[str]:
         return ["tapback", *names_argv(self.candidates, self.loose), *self.bubble.argv(),
-                *[f"R:{s}" for s in SYNONYMS[self.kind]], *[f"U:{u}" for u in self.links]]
+                *[f"R:{s}" for s in SYNONYMS[self.kind]], *[f"U:{u}" for u in self.links],
+                *[f"G:{m}" for m in self.members]]
 
 
 @dataclass
@@ -380,6 +385,7 @@ class ReplyJob:
     result: ReplyResult | None = None
     finished: threading.Event = field(default_factory=threading.Event)
     links: list[str] = field(default_factory=list)
+    members: list[str] = field(default_factory=list)
     action = "reply"
 
     def key(self) -> tuple | None:
@@ -387,7 +393,7 @@ class ReplyJob:
 
     def argv(self) -> list[str]:
         return ["reply", *names_argv(self.candidates, self.loose), *self.bubble.argv(), f"M:{self.text}",
-                *[f"U:{u}" for u in self.links]]
+                *[f"U:{u}" for u in self.links], *[f"G:{m}" for m in self.members]]
 
 
 @dataclass
@@ -641,7 +647,8 @@ class MessagesUI:
         self.contacts = contacts
         self.check_after = check_after
         self.verify_seconds = VERIFY_SECONDS
-        self._jobs: queue.Queue[Any] = queue.Queue()
+        self._jobs: queue.PriorityQueue[tuple[int, int, Any]] = queue.PriorityQueue()
+        self._order = itertools.count()
         self._queued: set[tuple] = set()
         self._latest: dict[tuple, Any] = {}  # read-state key → the newest mark-read/unread asked for
         self._lock = threading.Lock()
@@ -725,15 +732,30 @@ class MessagesUI:
             names, loose = candidate_names(title)
         return title, names, loose
 
+    def _members(self, conv: Conv) -> list[str]:
+        """An unnamed group's people as Messages may name them in its sidebar and title, in whatever
+        order it lists them: "nickname|first name|full name" each (G:)."""
+        if conv.kind != "group" or conv.display_name:
+            return []
+        out = []
+        for person in conv.persons:
+            contact = self.contacts.lookup(person.handle) if self.contacts is not None else None
+            alts = [person.short_name, contact.nickname if contact else None, contact.first if contact else None,
+                    person.name]
+            alts = [a.replace("|", " ").strip() for a in dict.fromkeys(a for a in alts if a and a.strip())]
+            if alts:
+                out.append("|".join(alts))
+        return out
+
     def mark_read_job(self, conv: Conv, title: str | None = None, *, force: bool = False) -> Job:
         conv_name, names, loose = self._names(conv)
         if title and title != conv_name:
             names, loose = [title, *[n for n in names if n != title]], loose + 1
-        return Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose, force)
+        return Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose, force, members=self._members(conv))
 
     def mark_unread_job(self, conv: Conv, title: str | None = None) -> UnreadJob:
         job = self.mark_read_job(conv, title)
-        return UnreadJob(job.conversation_id, job.title, job.candidates, job.chat_ids, job.loose)
+        return UnreadJob(job.conversation_id, job.title, job.candidates, job.chat_ids, job.loose, members=job.members)
 
     def target(self, conv: Conv, message_id: str) -> tuple[Any, dict[str, Any]]:
         """The chat.db row and Message for a tapback target or reply root; NotFound / ValueError otherwise."""
@@ -786,7 +808,8 @@ class MessagesUI:
         link = messages_link(conv)
         return TapbackJob(conv.id, title, names, loose, list(conv.chat_ids), message_id, kind, remove,
                           self.bubble_for(conv, message), target_chat_id=row["chat_id"],
-                          target_text=message.get("text") or "", links=[link] if link else [])
+                          target_text=message.get("text") or "", links=[link] if link else [],
+                          members=self._members(conv))
 
     def reply_job(self, conv: Conv, root_id: str, text: str, client_id: str) -> ReplyJob | None:
         """None when the root can't be found in Messages' terms (the reply is then not sent: "Not sent as a reply")."""
@@ -798,13 +821,15 @@ class MessagesUI:
         link = messages_link(conv)
         return ReplyJob(client_id, conv.id, title, names, loose, list(conv.chat_ids), root_id, text,
                         self.bubble_for(conv, message), root_chat_id=row["chat_id"],
-                        root_text=message.get("text") or "", links=[link] if link else [])
+                        root_text=message.get("text") or "", links=[link] if link else [],
+                        members=self._members(conv))
 
     def open_argv(self, conv: Conv) -> list[str]:
         """The inspect script's "open" mode for this conversation (doctor --messages-open)."""
         _title, names, loose = self._names(conv)
         link = messages_link(conv)
-        return ["open", *names_argv(names, loose), *([f"U:{link}"] if link else [])]
+        return ["open", *names_argv(names, loose), *([f"U:{link}"] if link else []),
+                *[f"G:{m}" for m in self._members(conv)]]
 
     # ------------------------------------------------------------------ queueing
 
@@ -847,7 +872,8 @@ class MessagesUI:
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._work, name="messages-helpers", daemon=True)
                 self._thread.start()
-        self._jobs.put(job)
+        # Tapbacks and replies go ahead of read sync and the permission check (someone's waiting on them).
+        self._jobs.put((0 if job.action in ("tapback", "reply") else 1, next(self._order), job))
         return True
 
     def probe(self) -> bool:
@@ -869,7 +895,7 @@ class MessagesUI:
 
     def _work(self) -> None:
         while True:
-            job = self._jobs.get()
+            _priority, _order, job = self._jobs.get()
             with self._lock:
                 key = job.key()
                 if key is not None:

@@ -497,3 +497,18 @@ def test_replies_to_others_wait_until_one_threads_in_your_own_chat(fake_rw, send
     rw.post(send_url(SOCCER), {"text": "ok then", "clientId": "g-2", "threadRootId": root})
     regular = wait_for(rw, ui_action("reply", clientId="g-2"))
     assert regular["result"] == "fallback" and not helpers.replies_proven()
+
+
+def test_an_unnamed_groups_members_go_along(fake_rw):
+    rw = fake_rw
+    helpers = rw.services.messages_ui
+    trio = next(c for c in rw.get("/api/conversations")["conversations"] if c["kind"] == "group"
+                and c["title"].count(",") + c["title"].count("&") >= 2 and not c["title"].startswith(("Sunday", "Dinner",
+                                                                                                         "Liu", "Climbing")))
+    conv = rw.services.convs.get(trio["id"])
+    members = helpers._members(conv)
+    assert len(members) == len(conv.persons) >= 2
+    assert all("|" not in m or m.split("|")[0] for m in members)
+    assert [f"G:{m}" for m in members] == [a for a in helpers.mark_read_job(conv).argv() if a.startswith("G:")]
+    named = rw.services.convs.get(SOCCER)
+    assert helpers._members(named) == []  # a named group goes by its name
