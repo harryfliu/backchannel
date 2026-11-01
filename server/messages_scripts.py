@@ -1522,6 +1522,8 @@ on run argv
             set bcReport to bcReport & my tryTapback(bcWin, bcFront, my tagged(argv, "R"))
         else if bcMode is "try-reply" then
             set bcReport to bcReport & my tryReply(bcWin, bcFront)
+        else if bcMode is "emoji-picker" then
+            set bcReport to bcReport & my emojiPickerProbe(bcWin)
         else
             set bcReport to bcReport & my probeAll(bcWin)
         end if
@@ -1834,6 +1836,102 @@ on tryTapback(bcWin, bcFront, bcSyns)
     if bcFront then my restoreFront(bcPrevApp)
     return bcOut & {"try" & tab & (bcDid as text)}
 end tryTapback
+
+-- doctor --messages-emoji-picker (own chat only; the doctor checked the title): what "Add Emoji as
+-- Tapback" on the newest message opens: top-level elements, windows, picker-like processes, where
+-- the focus went (its ancestors) and the tree around it. Roles, ids, counts and lengths only; then
+-- Escape twice. Nothing is chosen.
+on emojiPickerProbe(bcWin)
+    set bcOut to {}
+    set bcBalloon to my newestBalloon(bcWin)
+    if bcBalloon is missing value then return {"ep" & tab & "no-message"}
+    set bcPrevApp to my frontBundle()
+    my bringForward()
+    my pressEscape()
+    set bcProcsBefore to my pickerProcesses()
+    set bcWinsBefore to my windowCount()
+    set bcOut to bcOut & {"ep_top" & tab & "before" & tab & my joinWith(my topRoles(), ",")}
+    set bcOut to bcOut & {"ep_focus" & tab & "before" & tab & my focusInfo()}
+    set bcDid to my customAction(bcBalloon, {"Add Emoji"})
+    delay 1.5
+    set bcOut to bcOut & {"ep_did" & tab & (bcDid as text)}
+    set bcOut to bcOut & {"ep_top" & tab & "after" & tab & my joinWith(my topRoles(), ",")}
+    set bcOut to bcOut & {"ep_focus" & tab & "after" & tab & my focusInfo()}
+    set bcOut to bcOut & {"ep_windows" & tab & (bcWinsBefore as text) & tab & ((my windowCount()) as text)}
+    set bcOut to bcOut & {"ep_procs" & tab & bcProcsBefore & tab & my pickerProcesses()}
+    set bcOut to bcOut & {"ep_chain" & tab & my focusChain()}
+    set bcNear to my focusAncestor(4)
+    if bcNear is not missing value then
+        set bcBudget to 150
+        set bcOut to bcOut & {"section" & tab & "near-focus", my walk(bcNear, 0, 8)}
+    end if
+    set bcTops to {}
+    try
+        tell application "System Events" to set bcTops to UI elements of process "Messages"
+    end try
+    set bcN to 0
+    repeat with bcTop in bcTops
+        set bcN to bcN + 1
+        set bcRole to my roleOf(contents of bcTop)
+        if bcN > 1 and bcRole is not "AXMenuBar" and bcRole is not "AXFunctionRowTopLevelElement" then
+            set bcBudget to 120
+            set bcOut to bcOut & {"section" & tab & "top-" & (bcN as text), my walk(contents of bcTop, 0, 7)}
+        end if
+    end repeat
+    my pressEscape()
+    delay 0.3
+    my pressEscape()
+    my restoreFront(bcPrevApp)
+    return bcOut
+end emojiPickerProbe
+
+-- The focused element and its ancestors, nearest first: role|id|children each (at most 12).
+on focusChain()
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to value of attribute "AXFocusedUIElement" of process "Messages"
+    end try
+    set bcOut to {}
+    repeat 12 times
+        if bcEl is missing value then exit repeat
+        set bcKids to 0
+        try
+            tell application "System Events" to set bcKids to count of UI elements of bcEl
+        end try
+        set bcOut to bcOut & {my roleOf(bcEl) & "|" & my attrText(bcEl, "AXIdentifier") & "|" & (bcKids as text)}
+        set bcParent to missing value
+        try
+            tell application "System Events" to set bcParent to value of attribute "AXParent" of bcEl
+        end try
+        set bcEl to bcParent
+    end repeat
+    return my joinWith(bcOut, ";")
+end focusChain
+
+on focusAncestor(bcLevels)
+    set bcEl to missing value
+    try
+        tell application "System Events" to set bcEl to value of attribute "AXFocusedUIElement" of process "Messages"
+    end try
+    repeat bcLevels times
+        if bcEl is missing value then exit repeat
+        set bcParent to missing value
+        try
+            tell application "System Events" to set bcParent to value of attribute "AXParent" of bcEl
+        end try
+        if bcParent is missing value then exit repeat
+        set bcEl to bcParent
+    end repeat
+    return bcEl
+end focusAncestor
+
+on pickerProcesses()
+    set bcNames to {}
+    try
+        tell application "System Events" to set bcNames to name of every application process whose name contains "Character" or name contains "Emoji" or name contains "Palette"
+    end try
+    return my joinWith(my cleanNames(bcNames), ",")
+end pickerProcesses
 
 on focusInfo()
     set bcF to missing value

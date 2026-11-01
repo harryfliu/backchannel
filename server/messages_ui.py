@@ -1335,7 +1335,7 @@ def inspect(runner: Runner = osascript_runner, timeout: float = 120.0,
         elif key == "focus" and len(parts) == 3 and parts[2] == "none":
             lines.append(f"- focus {parts[1] if parts[1] in ('before', 'after') else '?'} Reply: nothing focused")
         elif key == "section" and len(parts) == 2:
-            tree.append(f"    [{parts[1] if parts[1] in ('entry-before', 'entry-after') else '?'}]")
+            tree.append(f"    [{parts[1] if re.fullmatch(r'[a-z0-9-]{1,20}', parts[1]) else '?'}]")
         elif key == "picker_buttons" and len(parts) == 3:
             lines.append(f"- tapback picker buttons ({parts[1] if parts[1] in ('window', 'popover') else '?'}): "
                          + (safe_titles(parts[2], private) if parts[2] else "none found"))

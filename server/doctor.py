@@ -358,6 +358,79 @@ def check_system(report: Report, services: Any) -> None:
         report.item("web UI", "not built (web/dist missing)")
 
 
+def _own_chat_open(report: Report, services: Any) -> bool:
+    """Is the user's own chat the one open in Messages (their name at the top)? Says why not."""
+    from . import messages_ui
+
+    try:
+        me = services.convs.me()
+    except ChatDBError:
+        report.item("result", "skipped: chat.db isn't readable")
+        return False
+    title = messages_ui.inspect_mode(["title"])
+    open_title = ""
+    for line in title.stdout.splitlines():
+        if line.startswith("title_text\t"):
+            open_title = line.split("\t", 1)[1].strip().lower()
+    mine = {me.name.strip().lower(), me.short_name.strip().lower()} - {""}
+    if not open_title or open_title not in mine:
+        report.item("result", "skipped: open your own chat in Messages first (your name at the top), then run this again")
+        return False
+    return True
+
+
+def check_messages_emoji_picker(report: Report, services: Any) -> None:
+    """In the user's own chat: what "Add Emoji as Tapback" on the newest message opens (where the
+    focus goes, new windows or popovers, the tree around them), then Escape. Nothing is chosen."""
+    from . import messages_ui
+
+    report.section("Messages helpers, emoji tapback picker (your own chat only)")
+    if not _own_chat_open(report, services):
+        return
+    private = services.contacts.private_names()
+    outcome = messages_ui.inspect_mode(["emoji-picker"], timeout=120.0)
+    if outcome.timed_out:
+        report.item("result", "timed out")
+        return
+    rest: list[str] = []
+
+    def show(value: str) -> str:
+        value = (value or "").strip()
+        if value in ("", "-"):
+            return "-"
+        if not _SHOWABLE.fullmatch(value) or any(p in value.lower() for p in private):
+            return "(hidden)"
+        return value
+
+    for line in outcome.stdout.splitlines():
+        parts = line.split("\t")
+        key = parts[0]
+        if key == "ep" and len(parts) > 1:
+            report.item("result", show(parts[1]))
+        elif key == "ep_top" and len(parts) == 3:
+            report.item(f"top-level elements {parts[1]}", ", ".join(show(r) for r in parts[2].split(",") if r) or "-")
+        elif key == "ep_focus" and len(parts) >= 3:
+            info = parts[2:]
+            if len(info) >= 5:
+                report.item(f"focus {parts[1]}", f"{show(info[0])}, id {show(info[1])}, label {info[2]} chars, "
+                                                 f"text {info[3]} chars, placeholder {show(info[4])}")
+            else:
+                report.item(f"focus {parts[1]}", show(" ".join(info)))
+        elif key == "ep_did" and len(parts) == 2:
+            report.item("Add Emoji as Tapback pressed", show(parts[1]))
+        elif key == "ep_windows" and len(parts) == 3:
+            report.item("Messages windows before → after", f"{parts[1]} → {parts[2]}")
+        elif key == "ep_procs" and len(parts) == 3:
+            report.item("picker-like processes before → after", f"{show(parts[1])} → {show(parts[2])}")
+        elif key == "ep_chain" and len(parts) == 2:
+            report.item("focused element and its ancestors", " ‹ ".join(
+                "|".join(show(x) if not x.isdigit() else x for x in hop.split("|")) for hop in parts[1].split(";") if hop))
+        else:
+            rest.append(line)
+    for line in messages_ui.inspect(private=private, raw=messages_ui.Outcome(0, "\n".join(rest), "")):
+        report.lines.append(line)
+
+
 _SHOWABLE = re.compile(r"[A-Za-z][A-Za-z0-9 .:'’…|_-]{0,48}")
 
 
@@ -498,6 +571,9 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
                         help="live check in your own chat: press Heart (then take it off) and Reply (then Escape)")
     parser.add_argument("--messages-tree", action="store_true",
                         help="with --messages-ui: map the whole Messages window instead (slow, a minute or two)")
+    parser.add_argument("--messages-emoji-picker", action="store_true",
+                        help="in your own chat: open 'Add Emoji as Tapback' on the newest message and describe what "
+                             "appears (roles, ids, counts only), then close it without choosing anything")
     parser.add_argument("--messages-reply-test", action="store_true",
                         help="in your own chat: try each way of starting a reply; for the first that puts "
                              "Messages in reply mode, send a short test reply to yourself and check it threaded")
@@ -532,6 +608,8 @@ def run(argv: list[str] | None = None, *, dotenv: bool = True) -> tuple[int, str
             check_messages_open(report, services, args.messages_open)
         if args.messages_reply_test:
             check_messages_reply_test(report, services)
+        if args.messages_emoji_picker:
+            check_messages_emoji_picker(report, services)
     finally:
         services.close()
     report.section("Result")
