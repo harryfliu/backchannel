@@ -128,6 +128,16 @@ class Harness:
         raise AssertionError(f"timed out; events so far: {[e['type'] for e in events]}")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def no_system_media_tools():
+    """Tests never find this machine's sips, afconvert or qlmanage, so they behave the same on a Mac
+    as on Linux (on Harry's Mac the real sips turned the fixture TIFF into a JPEG and five tests that
+    expect "no sips" failed). A test that needs one installs a fake: `services.media.sips = path`."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("server.media._which", lambda tool: None)
+        yield
+
+
 @pytest.fixture(scope="session")
 def fixture_src(tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("fixtures")

@@ -442,6 +442,9 @@ which sets the `bc_session` cookie; `./backchannel dev` allows the
 `http://localhost:5173` origin for writes.
 
 Tests: `.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest`.
+They never find the machine's `sips`, `afconvert` or `qlmanage` (`tests/conftest.py`
+hides them; tests that need one install a fake), so they behave the same on macOS
+and Linux.
 `tests/ts_shapes.py` validates every route against `web/src/api/types.ts`.
 `python tests/perf_check.py` builds a 500k-message DB and prints timings.
 

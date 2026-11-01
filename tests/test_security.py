@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -98,17 +99,25 @@ def test_files_outside_the_attachments_root_are_refused(rw):
     conn = rw.db()
     chat = fakedb.chat_info(conn, "iMessage;-;+16505550147")
     handle = fakedb.ensure_handle(conn, "+16505550147", "iMessage")
-    secret = rw.fx / "secret.txt"
-    secret.write_text("private")
+    # A real file outside the Messages folders. Not one in pytest's temp folder: on macOS that's under
+    # /private/var/folders/, which counts as a long-gone temporary file (404, checked below).
+    outside = "/etc/hosts"
+    assert Path(outside).is_file()
+    temp_secret = rw.fx / "secret.txt"
+    temp_secret.write_text("private")
     fakedb.insert_message(conn, chat_rowid=chat["ROWID"], text="look", is_from_me=False, handle_rowid=handle,
                           date=time.time(), attachments=[
-                              {"guid": "at_0_ESCAPE1", "filename": str(secret), "transfer_name": "secret.txt"},
+                              {"guid": "at_0_ESCAPE1", "filename": outside, "transfer_name": "hosts"},
                               {"guid": "at_0_ESCAPE2", "filename": "~/Library/Messages/Attachments/../../../../etc/hosts",
                                "transfer_name": "hosts"},
+                              {"guid": "at_0_ESCAPE3", "filename": str(temp_secret), "transfer_name": "secret.txt"},
                           ])
     conn.close()
     assert rw.client.get("/api/attachments/at_0_ESCAPE1").status_code == 403
     assert rw.client.get("/api/attachments/at_0_ESCAPE2").status_code == 403
+    escape3 = rw.client.get("/api/attachments/at_0_ESCAPE3")
+    expected = 404 if rw.services.media.is_transient(str(temp_secret)) else 403
+    assert escape3.status_code == expected and b"private" not in escape3.content
 
 
 def test_risky_file_types_download_instead_of_rendering(rw):
