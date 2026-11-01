@@ -870,7 +870,8 @@ function AddEmojiInner({ sticker, fromSettings }: { sticker: StickerItem | null;
 function MessagesHelpers() {
   const serverSettings = useStore((s) => s.serverSettings)
   const ui = useStore((s) => s.health?.messagesUi)
-  const anyOn = !!serverSettings && (serverSettings.markReadInMessages || serverSettings.tapbacksViaMessages || serverSettings.threadRepliesViaMessages)
+  const anyOn = !!serverSettings && (serverSettings.markReadInMessages || serverSettings.tapbacksViaMessages ||
+    serverSettings.threadRepliesViaMessages || serverSettings.linkPreviewsViaMessages)
   const toggles: { key: keyof ServerSettings; id: string; label: string; help: string }[] = [
     {
       key: 'tapbacksViaMessages',
@@ -883,6 +884,12 @@ function MessagesHelpers() {
       id: 'replies-messages',
       label: 'Send thread replies as real replies',
       help: 'Your replies thread on everyone’s phone, not just here. Messages comes to the front for about a second while it sends.',
+    },
+    {
+      key: 'linkPreviewsViaMessages',
+      id: 'links-messages',
+      label: 'Send links with previews',
+      help: 'A message that is just a link goes out from Messages’ own text box, so people see the preview card, not a bare link. Messages comes to the front for a few seconds.',
     },
     {
       key: 'markReadInMessages',

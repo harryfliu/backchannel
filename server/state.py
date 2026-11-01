@@ -125,7 +125,7 @@ UNSET: Any = object()
 
 # `ServerSettings` (web/src/api/types.ts) and their defaults.
 SERVER_SETTINGS: dict[str, bool] = {"markReadInMessages": False, "tapbacksViaMessages": False,
-                                    "threadRepliesViaMessages": False}
+                                    "threadRepliesViaMessages": False, "linkPreviewsViaMessages": False}
 
 
 class State:

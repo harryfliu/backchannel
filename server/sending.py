@@ -24,7 +24,7 @@ from . import fakedb
 from .chatdb import ChatInfo
 from .config import Settings
 from .conversations import Conv, ConversationService, NotFound, message_text
-from .messages_ui import REPLY_UNPROVEN
+from .messages_ui import REPLY_UNPROVEN, only_a_link
 from .sender import Sender, SendResult
 from .state import State
 from .timeutil import apple_to_unix, iso
@@ -183,6 +183,12 @@ class SendService:
             self._fail(client_id, conv.id, error)
             self._reply_action(conv.id, thread_root_id, client_id, "failed", error)
             return SendResult(False, error)
+        if not thread_root_id and self._links_via_messages(text):
+            # A message that is only a link: from Messages' own text field, so it carries a preview
+            # (AppleScript sends are plain text). Nothing typed there: it goes the normal way below.
+            handled = await self._compose_in_messages(conv, chat, text, client_id)
+            if handled is not None:
+                return handled
         result = await asyncio.to_thread(
             self.sender.send_text, chat.guid, text,
             dm_handle=self._fallback_handle(conv, chat), service=chat.service,
@@ -236,6 +242,33 @@ class SendService:
             return SendResult(False, REPLY_UNCONFIRMED), ""
         self._reply_action(conv.id, root_id, client_id, "done", REPLY_DONE)  # the watcher matched it meanwhile
         return SendResult(True), ""
+
+    def _links_via_messages(self, text: str) -> bool:
+        helpers = self.helpers
+        return helpers is not None and helpers.links_on and helpers.can_act and only_a_link(text)
+
+    async def _compose_in_messages(self, conv: Conv, chat: ChatInfo, text: str, client_id: str) -> SendResult | None:
+        """Send a link from Messages' text field. None = nothing was typed (send it the normal way)."""
+        job = await asyncio.to_thread(self.helpers.compose_job, conv, text, client_id)
+        outcome = await asyncio.to_thread(self.helpers.run_and_wait, job)
+        if outcome.kind == "nothing":
+            log.info("Link not sent through Messages: %s", "nothing typed")
+            return None
+        timer = self._spawn(self._expire(client_id, conv.id))
+        timer._bc_timer = True  # type: ignore[attr-defined]
+        if outcome.kind == "done":
+            self.state.update_pending_if(client_id, ("sending",), status="dispatched", dispatched_at=time.time())
+            if self.settings.send_mode == "dry-run" and self.settings.fake_db and outcome.message_guid:
+                self._spawn(self._fake_receipts(outcome.message_guid, read=chat.service == "iMessage" and not chat.is_group))
+            return SendResult(True)
+        # Typed but not confirmed: never send a second copy (the watcher still matches it if it shows up).
+        unconfirmed = "Messages didn't confirm your link. Check Messages before you try again."
+        if self.state.update_pending_if(client_id, ("sending", "dispatched"), status="unconfirmed",
+                                        error=unconfirmed, dispatched_at=time.time()):
+            self.publish({"type": "send-status", "clientId": client_id, "conversationId": conv.id,
+                          "status": "failed", "error": unconfirmed})
+            return SendResult(False, unconfirmed)
+        return SendResult(True)
 
     async def dispatch_new(self, handle: str, text: str, client_id: str, conversation_id: str) -> SendResult:
         result = await asyncio.to_thread(self.sender.send_to_handle, handle, text)

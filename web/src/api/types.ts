@@ -327,6 +327,9 @@ export interface ServerSettings {
   tapbacksViaMessages: boolean
   /** Send thread replies as real inline replies by driving the Messages app (right-click › Reply). Experimental. */
   threadRepliesViaMessages: boolean
+  /** Send a message that is only a link from Messages' own text field, so it carries a preview
+   *  (AppleScript sends are plain text). Experimental. */
+  linkPreviewsViaMessages: boolean
   /** The emoji Messages offers as quick tapbacks (its recent ones), as seen the last time a tapback was sent.
    *  Read-only; empty until then. Other emoji may not be available as tapbacks yet. */
   tapbackQuick: string[]

@@ -1499,6 +1499,77 @@ on act(argv)
 end act
 """
 
+# --------------------------------------------------------------------------- a link with its preview
+# AppleScript sends are plain text, so links go out without a preview. A message that is only a link
+# is pasted into the chat's own text field instead (Messages loads the preview while it sits there)
+# and sent with Return. Return is only pressed while the field holds our link (or the preview card
+# Messages turned it into); the field must be empty before.
+
+COMPOSE_ACT = """
+on act(argv)
+    set bcLooseNames to my tagged(argv, "L")
+    set bcStrictNames to my tagged(argv, "N")
+    set bcTexts to my tagged(argv, "M")
+    if bcTexts is {} then return "no-text"
+    set bcText to item 1 of bcTexts
+    try
+        set bcState to my messagesState()
+        if bcState is not "ok" then return bcState
+        tell application "System Events" to set bcWin to window 1 of process "Messages"
+        set bcList to my spotList(bcWin)
+        if bcList is missing value then return "no-list"
+        set bcOpened to my openChat(bcWin, bcList, bcStrictNames, bcLooseNames, my tagged(argv, "U"))
+        if bcOpened is not "ok" then return bcOpened
+        my bringForward()
+        set bcEntry to my spotEntry(bcWin)
+        if bcEntry is missing value then return "no-field"
+        set bcBox to my searchId(bcEntry, "messageBodyField")
+        if bcBox is missing value then return "no-field"
+        try
+            tell application "System Events" to set focused of bcBox to true
+        end try
+        delay 0.2
+        set bcFocused to my focusedTextField()
+        if bcFocused is missing value then return "no-field"
+        if my attrText(bcFocused, "AXIdentifier") is not "messageBodyField" then return "no-field"
+        if (my fieldText(bcFocused)) is not "" then return "field-busy"
+    on error bcErrMsg number bcErrNum
+        return "error:" & (bcErrNum as text)
+    end try
+    set bcSaved to my clipSave()
+    my setClip(bcText)
+    try
+        tell application "System Events" to key code 9 using command down
+    end try
+    set bcHow to ""
+    repeat 10 times
+        delay 0.15
+        if (my fieldText(bcFocused)) is not "" then
+            set bcHow to "paste"
+            exit repeat
+        end if
+    end repeat
+    my clipRestore(bcSaved)
+    if bcHow is "" then return "nothing-typed"
+    -- Messages loads the link's preview while the link sits in the field.
+    delay 2.5
+    my bringForward()
+    set bcFocused to my focusedTextField()
+    if bcFocused is missing value then return "typed-not-sent"
+    if my attrText(bcFocused, "AXIdentifier") is not "messageBodyField" then return "typed-not-sent"
+    set bcNow to my fieldText(bcFocused)
+    set bcOurs to false
+    if bcNow is not "" then
+        if bcNow contains bcText or bcNow contains (character id 65532) then set bcOurs to true
+    end if
+    if not bcOurs then return "typed-not-sent"
+    tell application "System Events" to key code 36
+    delay 0.8
+    if (my fieldText(bcFocused)) is "" then return "sent-" & bcHow
+    return "returned-unconfirmed"
+end act
+"""
+
 # --------------------------------------------------------------------------- reply test (doctor)
 # Run only from `doctor --messages-reply-test`, after it checked that the user's own chat is open
 # (the script checks the title again). W: names the way to start replying; if Messages switches
@@ -2119,6 +2190,7 @@ MARK_READ_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_READ_ACT)
 MARK_UNREAD_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + MARK_UNREAD_ACT)
 TAPBACK_SCRIPT = lines(RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + EMOJI_PICKER + TAPBACK_ACT)
 REPLY_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD + MENUS + REPLY_ACT)
+COMPOSE_SCRIPT = lines(USE_APPKIT + RUN + ARGS + ELEMENTS + SIDEBAR + TEXT_FIELDS + CLIPBOARD + COMPOSE_ACT)
 INSPECT_SCRIPT = lines(INSPECT_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + MENUS + INSPECT_HANDLERS)
 REPLY_TEST_SCRIPT = lines(USE_APPKIT + REPLY_TEST_MAIN + ARGS + ELEMENTS + SIDEBAR + BUBBLES + TEXT_FIELDS + CLIPBOARD
                           + MENUS + INSPECT_HANDLERS)

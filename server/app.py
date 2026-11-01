@@ -107,6 +107,7 @@ class SettingsBody(BaseModel):
     markReadInMessages: bool | None = None
     tapbacksViaMessages: bool | None = None
     threadRepliesViaMessages: bool | None = None
+    linkPreviewsViaMessages: bool | None = None
 
 
 class UnreadBody(BaseModel):

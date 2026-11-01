@@ -38,7 +38,8 @@ from . import heuristics as H
 from .chatdb import ChatDB, ChatDBError, NOT_REACTION_SQL
 from .conversations import Conv, NotFound, conv_title, message_text
 from .handles import format_handle
-from .messages_scripts import (INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT,
+from .linkpreview import URL_BALLOON
+from .messages_scripts import (COMPOSE_SCRIPT, INSPECT_SCRIPT, MARK_READ_SCRIPT, MARK_UNREAD_SCRIPT, PROBE_SCRIPT, REPLY_SCRIPT,
                                REPLY_TEST_SCRIPT, TAPBACK_SCRIPT)
 from .state import State
 from .timeutil import iso
@@ -58,11 +59,12 @@ log = logging.getLogger("backchannel.messages_ui")
 TIMEOUT = 30.0  # mark read
 TAPBACK_TIMEOUT = 45.0
 REPLY_TIMEOUT = 60.0
+COMPOSE_TIMEOUT = 45.0
 PROBE_TIMEOUT = 90.0
 VERIFY_SECONDS = 5.0
 CHECK_AFTER = 3.0
 STATUS_KEY = "messages_ui_status"
-HELPER_SETTINGS = ("markReadInMessages", "tapbacksViaMessages", "threadRepliesViaMessages")
+HELPER_SETTINGS = ("markReadInMessages", "tapbacksViaMessages", "threadRepliesViaMessages", "linkPreviewsViaMessages")
 READ_STATE = ("mark-read", "mark-unread")  # one queue slot per conversation: the newest of the two wins
 
 DENIED = re.compile(r"-1719|-25211|assistive access", re.IGNORECASE)
@@ -448,6 +450,41 @@ class ReplyJob:
 
 
 @dataclass
+class ComposeJob:
+    """A message that is only a link, sent from the chat's own text field so it carries a preview."""
+
+    client_id: str
+    conversation_id: str
+    title: str
+    candidates: list[str]
+    loose: int
+    chat_ids: list[int]
+    text: str
+    links: list[str] = field(default_factory=list)
+    members: list[str] = field(default_factory=list)
+    state: str = "queued"  # queued | running | done | cancelled
+    ran_script: bool = False
+    result: ReplyResult | None = None
+    finished: threading.Event = field(default_factory=threading.Event)
+    action = "compose"
+
+    def key(self) -> tuple | None:
+        return None
+
+    def argv(self) -> list[str]:
+        return ["compose", *names_argv(self.candidates, self.loose), f"M:{self.text}",
+                *[f"U:{u}" for u in self.links], *[f"G:{m}" for m in self.members]]
+
+
+_LINK_ONLY = re.compile(r"^(?:https?://|www\.)[^\s<>\"']+$", re.IGNORECASE)
+
+
+def only_a_link(text: str | None) -> bool:
+    """A message that is a single link and nothing else (the ones sent through Messages for a preview)."""
+    return bool(text) and bool(_LINK_ONLY.match(text.strip())) and len(text.strip()) <= 2000
+
+
+@dataclass
 class ProbeJob:
     """Ask for the System Events (Automation) permission up front; never touches Messages."""
 
@@ -646,6 +683,22 @@ REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
 }
 
 
+COMPOSE_ANSWERS: dict[str, tuple[str | None, str, str]] = {
+    "sent-paste": ("granted", "Sent through Messages.", "done"),
+    "returned-unconfirmed": ("granted", "Messages didn't confirm your link.", "maybe"),
+    "typed-not-sent": ("granted", "Your link is in Messages' text field, but it wasn't sent.", "maybe"),
+    "not-running": (None, "Messages isn't open.", "nothing"),
+    "no-window": ("granted", "Messages has no window open.", "nothing"),
+    "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
+    "row-not-found": ("granted", "Couldn't find {title} in Messages' sidebar.", "nothing"),
+    "not-selected": ("granted", "Couldn't open {title} in Messages.", "nothing"),
+    "no-field": ("granted", "Couldn't find Messages' text field.", "nothing"),
+    "field-busy": ("granted", "Messages' text field already had text in it.", "nothing"),
+    "nothing-typed": ("granted", "Couldn't paste the link into Messages.", "nothing"),
+    "no-text": (None, "There was no text to send.", "nothing"),
+}
+
+
 def interpret_reply(outcome: Outcome, title: str) -> Interp:
     """Anything we can't account for counts as "maybe typed": a reply is never sent twice."""
     return _common(outcome, REPLY_TIMEOUT) or _specific(outcome, REPLY_ANSWERS, title, "maybe")
@@ -693,6 +746,13 @@ class Simulator:
             associated_message_guid=f"p:0/{job.message_id}", associated_message_type=kind_type,
             associated_message_range_location=0, associated_message_range_length=len(job.target_text), **extra,
         )
+        return guid
+
+    def compose(self, job: "ComposeJob") -> str:
+        """What Messages writes for a link sent from its text field: a URL balloon."""
+        chat_id = job.chat_ids[0] if job.chat_ids else None
+        _, guid = fakedb.write_as_messages_app(self.chat_db, chat_id, text=job.text, my_handle=self.my_handle(),
+                                               balloon_bundle_id=URL_BALLOON)
         return guid
 
     def reply(self, job: ReplyJob) -> str:
@@ -746,6 +806,10 @@ class MessagesUI:
     @property
     def replies_on(self) -> bool:
         return self._setting("threadRepliesViaMessages")
+
+    @property
+    def links_on(self) -> bool:
+        return self._setting("linkPreviewsViaMessages")
 
     @property
     def enabled(self) -> bool:
@@ -910,6 +974,12 @@ class MessagesUI:
                         root_text=message.get("text") or "", links=[link] if link else [],
                         members=self._members(conv))
 
+    def compose_job(self, conv: Conv, text: str, client_id: str) -> ComposeJob:
+        title, names, loose = self._names(conv)
+        link = messages_link(conv)
+        return ComposeJob(client_id, conv.id, title, names, loose, list(conv.chat_ids), text.strip(),
+                          links=[link] if link else [], members=self._members(conv))
+
     def open_argv(self, conv: Conv) -> list[str]:
         """The inspect script's "open" mode for this conversation (doctor --messages-open)."""
         _title, names, loose = self._names(conv)
@@ -959,14 +1029,14 @@ class MessagesUI:
                 self._thread = threading.Thread(target=self._work, name="messages-helpers", daemon=True)
                 self._thread.start()
         # Tapbacks and replies go ahead of read sync and the permission check (someone's waiting on them).
-        self._jobs.put((0 if job.action in ("tapback", "reply") else 1, next(self._order), job))
+        self._jobs.put((0 if job.action in ("tapback", "reply", "compose") else 1, next(self._order), job))
         return True
 
     def probe(self) -> bool:
         """Ask macOS for the Automation permission now (a helper was just turned on)."""
         return self.request(ProbeJob())
 
-    def run_and_wait(self, job: ReplyJob, timeout: float = 120.0) -> ReplyResult:
+    def run_and_wait(self, job: ReplyJob | ComposeJob, timeout: float = 120.0) -> ReplyResult:
         """Queue a reply and wait for it. If it never got to run, it's cancelled (safe to send normally)."""
         if not self.can_act:
             return ReplyResult("nothing", DRY_RUN_TEXT)
@@ -988,7 +1058,7 @@ class MessagesUI:
                     self._queued.discard(key)
                     job = self._latest.pop(key, job)  # read/unread: whichever was asked for last
                 cancelled = getattr(job, "state", None) == "cancelled"
-                if isinstance(job, ReplyJob) and not cancelled:
+                if isinstance(job, (ReplyJob, ComposeJob)) and not cancelled:
                     job.state = "running"
                 self._busy += 1
             try:
@@ -996,11 +1066,11 @@ class MessagesUI:
                     self._dispatch(job)
             except Exception:
                 log.exception("Messages helper failed (%s)", job.action)
-                if isinstance(job, ReplyJob) and job.result is None:
+                if isinstance(job, (ReplyJob, ComposeJob)) and job.result is None:
                     job.result = (ReplyResult("unconfirmed", REPLY_UNCONFIRMED) if job.ran_script
                                   else ReplyResult("nothing", "The Messages helper failed before typing anything."))
             finally:
-                if isinstance(job, ReplyJob):
+                if isinstance(job, (ReplyJob, ComposeJob)):
                     job.state = "done"
                     job.finished.set()
                 with self._lock:
@@ -1016,6 +1086,8 @@ class MessagesUI:
             self._run_tapback(job)
         elif job.action == "reply":
             job.result = self._run_reply(job)
+        elif job.action == "compose":
+            job.result = self._run_compose(job)
         elif job.action == "probe":
             self._run_probe()
 
@@ -1244,6 +1316,53 @@ class MessagesUI:
         root_text = _norm(job.root_text)
         newer = recent[ids.index(job.root_id) + 1:]
         return any(m["id"] != reply_guid and _norm(m.get("text") or "") != root_text for m in newer)
+
+    # ------------------------------------------------------------------ links with their preview
+
+    def find_compose_row(self, job: ComposeJob, start: int) -> Any | None:
+        """The link's row in chat.db (from me, in this conversation), waiting up to ~8 s."""
+        want = _norm(job.text)
+        deadline = time.monotonic() + max(self.verify_seconds, 8.0) if self.runner is not None else \
+            time.monotonic() + self.verify_seconds
+        while True:
+            for row in self.db.rows_after(start, 200):
+                if (row["is_from_me"] and row["chat_id"] in job.chat_ids and (row["item_type"] or 0) == 0
+                        and not H.is_reaction_type(row["associated_message_type"])):
+                    text = _norm(message_text(row))
+                    if text == want or (want and want in text):
+                        return row
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.25)
+
+    def _run_compose(self, job: ComposeJob) -> ReplyResult:
+        if not self.links_on:
+            return ReplyResult("nothing", "Sending links through Messages is off.")
+        start = self.db.max_rowid()
+        if self.runner is None:
+            if self.simulator is None:
+                return ReplyResult("nothing", DRY_RUN_TEXT)
+            job.ran_script = True
+            self.simulator.compose(job)
+            interp = Interp(None, "Sent with its preview.", "done", "simulated")
+        else:
+            job.ran_script = True
+            outcome = self.runner(COMPOSE_SCRIPT, job.argv(), COMPOSE_TIMEOUT)
+            interp = _common(outcome, COMPOSE_TIMEOUT) or _specific(outcome, COMPOSE_ANSWERS, job.title, "maybe")
+            if interp.state == "nothing":
+                self._record(interp, interp.sentence, "Link")
+                return ReplyResult("nothing", interp.sentence)
+        row = self.find_compose_row(job, start)
+        if row is None:
+            result = ReplyResult("unconfirmed", REPLY_UNCONFIRMED.replace("your reply", "your link"))
+            interp.code += ", not in chat.db"
+        else:
+            rich = row["balloon_bundle_id"] == URL_BALLOON
+            result = ReplyResult("done", "Sent with its preview." if rich else "Sent, but without a preview.", row["guid"])
+            interp.code += ", with preview" if rich else ", no preview"
+        if self.runner is not None:
+            self._record(interp, result.detail, "Link")
+        return result
 
     # ------------------------------------------------------------------ has a real reply worked here?
 

@@ -240,6 +240,19 @@ below). `regularText: true` in the `SendRequest` skips Messages and sends it the
 normal way, still kept in the thread in Backchannel: the UI's "Send as a regular
 text" on a reply that couldn't be sent as a real one.
 
+**Links with their preview (`linkPreviewsViaMessages`, experimental, opt-in).**
+AppleScript sends are plain text, so the people you send a link to see a bare
+link card. With this on, a message that is only a link (`http(s)://…` or
+`www.…`, nothing else) is sent from the chat's own text field instead: open
+the chat as for tapbacks, focus `messageBodyField` (it must be empty), paste
+the link (clipboard saved and put back), wait 2.5 s while Messages loads the
+preview, press Return only while the field still holds the link (or the card
+Messages turned it into, U+FFFC). The row is found in chat.db (≤ 8 s) and the
+log says whether it carries a preview (`com.apple.messages.URLBalloonProvider`).
+If nothing was typed, it goes the normal AppleScript way (no preview); if it
+may have been typed but nothing confirmed it, it's never sent twice. Text with
+a link in it goes the normal way.
+
 **Link previews.** `linkPreview` comes from the preview Messages keeps with a
 link (`com.apple.messages.URLBalloonProvider`, its LPLinkMetadata). Links sent
 through AppleScript (everything Backchannel sends) are plain text, so for the

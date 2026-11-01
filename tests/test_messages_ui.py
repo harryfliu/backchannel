@@ -25,7 +25,7 @@ MARCUS = "dm:+14155550161"
 FAMILY = "g:chat100000000000000001"
 DENIED_STDERR = "execution error: System Events got an error: osascript is not allowed assistive access. (-25211)"
 AUTOMATION_STDERR = "execution error: Not authorized to send Apple events to System Events. (-1743)"
-OFF = {"markReadInMessages": False, "tapbacksViaMessages": False, "threadRepliesViaMessages": False}
+OFF = {"markReadInMessages": False, "tapbacksViaMessages": False, "threadRepliesViaMessages": False, "linkPreviewsViaMessages": False}
 SHOWN = {**OFF, "tapbackQuick": []}  # what /api/settings answers: the switches plus Messages' quick tapbacks
 
 
@@ -163,11 +163,12 @@ def test_candidate_names():
 
 SCRIPTS = {"mark-read": MARK_READ_SCRIPT, "tapback": TAPBACK_SCRIPT, "reply": REPLY_SCRIPT, "inspect": INSPECT_SCRIPT,
            "probe": PROBE_SCRIPT, "mark-unread": MARK_UNREAD_SCRIPT,
-           "reply-test": messages_scripts.REPLY_TEST_SCRIPT}
+           "reply-test": messages_scripts.REPLY_TEST_SCRIPT, "compose": messages_scripts.COMPOSE_SCRIPT}
 KEYS = {"mark-read": {"key code 53"}, "tapback": {"key code 53"}, "inspect": {"key code 53"}, "probe": set(),
         "mark-unread": {"key code 53"},
         "reply": {"key code 53", "key code 36", "key code 9 using command down"},
-        "reply-test": {"key code 53", "key code 36", "key code 9 using command down"}}
+        "reply-test": {"key code 53", "key code 36", "key code 9 using command down"},
+        "compose": {"key code 53", "key code 36", "key code 9 using command down"}}
 
 
 def _check_blocks(lines: tuple[str, ...]) -> None:
@@ -299,7 +300,7 @@ def test_only_the_reply_script_puts_text_into_messages():
         clipboard = "set the clipboard to" in source
         if name == "reply":
             assert writes == ["bcBox"] and clipboard and attribute_writes == []
-        elif name == "reply-test":  # doctor --messages-reply-test, the user's own chat only
+        elif name in ("reply-test", "compose"):  # the doctor's reply test (own chat); a link with its preview
             assert writes == [] and clipboard and attribute_writes == []
         else:
             assert writes == [] and attribute_writes == [] and not clipboard, name
@@ -647,7 +648,7 @@ def test_the_clipboard_is_saved_whole_with_appkit():
     assert "pasteboardItems()" in clip and "dataForType:" in clip and "writeObjects:bcSaved" in clip
     assert "clipboard info" not in clip  # nothing is refused for what kind it is any more
     for name, script in SCRIPTS.items():
-        if name not in ("reply", "reply-test"):
+        if name not in ("reply", "reply-test", "compose"):
             assert not any(line.startswith("use ") for line in script), name
 
 
@@ -763,3 +764,14 @@ def test_emoji_not_offered_as_a_quick_tapback_goes_through_the_emoji_picker():
     assert "E:🔥" in argv and "Y:fire" in argv and argv.index("R:🔥") < argv.index("E:🔥")
     classic = messages_ui.TapbackJob("dm:a", "A", ["A"], 1, [1], "m1", "love", False, messages_ui.Bubble(["hi"]))
     assert not [a for a in classic.argv() if a.startswith(("E:", "Y:"))]
+
+
+def test_a_link_is_only_sent_from_an_empty_field_holding_it():
+    act = messages_scripts.COMPOSE_ACT
+    assert act.index('if (my fieldText(bcFocused)) is not "" then return "field-busy"') < act.index("my setClip(bcText)")
+    assert 'if my attrText(bcFocused, "AXIdentifier") is not "messageBodyField" then return "no-field"' in act
+    before_return = act[:act.index("key code 36")]
+    assert before_return.rindex("if not bcOurs then return") > before_return.rindex("my focusedTextField()")
+    assert "my clipRestore(bcSaved)" in before_return
+    assert messages_ui.only_a_link(" https://www.target.com/p/thing ") and messages_ui.only_a_link("www.target.com")
+    assert not messages_ui.only_a_link("lunch? https://x.com") and not messages_ui.only_a_link("target.com")

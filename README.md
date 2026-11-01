@@ -100,7 +100,10 @@ Backchannel in System Settings › Privacy & Security › Accessibility.
   reply, nothing is sent: the message says why, with Try again and Send as a regular
   text.
 - **Mark texts read in Messages**: opening a conversation here marks it read there
-  too, so your phone matches. Mark as unread here marks it unread there as well.
+  too, so your phone matches.
+- **Send links with previews**: a message that is just a link goes out from Messages'
+  own text box, so people get the preview card instead of a bare link (Messages comes
+  to the front for a few seconds). Mark as unread here marks it unread there as well.
 
 Each one is checked against Messages' database afterward, and you'll see a note if
 it didn't work. They only reach chats and messages Messages has loaded (pinned and

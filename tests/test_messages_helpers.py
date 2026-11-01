@@ -587,3 +587,37 @@ def test_the_simulator_writes_emoji_tapbacks(make_rw):
     rw.client.post(tapback_url(JORDAN, target), json={"kind": "emoji", "emoji": "🎉"})
     assert wait_for(rw, ui_action("tapback", messageId=target))["result"] == "done"
     assert mine(rw.services.builder.by_guid(target)) == ("emoji", "🎉")
+
+
+LINK = "https://www.tartine.example/menu"
+
+
+def test_a_message_that_is_only_a_link_goes_from_messages_text_field(fake_rw, sends):
+    """AppleScript sends are plain text, so Harry's links arrived as bare "target.com" cards."""
+    rw, fake = fake_rw, fake_rw.fake
+    turn_on(rw, linkPreviewsViaMessages=True)
+    chat = rw.services.convs.get(JORDAN).chat_ids[0]
+    fake.effects["compose"] = lambda argv: fakedb.write_as_messages_app(
+        rw.settings.chat_db, chat, text=tagged(argv, "M")[0], balloon_bundle_id="com.apple.messages.URLBalloonProvider")
+    rw.post(send_url(JORDAN), {"text": LINK, "clientId": "l-1"})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "l-1"])
+    assert sent[0]["status"] == "sent" and sends == []
+    name, _script, argv, _timeout = fake.calls[-1]
+    assert name == "compose" and f"M:{LINK}" in argv and "U:imessage://+14155550134" in argv
+    # Text with a link in it, or the setting off: the normal way.
+    rw.post(send_url(JORDAN), {"text": f"lunch? {LINK}", "clientId": "l-2"})
+    wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "l-2"])
+    assert len(sends) == 1
+    turn_on(rw, linkPreviewsViaMessages=False)
+    rw.post(send_url(JORDAN), {"text": LINK + "?again", "clientId": "l-3"})
+    wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "l-3"])
+    assert len(sends) == 2 and [c[0] for c in fake.calls].count("compose") == 1
+
+
+def test_a_link_messages_couldnt_take_goes_the_normal_way(fake_rw, sends):
+    rw, fake = fake_rw, fake_rw.fake
+    turn_on(rw, linkPreviewsViaMessages=True)
+    fake.answers["compose"] = Outcome(0, "field-busy|shown", "")
+    rw.post(send_url(JORDAN), {"text": LINK, "clientId": "l-4"})
+    sent = wait_for(rw, lambda h: [e for e in h if e["type"] == "send-status" and e["clientId"] == "l-4"])
+    assert sent[0]["status"] == "sent" and len(sends) == 1  # the link still went, just without a preview

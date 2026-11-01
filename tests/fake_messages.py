@@ -26,6 +26,7 @@ class FakeMessages:
             "mark-unread": Outcome(0, "ok-action", ""),
             "tapback": Outcome(0, "chosen-overlay", ""),
             "reply": Outcome(0, "sent-paste|shown t0 r:menu", ""),
+            "compose": Outcome(0, "sent-paste|shown", ""),
             "probe": Outcome(0, "ready", ""),
             "inspect": Outcome(0, "", ""),
         }
