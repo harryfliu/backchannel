@@ -3451,6 +3451,9 @@ button.member-row:hover {
 .lb-stage {
   position: relative;
   display: grid;
+  /* One cell the stage's exact size: with an auto row, the image's max-height: 100% meant 100% of its
+     own height, and a 3024×4032 photo showed as a cropped corner at "Fit". */
+  grid-template: 100% / 100%;
   place-items: center;
   height: min(76vh, calc(100vh - 12vh - 110px));
   overflow: hidden;
