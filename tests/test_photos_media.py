@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -16,6 +17,7 @@ from server.media import _heif_size, sniff_dimensions
 JPEG = media_gen.jpeg(16, 16, lambda bx, by: (10, 200, 30))
 
 FAKE_SIPS = r'''#!{python}
+import subprocess
 import sys
 args = sys.argv[1:]
 with open({log!r}, "a") as log:
@@ -174,3 +176,95 @@ def test_genmoji(ro):
     genmoji = ro.message("e_genmoji")["attachments"][0]
     assert genmoji["isGenmoji"] is True and genmoji["emojiDescription"] == "dog wearing sunglasses"
     assert genmoji["kind"] == "image" and genmoji["thumbUrl"]
+
+
+# --------------------------------------------------------------------------- sideways photos made upright
+
+TURNING_SIPS = r'''#!{python}
+import shutil, sys
+args = sys.argv[1:]
+with open({log!r}, "a") as log:
+    log.write(" ".join(a for a in args if not a.startswith("/")) + "\n")
+shutil.copyfile(args[-3], args[-1])  # <flag> <value> <in> --out <out>: the pixels aren't really turned here
+'''
+
+
+@pytest.fixture
+def turning_sips(tmp_path) -> tuple[Path, Path]:
+    log = tmp_path / "turn.log"
+    script = tmp_path / "sips-turn"
+    script.write_text(TURNING_SIPS.format(python=sys.executable, log=str(log)))
+    script.chmod(0o755)
+    return script, log
+
+
+def test_sideways_jpegs_are_turned_upright_and_marked_so(tmp_path, turning_sips):
+    """Harry: right-click › Copy Image on a portrait photo, paste into another chat, and it came out sideways.
+    Thumbnails (and HEIC conversions) keep the photo's pixels sideways with EXIF orientation 6; browsers
+    turn it when they show it, but Copy Image copies the bare pixels. So the served copy is turned and
+    marked upright (orientation 1)."""
+    from server.media import Media, _orientation_at
+
+    sips, log = turning_sips
+    media = Media(tmp_path / "att", tmp_path / "cache")
+    media.sips = str(sips)
+    for value, steps in ((6, ["-r 90 --out"]), (8, ["-r 270 --out"]), (3, ["-r 180 --out"]),
+                         (5, ["-r 90 --out", "-f horizontal --out"]), (2, ["-f horizontal --out"])):
+        for endian in (">", "<"):
+            path = tmp_path / f"o{value}{'m' if endian == '>' else 'i'}.jpg"
+            path.write_bytes(media_gen.with_orientation(JPEG, value, endian))
+            log.unlink(missing_ok=True)
+            assert media.orientation(path) == value
+            assert media.make_upright(path)
+            assert _orientation_at(path.read_bytes())[1] == 1 and media.orientation(path) == 1
+            assert log.read_text().splitlines() == steps, (value, endian)
+    upright = tmp_path / "upright.jpg"
+    upright.write_bytes(media_gen.with_orientation(JPEG, 1))
+    log.unlink(missing_ok=True)
+    assert media.make_upright(upright) and not log.exists()  # nothing to do, nothing run
+    plain = tmp_path / "plain.jpg"
+    plain.write_bytes(JPEG)
+    assert media.orientation(plain) == 1 and media.make_upright(plain)
+    media.sips = None
+    sideways = tmp_path / "nosips.jpg"
+    sideways.write_bytes(media_gen.with_orientation(JPEG, 6))
+    assert not media.make_upright(sideways) and media.orientation(sideways) == 6  # left as it was
+
+
+def test_a_sideways_phone_jpeg_is_served_upright_but_raw_stays_original(make_rw, turning_sips):
+    from server import fakedb
+    from server.media import _orientation_at
+
+    harness = make_rw()
+    sips, _ = turning_sips
+    harness.services.media.sips = str(sips)
+    original = media_gen.with_orientation(JPEG, 6)
+    conn = harness.db()
+    chat = fakedb.chat_info(conn, "iMessage;-;+16505550147")
+    hid = fakedb.ensure_handle(conn, "+16505550147", "iMessage")
+    filename, size = fakedb.store_attachment_file(harness.settings.attachments_root, "at_0_SIDEWAYS", "IMG_1.jpeg", original)
+    fakedb.insert_message(conn, chat_rowid=chat["ROWID"], text=None, is_from_me=False, handle_rowid=hid,
+                          attachments=[{"guid": "at_0_SIDEWAYS", "filename": filename, "transfer_name": "IMG_1.jpeg",
+                                        "mime_type": "image/jpeg", "uti": "public.jpeg", "total_bytes": size}])
+    conn.close()
+    full = harness.client.get("/api/attachments/at_0_SIDEWAYS")
+    assert full.status_code == 200 and full.headers["content-type"] == "image/jpeg"
+    assert _orientation_at(full.content)[1] == 1
+    raw = harness.client.get("/api/attachments/at_0_SIDEWAYS", params={"raw": 1})
+    assert raw.content == original  # the download is the untouched original
+
+
+@pytest.mark.skipif(not Path("/usr/bin/sips").exists(), reason="macOS's sips isn't here")
+def test_the_real_sips_turns_the_pixels(tmp_path):
+    from server.media import Media, _jpeg_size
+
+    media = Media(tmp_path / "att", tmp_path / "cache")
+    media.sips = "/usr/bin/sips"  # tests hide it otherwise (conftest)
+    path = tmp_path / "wide.jpg"
+    path.write_bytes(media_gen.with_orientation(media_gen.jpeg(32, 16, lambda bx, by: (200, 30 * bx, 40)), 6))
+    assert _jpeg_size(path.read_bytes()) == (16, 32)  # shown portrait, stored landscape
+    assert media.make_upright(path)
+    assert media.orientation(path) == 1
+    assert _jpeg_size(path.read_bytes()) == (16, 32)  # still shown portrait…
+    out = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)], capture_output=True, text=True)
+    assert "pixelWidth: 16" in out.stdout and "pixelHeight: 32" in out.stdout  # …now stored that way too

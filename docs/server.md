@@ -150,7 +150,14 @@ variables override both — mostly for dev and tests:
   is only offered when an `<img>` can draw the result (browser formats, or
   HEIC/TIFF with sips; videos only with qlmanage), and `/thumb` answers 404
   rather than handing an `<img>` a video, a document or an unconverted HEIC. The
-  same applies to link-preview images and sticker tapbacks. Genmoji
+  same applies to link-preview images and sticker tapbacks. Portrait phone
+  photos are stored sideways with an EXIF orientation (or a HEIC `irot`) that
+  browsers apply when they show them, but the web view's right-click › Copy
+  Image copies the bare pixels (a pasted copy came out sideways). So every JPEG
+  Backchannel serves is upright: thumbnails and HEIC/TIFF conversions are turned
+  with sips (`-r`/`-f`) and their orientation tag set to 1, and a sideways JPEG
+  gets an upright cached copy for `/attachments/{id}`. Thumbnails cached before
+  this are fixed the first time they're shown; `?raw=1` stays the original. Genmoji
   attachments carry `isGenmoji` and `emojiDescription`.
 
 ## Custom emoji, stickers and settings
@@ -302,8 +309,10 @@ mode (see below).
 - *The bubble* (tapbacks, replies): the transcript right of the sidebar row,
   newest first (the window walked backwards). Text: the first line (60 chars);
   8+ characters must appear in a label, shorter ones must be a whole label line.
-  Attachment-only messages: their placeholder ("Photo", "Audio Message",
-  "Sticker"…). The label must also show the minute it was sent (" 1:37" or
+  Attachment-only messages: their placeholder as a whole part of the label
+  ("Photo", "Audio Message", "Sticker"…; on macOS 26.3 a photo reads `Name,
+  Includes picture, 2:59 PM` or `Name, Image attached, IMG_1.jpeg, Image ·
+  2.5 MB, …`, a video `Video attached`). The label must also show the minute it was sent (" 1:37" or
   " 13:37", 12- and 24-hour clocks; the leading space keeps " 1:37" from
   matching "11:37"); newer look-alikes from the same minute are counted from
   chat.db and skipped (a self-chat shows every message twice). A reply's quote

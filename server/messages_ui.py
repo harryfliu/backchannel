@@ -125,9 +125,12 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "emphasize": ("Exclamation mark", "Exclamation marks", "Emphasize", "!!"),
     "question": ("Question mark", "Question", "?"),
 }
+# How Messages labels an attachment-only bubble: one of these is a whole part of its label. macOS 26.3
+# says "Melinda Lem, Includes picture, 2:59 PM", or "Name, Image attached, IMG_1234.jpeg, Image · 2.5 MB,
+# …" (Harry's Mac: "Photo" alone never matched, so tapbacks on photos answered bubble-not-found).
 ATTACHMENT_WORDS: dict[str, tuple[str, ...]] = {
-    "image": ("Photo", "Image", "Picture"),
-    "video": ("Video", "Movie"),
+    "image": ("Photo", "Image", "Picture", "Includes picture", "Image attached"),
+    "video": ("Video", "Movie", "Video attached"),
     "audio": ("Audio Message", "Audio"),
     "file": ("Attachment", "File", "Document"),
     "sticker": ("Sticker",),

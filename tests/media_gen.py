@@ -119,6 +119,16 @@ def jpeg(width: int, height: int, block: Callable[[int, int], RGB]) -> bytes:
     return b"\xff\xd8" + app0 + dqt + sof + dht + sos + scan + b"\xff\xd9"
 
 
+def with_orientation(jpeg_bytes: bytes, value: int, endian: str = ">") -> bytes:
+    """The JPEG with an EXIF APP1 segment right after SOI holding just an orientation tag (iPhones
+    store portrait photos sideways with orientation 6)."""
+    order = b"MM" if endian == ">" else b"II"
+    ifd = struct.pack(endian + "H", 1) + struct.pack(endian + "HHIHH", 0x0112, 3, 1, value, 0) + b"\x00\x00\x00\x00"
+    tiff = order + struct.pack(endian + "HI", 42, 8) + ifd
+    payload = b"Exif\x00\x00" + tiff
+    return jpeg_bytes[:2] + struct.pack(">BBH", 0xFF, 0xE1, len(payload) + 2) + payload + jpeg_bytes[2:]
+
+
 # --------------------------------------------------------------------------- ISO-BMFF placeholders
 
 

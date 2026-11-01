@@ -130,6 +130,47 @@ def _exif_rotated(tiff: bytes) -> bool:
     return False
 
 
+def _orientation_at(data: bytes) -> tuple[int, int, str] | None:
+    """A JPEG's EXIF orientation: (where its value sits in `data`, the value, byte order), or None."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        if marker == 0xDA:  # image data: no EXIF after this
+            return None
+        seg_len = struct.unpack(">H", data[i + 2 : i + 4])[0]
+        if marker == 0xE1 and data[i + 4 : i + 10] == b"Exif\x00\x00":
+            start = i + 10
+            tiff = data[start : i + 2 + seg_len]
+            endian = "<" if tiff[:2] == b"II" else ">"
+            try:
+                offset = struct.unpack(endian + "I", tiff[4:8])[0]
+                count = struct.unpack(endian + "H", tiff[offset : offset + 2])[0]
+                for n in range(count):
+                    at = offset + 2 + n * 12
+                    if struct.unpack(endian + "H", tiff[at : at + 2])[0] == 0x0112:
+                        return start + at + 8, struct.unpack(endian + "H", tiff[at + 8 : at + 10])[0], endian
+            except (struct.error, IndexError):
+                return None
+            return None
+        i += 2 + seg_len
+    return None
+
+
+# EXIF orientation → how sips turns those pixels upright: degrees clockwise, then a flip.
+UPRIGHT: dict[int, tuple[int, str | None]] = {
+    2: (0, "horizontal"), 3: (180, None), 4: (0, "vertical"), 5: (90, "horizontal"),
+    6: (90, None), 7: (270, "horizontal"), 8: (270, None),
+}
+
+
 def _boxes(data: bytes, start: int, end: int):
     """(type, payload start, box end) for each ISO-BMFF box in data[start:end]; stops at bad sizes."""
     pos = start
@@ -319,7 +360,9 @@ class Media:
         self.qlmanage = _which("qlmanage") if self.is_mac else None
         self._dims: dict[tuple[str, float], tuple[int | None, int | None]] = {}
         self._formats: dict[tuple[str, float, str], str | None] = {}
+        self._orients: dict[tuple[str, float], int] = {}
         self._lock = threading.Lock()
+        self._upright_lock = threading.Lock()
         roots: set[str] = set()
         for prefix, root in self.prefixes:
             roots.add(os.path.realpath(root))
@@ -387,6 +430,73 @@ class Media:
         except OSError:
             return False
 
+    def orientation(self, path: Path) -> int:
+        """A JPEG's EXIF orientation (1 = upright; also for anything else), remembered per file version."""
+        try:
+            key = (str(path), path.stat().st_mtime)
+        except OSError:
+            return 1
+        with self._lock:
+            known = self._orients.get(key)
+        if known is not None:
+            return known
+        try:
+            with path.open("rb") as f:
+                head = f.read(131072)
+        except OSError:
+            return 1
+        found = _orientation_at(head)
+        value = found[1] if found and found[1] in UPRIGHT else 1
+        with self._lock:
+            self._orients[key] = value
+        return value
+
+    def make_upright(self, path: Path) -> bool:
+        """Turn a cached JPEG's pixels the way its EXIF orientation says, then mark it upright (orientation
+        1), in place. sips converts and resizes without applying the tag, browsers apply it when they show
+        the image, and the web view's Copy Image copies the pixels without it: Harry's portrait photos
+        pasted into another chat came out sideways. False if it couldn't (the file is left as it was)."""
+        if self.orientation(path) == 1:
+            return True
+        if not self.sips:
+            return False
+        with self._upright_lock:
+            work = path.with_name(path.name + f".{os.getpid()}.{threading.get_ident()}.up{path.suffix}")
+            try:
+                data = path.read_bytes()
+                found = _orientation_at(data[:131072])
+                if found is None or found[1] not in UPRIGHT:
+                    return True  # done meanwhile
+                degrees, flip = UPRIGHT[found[1]]
+                work.write_bytes(data)
+                steps = ([["-r", str(degrees)]] if degrees else []) + ([["-f", flip]] if flip else [])
+                for step in steps:
+                    if not self._run([self.sips, *step, str(work), "--out", "{out}"], work):
+                        return False
+                turned = bytearray(work.read_bytes())
+                tag = _orientation_at(bytes(turned[:131072]))
+                if tag is not None:  # sips keeps the tag: now it would turn the pixels a second time
+                    at, _, endian = tag
+                    turned[at : at + 2] = struct.pack(endian + "H", 1)
+                    work.write_bytes(bytes(turned))
+                os.replace(work, path)
+                return True
+            except OSError as exc:
+                log.info("Couldn't turn an image upright: %s", exc)
+                return False
+            finally:
+                work.unlink(missing_ok=True)
+
+    def _copy(self, src: Path, out: Path) -> bool:
+        tmp = out.with_name(out.name + f".{os.getpid()}.{threading.get_ident()}.tmp{out.suffix}")
+        try:
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, out)
+            return True
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            return False
+
     def _run(self, args: list[str], out: Path) -> bool:
         tmp = out.with_name(out.name + f".{os.getpid()}.{threading.get_ident()}.tmp{out.suffix}")
         try:
@@ -435,12 +545,19 @@ class Media:
         """
         fmt = self.image_format(src)
         if fmt in BROWSER_IMAGES:
+            if fmt == "jpeg" and self.sips and self.orientation(src) != 1:
+                # A phone photo stored sideways with an EXIF tag: an upright copy, so the web view's Copy
+                # Image (which drops the tag) copies it the way it's shown.
+                out = self._cache_path(guid, "-full.jpg")
+                if (self._fresh(out, src) or self._copy(src, out)) and self.make_upright(out):
+                    return out, "image/jpeg"
             return src, MIME[fmt]
         if fmt is not None or src.suffix.lower() in NEEDS_JPEG:
             if self.sips:
                 out = self._cache_path(guid, "-full.jpg")
                 if self._fresh(out, src) or self._run([self.sips, "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
                     if sniff_file(out) == "jpeg":
+                        self.make_upright(out)
                         return out, "image/jpeg"
             return src, MIME.get(fmt or "", mime)
         if self.afconvert and src.suffix.lower() == ".caf":
@@ -466,10 +583,12 @@ class Media:
             return None
         out = self._cache_path(guid, "-thumb.jpg")
         if self._fresh(out, src):
+            self.make_upright(out)  # thumbnails made before this was done are fixed the first time they're shown
             return out, "image/jpeg"
         if kind == "image" or self.image_format(src) is not None:
             if self._run([self.sips, "-Z", "800", "-s", "format", "jpeg", str(src), "--out", "{out}"], out):
                 if sniff_file(out) == "jpeg":
+                    self.make_upright(out)
                     return out, "image/jpeg"
             return None
         if kind == "video" and self.qlmanage:

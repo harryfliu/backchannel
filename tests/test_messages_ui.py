@@ -868,3 +868,14 @@ def test_a_replys_quote_of_its_message_is_never_taken_for_the_message():
     for handler in ("on timedIndex(", "on findBubble(", "on stillTheMessage("):
         body = bubbles[bubbles.index(handler):]
         assert "my matchesBubble(bcLabel, bcNeedles, bcExacts)" in body[:body.index("\nend ")], handler
+
+
+def test_photo_only_messages_are_found_by_how_messages_labels_them():
+    """macOS 26.3 labels a photo-only bubble "Melinda Lem, Includes picture, 2:59 PM" (or "Name, Image
+    attached, IMG_1.jpeg, Image · 2.5 MB, …"). Harry's tapback on a photo answered bubble-not-found."""
+    needles, exacts = messages_ui.bubble_terms({"text": "", "attachments": [{"kind": "image", "name": "IMG_1.jpeg"}]})
+    assert needles == [] and {"Includes picture", "Image attached"} <= set(exacts)
+    _, video = messages_ui.bubble_terms({"text": None, "attachments": [{"kind": "video", "name": "IMG_2.mov"}]})
+    assert "Video attached" in video
+    match = messages_scripts.BUBBLES[messages_scripts.BUBBLES.index("on matchesBubble("):]
+    assert 'bcLabel contains (", " & bcW & ",")' in match[:match.index("end matchesBubble")]  # a whole label part
