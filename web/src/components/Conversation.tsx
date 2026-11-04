@@ -309,17 +309,34 @@ function MessageList({ c }: { c: Conversation }) {
   }, [items, loaded])
 
   // Stay at the bottom when things change size in place: a new reaction, a photo finishing
-  // loading, or the composer growing (which shrinks the list).
+  // loading, or the composer growing (which shrinks the list). When the list changes width (the
+  // thread pane opening or closing, the window resizing), set the position again either way, now
+  // and on the next frame: see settleScroll.
   useEffect(() => {
     const el = scroller.current
     const inner = content.current
     if (!el || !inner || !loaded || typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    let frame = 0
+    const settle = () => settleScroll(el, atBottom.current ? el.scrollHeight : el.scrollTop)
     const ro = new ResizeObserver(() => {
-      if (atBottom.current && !prepend.current) el.scrollTop = el.scrollHeight
+      const widthChanged = el.clientWidth !== width
+      width = el.clientWidth
+      if (prepend.current) return
+      if (widthChanged) {
+        settle()
+        cancelAnimationFrame(frame)
+        frame = requestAnimationFrame(settle)
+      } else if (atBottom.current) {
+        el.scrollTop = el.scrollHeight
+      }
     })
     ro.observe(inner)
     ro.observe(el)
-    return () => ro.disconnect()
+    return () => {
+      ro.disconnect()
+      cancelAnimationFrame(frame)
+    }
   }, [c.id, loaded])
 
   const onScroll = () => {
@@ -403,6 +420,18 @@ function MessageList({ c }: { c: Conversation }) {
       )}
     </div>
   )
+}
+
+/** Scroll the list to `top` so it's really drawn there. When the list gets wider (closing the
+ *  thread pane), the chat gets shorter and the old spot can be past its end. The Mac app's web view
+ *  can keep showing that spot, an empty list, until you scroll. Setting the spot the list already
+ *  reports does nothing there, so step a pixel off it first. */
+function settleScroll(el: HTMLElement, top: number) {
+  const max = el.scrollHeight - el.clientHeight
+  if (max <= 0) return
+  const target = Math.max(0, Math.min(Math.round(top), max))
+  el.scrollTop = target > 0 ? target - 1 : 1
+  el.scrollTop = target
 }
 
 function ConversationIntro({ c }: { c: Conversation }) {
