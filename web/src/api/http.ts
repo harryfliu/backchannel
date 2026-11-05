@@ -1,6 +1,6 @@
 // Api implementation that talks to the Python server on the Mac.
 import type {
-  ActivityItem,
+  ActivityFeed,
   Api,
   CatchUp,
   ChiefCard,
@@ -121,7 +121,7 @@ export function createHttpApi(): Api {
     removeLater: (mid) => send<void>('DELETE', `/api/later/${enc(mid)}`),
     scheduled: async () => (await get<{ items: ScheduledMessage[] }>('/api/scheduled')).items,
     cancelScheduled: (id) => send<void>('DELETE', `/api/scheduled/${enc(id)}`),
-    activity: async () => (await get<{ items: ActivityItem[] }>('/api/activity?limit=50')).items,
+    activity: (since) => get<ActivityFeed>(`/api/activity?limit=50${since ? `&since=${enc(since)}` : ''}`),
     threads: async () => (await get<{ items: Message[] }>('/api/threads?limit=40')).items,
     search: async (q, cid) =>
       (await get<{ results: SearchResult[] }>(`/api/search?limit=40&q=${enc(q)}${cid ? `&conversationId=${enc(cid)}` : ''}`)).results,

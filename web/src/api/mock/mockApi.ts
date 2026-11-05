@@ -434,8 +434,12 @@ export function createMockApi(): Api {
       const s = scheduled.find((x) => x.id === id)
       if (s) emit({ type: 'scheduled', scheduled: s })
     },
-    async activity() {
-      return clone(activity)
+    async activity(since) {
+      const seen = since ? Date.parse(since) : null
+      return clone({
+        items: activity.slice(0, 50),
+        ...(seen === null ? {} : { newCount: activity.filter((a) => Date.parse(a.at) > seen).length }),
+      })
     },
     async threads() {
       const roots = [...db.messages.values()].flat().filter((m) => m.thread)

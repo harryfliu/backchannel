@@ -292,6 +292,13 @@ export interface ActivityItem {
   reaction?: Reaction
 }
 
+export interface ActivityFeed {
+  /** Newest first, at most 50. */
+  items: ActivityItem[]
+  /** With `since`: how many events came after it, including ones past the 50 in `items`. */
+  newCount?: number
+}
+
 export interface SearchResult {
   message: Message
   conversation: { id: string; title: string; kind: ConversationKind }
@@ -466,7 +473,8 @@ export interface Api {
   removeLater(messageId: string): Promise<void>
   scheduled(): Promise<ScheduledMessage[]>
   cancelScheduled(id: string): Promise<void>
-  activity(): Promise<ActivityItem[]>
+  /** Pass when the user last looked at Activity to get newCount. */
+  activity(since?: string | null): Promise<ActivityFeed>
   /** Thread roots across all conversations, newest reply first (last 30 days). */
   threads(): Promise<Message[]>
   search(q: string, conversationId?: string | null): Promise<SearchResult[]>

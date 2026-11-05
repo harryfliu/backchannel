@@ -31,7 +31,7 @@ from .conversations import (
 from .linkpreview import first_url, link_preview
 from .media import Media, kind_of
 from .state import State
-from .timeutil import apple_to_ns, iso_apple, now_apple_ns, parse_iso
+from .timeutil import apple_to_ns, iso_apple, now_apple_ns, parse_iso, unix_to_apple_ns
 from .typedstream import extract_mentions
 
 log = logging.getLogger("backchannel.messages")
@@ -389,7 +389,8 @@ class MessageBuilder:
 
     # ------------------------------------------------------------------ activity & threads
 
-    def activity(self, limit: int, days: int = 30) -> list[dict[str, Any]]:
+    def activity(self, limit: int, days: int = 30, new_since: float | None = None) -> dict[str, Any]:
+        """The newest `limit` events, plus `newCount` (all events after `new_since`, Unix seconds) when given."""
         directory = self.convs.directory()
         me = directory.me
         since = now_apple_ns() - days * DAY_NS
@@ -474,6 +475,10 @@ class MessageBuilder:
                 })
 
         events.sort(key=lambda e: e["date"], reverse=True)
+        new_count = None
+        if new_since is not None:
+            cutoff = unix_to_apple_ns(new_since)
+            new_count = sum(1 for e in events if e["date"] > cutoff)
         events = events[:limit]
         built = self.by_guids([e["target"] for e in events])
         out = []
@@ -492,7 +497,10 @@ class MessageBuilder:
             if "reaction" in e:
                 item["reaction"] = e["reaction"]
             out.append(item)
-        return out
+        feed: dict[str, Any] = {"items": out}
+        if new_count is not None:
+            feed["newCount"] = new_count
+        return feed
 
     def thread_roots(self, limit: int, days: int = 30) -> list[dict[str, Any]]:
         since = now_apple_ns() - days * DAY_NS

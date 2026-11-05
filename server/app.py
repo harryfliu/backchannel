@@ -640,8 +640,9 @@ def create_app(
     # ------------------------------------------------------------------ activity, threads, search
 
     @app.get("/api/activity")
-    def activity(limit: int = Query(50, ge=1, le=200)):
-        return {"items": s.builder.activity(limit)}
+    def activity(limit: int = Query(50, ge=1, le=200), since: str | None = None):
+        # `since` (when the user last looked) adds newCount: everything newer, not just this page.
+        return s.builder.activity(limit, new_since=_parse_time(since, "since"))
 
     @app.get("/api/threads")
     def threads(limit: int = Query(40, ge=1, le=200)):

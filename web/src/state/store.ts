@@ -3,6 +3,7 @@ import { useRef, useSyncExternalStore } from 'react'
 import { api, isMock } from '../api/client'
 import { isNative, postNative } from '../native'
 import type {
+  ActivityFeed,
   ActivityItem,
   CatchUp,
   ChiefCard,
@@ -99,6 +100,8 @@ export interface State {
   scheduled: ScheduledMessage[]
   activity: ActivityItem[]
   activitySeenAt: string | null
+  /** The server's count of Activity after `since` (can be more than the 50 items loaded). */
+  activityNew: { since: string | null; count: number } | null
   catchUp: { data: CatchUp | null; loading: boolean; error: string | null; done: string[] }
   search: { open: boolean; q: string; results: SearchResult[]; loading: boolean; scope: string | null }
   switcherOpen: boolean
@@ -196,6 +199,7 @@ let state: State = {
   activity: [],
   // Remembered across restarts; the first run starts at "now" so old activity doesn't count as new.
   activitySeenAt: local.activitySeenAt ?? new Date().toISOString(),
+  activityNew: null,
   catchUp: { data: null, loading: false, error: null, done: [] },
   search: { open: false, q: '', results: [], loading: false, scope: null },
   switcherOpen: false,
@@ -347,17 +351,26 @@ async function resync() {
   }
 }
 
+function newCount(since: string | null, feed: ActivityFeed): State['activityNew'] {
+  return feed.newCount === undefined ? null : { since, count: feed.newCount }
+}
+
 let activityTimer: ReturnType<typeof setTimeout> | null = null
 /** Refetch Activity shortly after something that can add to it: a mention, a thread reply, a tapback on yours. */
 function scheduleActivityRefresh() {
   if (activityTimer) return
   activityTimer = setTimeout(async () => {
     activityTimer = null
-    const items = await api.activity().catch(() => null)
-    if (!items) return
+    const since = state.activitySeenAt
+    const feed = await api.activity(since).catch(() => null)
+    if (!feed) return
     // Already looking at Activity: what just arrived is seen.
     const looking = state.rail === 'activity' && document.visibilityState === 'visible'
-    setState(looking ? { activity: items, activitySeenAt: new Date().toISOString() } : { activity: items })
+    setState(
+      looking
+        ? { activity: feed.items, activitySeenAt: new Date().toISOString(), activityNew: null }
+        : { activity: feed.items, activityNew: newCount(since, feed) },
+    )
   }, 1500)
 }
 
@@ -561,17 +574,28 @@ export async function boot(initial?: string) {
       setState({ health: firstHealth, setup: 'fda', booted: true })
       return
     }
-    const [me, conversations, later, scheduled, activity, health] = await Promise.all([
+    const since = state.activitySeenAt
+    const [me, conversations, later, scheduled, feed, health] = await Promise.all([
       api.me(),
       api.conversations(),
       api.later().catch(() => []),
       api.scheduled().catch(() => []),
-      api.activity().catch(() => []),
+      api.activity(since).catch((): ActivityFeed => ({ items: [] })),
       api.health().catch(() => null),
     ])
     const convs: Record<string, Conversation> = {}
     for (const c of conversations) convs[c.id] = c
-    setState({ me, conversations: convs, people: indexPeople(convs), later, scheduled, activity, health, booted: true })
+    setState({
+      me,
+      conversations: convs,
+      people: indexPeople(convs),
+      later,
+      scheduled,
+      activity: feed.items,
+      activityNew: newCount(since, feed),
+      health,
+      booted: true,
+    })
     api.subscribe(onEvent, (st) => setState({ connection: st }))
     const first = initial && convs[initial] ? initial : conversations.find((c) => !c.isAutomated)?.id
     if (isNarrow()) {

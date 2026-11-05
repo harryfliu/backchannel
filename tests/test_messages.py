@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from server.timeutil import parse_iso
+
 SOCCER = "g:chat100000000000000002"
 FAMILY = "g:chat100000000000000001"
 
@@ -161,3 +163,19 @@ def test_activity(ro):
     assert not any(i["message"]["text"] == "I can host! We finally have the big table" for i in items), early
     stamps = [i["at"] for i in items]
     assert stamps == sorted(stamps, reverse=True)
+
+
+def test_activity_new_count(ro):
+    """newCount counts everything after `since`, not just the page that came back."""
+    everything = ro.get("/api/activity", params={"limit": 200})["items"]
+    assert len(everything) >= 3 and "newCount" not in ro.get("/api/activity")
+    since = everything[len(everything) // 2]["at"]
+    expected = sum(1 for i in everything if parse_iso(i["at"]) > parse_iso(since))
+    feed = ro.get("/api/activity", params={"limit": 1, "since": since})
+    assert len(feed["items"]) == 1 and feed["newCount"] == expected > 1
+    assert ro.get("/api/activity", params={"since": "2001-01-01T00:00:00Z"})["newCount"] == len(everything)
+    assert ro.get("/api/activity", params={"since": "2999-01-01T00:00:00Z"})["newCount"] == 0
+
+
+def test_activity_bad_since(ro):
+    assert "ISO 8601" in ro.get("/api/activity", status=400, params={"since": "yesterday"})["error"]

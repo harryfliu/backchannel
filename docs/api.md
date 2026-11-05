@@ -56,7 +56,7 @@ not be able to drive it.
 | DELETE | `/api/later/{messageId}` | 204 |
 | GET | `/api/scheduled` | `{ items: ScheduledMessage[] }` |
 | DELETE | `/api/scheduled/{id}` | 204 |
-| GET | `/api/activity?limit=50` | `{ items: ActivityItem[] }` |
+| GET | `/api/activity?limit=50&since=` | `{ items: ActivityItem[], newCount? }` — newest first, last 30 days; with `since` (ISO time the user last looked), `newCount` counts every event after it, even past `limit` (the Activity badge uses it) |
 | GET | `/api/threads?limit=40` | `{ items: Message[] }` — thread roots (messages with `thread` set) across conversations, newest reply first, last 30 days |
 | GET | `/api/search?q=&conversationId=&limit=40` | `{ results: SearchResult[] }` |
 | POST | `/api/ai/draft` | body `{ conversationId, threadRootId?, hint? }` → `{ drafts: string[] }` |
