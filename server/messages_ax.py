@@ -73,10 +73,42 @@ def names_all(label: str, members: list[str]) -> bool:
     return first
 
 
-def title_matches(title: str, names: list[str], members: list[str]) -> bool:
+def title_matches(title: str, names: list[str], members: list[str], loose: int | None = None) -> bool:
+    """The chat's title is one of its names. Messages may add to it ("Wifey 4 Lifey 🥰, San Francisco,
+    CA": a shared location; Harry's Mac), so a loose name (full name, group name) may also start it
+    as "Name, …"; a short name ("Jordan") has to be the whole title."""
+    title = " ".join((title or "").split())  # "Coming In Hot 🥵 " ends in a space (Harry's Mac)
     if not title:
         return False
-    return any(n and title == n for n in names) or names_all(title, members)
+    loose = len(names) if loose is None else loose
+    for k, name in enumerate(names):
+        name = " ".join((name or "").split())
+        if name and (title == name or (k < loose and title.startswith(name + ", "))):
+            return True
+    return names_all(title, members)
+
+
+def _row_for_title(labels: list[str], title: str, skip: int = -1) -> int:
+    """The sidebar row of the chat whose title this is ("Wifey 4 Lifey 🥰, San Francisco, CA" →
+    "Wifey 4 Lifey 🥰, Pinned"): the longest "Name, " start of a label that the title is or starts
+    with. -1 for none."""
+    title = " ".join((title or "").split())
+    best, best_len = -1, 0
+    for i, label in enumerate(labels):
+        if i == skip:
+            continue
+        flat = " ".join(label.split())
+        cut = 0
+        while True:
+            cut = flat.find(", ", cut + 1)
+            if cut < 0:
+                break
+            name = flat[:cut].strip()
+            if name and (title == name or title.startswith(name + ", ")) and len(name) > best_len:
+                best, best_len = i, len(name)
+        if flat and title == flat and len(flat) > best_len:
+            best, best_len = i, len(flat)
+    return best
 
 
 def row_index(labels: list[str], roles: list[str], names: list[str], loose: int, members: list[str]) -> int:
@@ -437,7 +469,7 @@ class MessagesAX:
         names, loose, members = list(job.candidates), int(job.loose), list(job.members)
         if not self._look(run):
             raise _Stop("no-window")
-        if title_matches(self._title(run), names, members):
+        if title_matches(self._title(run), names, members, loose):
             run.trail.append("shown")
             return
         for link in job.links[:1]:
@@ -447,39 +479,50 @@ class MessagesAX:
             except (OSError, subprocess.SubprocessError):
                 run.trail.append("link-failed")
                 break
-            if self._wait(lambda: self._look(run) and title_matches(self._title(run), names, members), 4.0):
+            if self._wait(lambda: self._look(run) and title_matches(self._title(run), names, members, loose), 4.0):
                 run.trail.append("title")
                 return
             run.trail.append("no")
         chats = run.spots.get("ConversationList")
         if chats is None:
             raise _Stop("no-list")
+        before = self._title(run)  # the chat on screen now, to press off if both end up selected
         at = self._find_row(run, chats, names, loose, members)
         if at < 0:
             raise _Stop("row-not-found")
-        kids, labels, _roles, selected = self._rows(chats)
-        if not selected[at]:
-            kids[at].perform("AXPress")
-        # Pressing toggles, like a Command-click: press every other selected chat off again.
-        self.sleep(0.15)
-        kids, labels, roles, selected = self._rows(chats)
-        at = row_index(labels, roles, names, loose, members)
-        for i, on in enumerate(selected):
-            if on and i != at:
-                kids[i].perform("AXPress")
+        pressed_before = False
 
         def shown() -> bool:
-            if not self._look(run):
-                return False
-            if title_matches(self._title(run), names, members):
-                return True
-            rows = self._rows(run.spots.get("ConversationList"))
-            i = row_index(rows[1], rows[2], names, loose, members)
-            return i >= 0 and rows[3][i] and sum(rows[3]) == 1 and bool(self._title(run))
+            return self._look(run) and title_matches(self._title(run), names, members, loose)
 
-        if not self._wait(shown, 3.0):
-            raise _Stop("not-selected")
-        run.trail.append(f"row{at + 1}/{run.list_down}")
+        # Pressing a row toggles it, like a Command-click, and pinned rows never say whether they're
+        # selected (Harry's Mac: pressing EastMeetEast while Wifey's chat showed selected both, and
+        # Messages showed neither). So: press, look at the title, and fix what it shows.
+        for step in range(5):
+            kids, labels, roles, selected = self._rows(run.spots.get("ConversationList") or chats)
+            at = row_index(labels, roles, names, loose, members)
+            if at < 0:
+                raise _Stop("row-not-found")
+            title = self._title(run)
+            if not title or (step and title != before and not shown()):
+                # Two or more selected: press off the one that was showing, and any that say so.
+                prev = _row_for_title(labels, before, skip=at) if before and not pressed_before else -1
+                if prev >= 0:
+                    kids[prev].perform("AXPress")
+                    pressed_before = True
+                    run.trail.append(f"off{prev + 1}")
+                for i, on in enumerate(selected):
+                    if on and i != at:
+                        kids[i].perform("AXPress")
+                if prev < 0 and not any(on and i != at for i, on in enumerate(selected)):
+                    kids[at].perform("AXPress")  # nothing else to press off: start over from ours
+            else:
+                kids[at].perform("AXPress")
+            if self._wait(shown, 1.2):
+                run.trail.append(f"row{at + 1}/{run.list_down}" + (f" p{step + 1}" if step else ""))
+                return
+            self._wait(lambda: self._look(run) and self._title(run) != title, 0.4)
+        raise _Stop("not-selected")
 
     def _find_row(self, run: _Run, chats: Any, names: list[str], loose: int, members: list[str]) -> int:
         """The chat's row, scrolling the sidebar (top first, then down a page at a time) if needed."""

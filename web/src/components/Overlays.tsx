@@ -922,7 +922,7 @@ function MessagesHelpers() {
       key: 'threadRepliesViaMessages',
       id: 'replies-messages',
       label: 'Send thread replies as real replies',
-      help: 'Your replies thread on everyone’s phone, not just here. Messages comes to the front for about a second while it sends.',
+      help: 'Your replies thread on everyone’s phone, not just here. Messages stays in the background while it sends.',
     },
     {
       key: 'linkPreviewsViaMessages',

@@ -10,7 +10,7 @@ import pytest
 
 from fake_messages import FakeMessages, chat_of, write_reply, write_tapback
 from server import fakedb
-from server.messages_ax import (Answer, MessagesAX, find_index, matches_bubble, names_all, pick_action, quick_emoji,
+from server.messages_ax import (Answer, MessagesAX, _row_for_title, find_index, matches_bubble, names_all, pick_action, quick_emoji,
                                 row_index, timed_index, title_matches)
 from server.messages_ui import SYNONYMS, Bubble, TapbackJob
 
@@ -152,6 +152,7 @@ class FakeApp:
                       on={"set:AXValue": self._type})
         entry = El(ident="MessageEntryView", kids=[El("AXButton", desc="add"), self.box])
         title = El("AXButton", ident="ConversationTitle", dyn={"AXDescription": self._title})
+        self.title_el = title
         self.content = El(kids=lambda: [El(kids=[El(kids=[self.transcript, entry])]), El(kids=[self.list]), title,
                                         *([self.menu] if self.menu else [])])
         self.app = El("AXApplication", AXWindows=[El("AXWindow", ident="SceneWindow", kids=[self.content])])
@@ -411,3 +412,26 @@ def test_a_tapback_on_the_whole_message_counts(ax_rw):
     message = rw.services.builder.by_guid(target)
     assert [(r["kind"], r["from"]) for r in message["reactions"]] == [("like", ["me"])]
     assert rw.services.messages_ui.current_tapback(target, "dm:+14155550134") == ("like", None)
+
+
+def test_switching_from_a_pinned_chat_that_hides_its_selection():
+    """Harry's Mac: pinned rows never say they're selected, and pressing another chat's row while one
+    showed selected both (Messages showed neither): "Couldn't open EastMeetEast in Messages". The
+    chat that was showing is found by its title and pressed off."""
+    app = FakeApp(open_chat="Jordan Park")
+    app.title_el.dyn["AXDescription"] = lambda: (("Jordan Park, San Francisco, CA" if app.shown() == "Jordan Park"
+                                                  else app.shown()) if app.shown() else None)
+    for row in app.list.kids:
+        row.dyn["AXSelected"] = lambda: False  # pinned: never says
+    head, trail = code(make(app).tapback(soccer_job(28)))
+    assert head == "chosen-action" and app.selected == {"Sunday Soccer ⚽"}
+    assert "off2" in trail  # Jordan's row (the second) pressed off
+
+
+def test_titles_with_more_after_the_name():
+    assert title_matches("Wifey 4 Lifey 🥰, San Francisco, CA", ["Wifey 4 Lifey 🥰", "Carmen"], [], 1)
+    assert title_matches("Coming In Hot 🥵 ", ["Coming In Hot 🥵"], [], 1)  # a trailing space
+    assert not title_matches("Jordan, Sam & Lee", ["Jordan Park", "Jordan"], [], 1)  # short names: whole title only
+    assert _row_for_title(["Tuesday Gang, Pinned", "Wifey 4 Lifey 🥰, Pinned", "EastMeetEast, Pinned"],
+                          "Wifey 4 Lifey 🥰, San Francisco, CA") == 1
+    assert _row_for_title(["EastMeetEast, Pinned"], "EastMeetEast", skip=0) == -1

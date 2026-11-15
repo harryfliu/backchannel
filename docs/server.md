@@ -291,7 +291,12 @@ replying; Return posted to Messages' process alone (`CGEventPostToPid`) sends
 it (Edit › Send Message is greyed out unless Messages is in front); AXCancel on
 the transcript closes the thread view; the transcript and the sidebar page with
 AXScrollUp/DownByPage; `open -g` with Messages' link opens a one-to-one chat
-without activating Messages. Each step is checked before the next: the chat's
+without activating Messages (groups: their sidebar row is pressed; pinned rows
+never say whether they're selected, and pressing one while another chat shows
+can select both so Messages shows neither, so the title is watched and the
+chat that was showing is pressed off by its title; Messages may add to a title,
+"Wifey 4 Lifey 🥰, San Francisco, CA", or end it with a space, so full and group
+names may start it as `Name, …`). Each step is checked before the next: the chat's
 title, the message's label (text, minute and, for multi-line messages, the
 first 120 characters, so daily digests with the same first line and minute
 are told apart) right before acting and only once the chat has stopped
