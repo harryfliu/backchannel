@@ -136,6 +136,7 @@ ATTACHMENT_WORDS: dict[str, tuple[str, ...]] = {
     "sticker": ("Sticker",),
 }
 NEEDLE_CHARS = 60
+WHOLE_CHARS = 120
 SHORT_NEEDLE = 8  # shorter text has to match a whole label line, not just appear in one
 RECENT_FOR_SKIPS = 300
 
@@ -262,6 +263,10 @@ class Bubble:
     skip_any: int = 0  # newer bubbles from anyone that match too
     times: list[str] = field(default_factory=list)  # the minute it was sent, as Messages may show it
     skip_minute: int = 0  # newer look-alikes sent in that same minute (self-chats show every message twice)
+    # More of its text (whitespace collapsed) for the background helper: daily digests share a first
+    # line and a minute (Harry's Mac: "📱 TEXT SOMEONE" at 10:00 every day).
+    whole: str = ""
+    whole_skips: tuple[int, int, int] = (0, 0, 0)  # skip_sender, skip_any, skip_minute among those with `whole`
 
     def argv(self) -> list[str]:
         return ([f"T:{n}" for n in self.needles] + [f"W:{w}" for w in self.exacts] + [f"S:{s}" for s in self.senders]
@@ -671,6 +676,9 @@ def interpret_tapback(outcome: Outcome, title: str) -> Interp:
 
 REPLY_ANSWERS: dict[str, tuple[str | None, str, str]] = {
     "sent-axvalue": ("granted", "Sent as a reply in Messages.", "done"),
+    "sent-ax": ("granted", "Sent as a reply in Messages.", "done"),
+    "wrong-thread": ("granted", "Messages opened the wrong message's thread, so nothing was sent.", "nothing"),
+    "not-sent": ("granted", "Messages didn't take your reply, so nothing was sent.", "nothing"),
     "no-list": ("granted", "Couldn't find Messages' conversation list.", "nothing"),
     "no-transcript": ("granted", "Couldn't find the open conversation in Messages.", "nothing"),
     "sent-paste": ("granted", "Sent as a reply in Messages.", "done"),
@@ -787,8 +795,12 @@ class Simulator:
 class MessagesUI:
     def __init__(self, db: ChatDB, state: State, runner: Runner | None, *,
                  publish: Callable[[dict[str, Any]], None] | None = None, simulator: Simulator | None = None,
-                 convs: Any = None, builder: Any = None, contacts: Any = None, check_after: float = CHECK_AFTER):
+                 convs: Any = None, builder: Any = None, contacts: Any = None, check_after: float = CHECK_AFTER,
+                 ax: Any = None):
         self.db = db
+        # Tapbacks and replies through direct accessibility calls, with Messages left in the
+        # background (server/messages_ax.py); the AppleScript helpers when it can't run.
+        self.ax = ax
         self.state = state
         self.runner = runner
         self.publish = publish
@@ -960,8 +972,13 @@ class MessagesUI:
         hits = [m for m in newer if _bubble_hit(m, needles, exacts, kind)]
         times, minute = minute_marks(message.get("sentAt"))
         same_minute = sum(1 for m in hits if minute is not None and minute_marks(m.get("sentAt"))[1] == minute)
+        flat = " ".join((message.get("text") or "").split())
+        whole = flat[:WHOLE_CHARS] if len(flat) > len(_first_line(message.get("text") or "")) else ""
+        alike = [m for m in hits if whole in " ".join((m.get("text") or "").split())] if whole else hits
+        whole_skips = (sum(1 for m in alike if same_sender(m)), len(alike),
+                       sum(1 for m in alike if minute is not None and minute_marks(m.get("sentAt"))[1] == minute))
         return Bubble(needles, exacts, senders, skip_sender=sum(1 for m in hits if same_sender(m)),
-                      skip_any=len(hits), times=times, skip_minute=same_minute)
+                      skip_any=len(hits), times=times, skip_minute=same_minute, whole=whole, whole_skips=whole_skips)
 
     def tapback_job(self, conv: Conv, message_id: str, kind: str, remove: bool,
                     emoji: str | None = None, names: list[str] | None = None) -> TapbackJob:
@@ -1100,6 +1117,11 @@ class MessagesUI:
                 if isinstance(job, (ReplyJob, ComposeJob)):
                     job.state = "done"
                     job.finished.set()
+                if self.ax is not None:  # scroll Messages back, now that the answer is out
+                    try:
+                        self.ax.tidy()
+                    except Exception:
+                        log.exception("Messages helper: scrolling back failed")
                 with self._lock:
                     self._busy -= 1
                 self._jobs.task_done()
@@ -1192,10 +1214,16 @@ class MessagesUI:
         """Your tapback on this message right now, from chat.db: (kind, emoji for an emoji one). In
         your own chat, on either copy of it."""
         copies = self.copies_of(conversation_id, message_id) if conversation_id else [message_id]
+        # In your own chat a tapback can come back as the received copy, "from" your own number.
+        me = self.convs.directory().me if conversation_id and self._is_self(conversation_id) else None
+
+        def mine(who: list[str]) -> bool:
+            return "me" in who or (me is not None and any(me.is_me(h) for h in who))
+
         for guid in copies:
             message = self.builder.by_guid(guid)
             for reaction in (message or {}).get("reactions", []):
-                if "me" in reaction["from"] and (reaction["kind"] in TAPBACK_KINDS or reaction["kind"] == EMOJI_KIND):
+                if mine(reaction["from"]) and (reaction["kind"] in TAPBACK_KINDS or reaction["kind"] == EMOJI_KIND):
                     return reaction["kind"], (reaction.get("emoji") if reaction["kind"] == EMOJI_KIND else None)
         return None
 
@@ -1259,10 +1287,14 @@ class MessagesUI:
                 return answer("failed", str(exc))
             ok = self.verify_tapback(job, start)
             return answer("done" if ok else "failed", done_text if ok else TAPBACK_UNCONFIRMED)
-        outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
-        if _opening_lagged(outcome):  # Messages was still showing the chat its link opened: once more
-            time.sleep(2.0)
+        outcome = self.ax.tapback(job) if self.ax is not None else None
+        if outcome is not None and self._ax_falls_back(outcome, emoji=job.kind == EMOJI_KIND):
+            outcome = None
+        if outcome is None:
             outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
+            if _opening_lagged(outcome):  # Messages was still showing the chat its link opened: once more
+                time.sleep(2.0)
+                outcome = self.runner(TAPBACK_SCRIPT, job.argv(), TAPBACK_TIMEOUT)
         interp = interpret_tapback(outcome, job.title)
         quick = quick_emoji(outcome)
         if quick:  # what Messages offers, for the app's tapback picker (kept in state, never logged)
@@ -1309,10 +1341,18 @@ class MessagesUI:
             self.simulator.reply(job)
             interp = Interp(None, "Sent as a reply in Messages.", "done", "simulated")
         else:
-            # Every reply aims at its own message with a right-click (Harry: "i want it to pick the right
-            # one"). Only if that couldn't start and the root is the newest message anyway, the menu
-            # bar's "Reply to Last Message" (which always answers the newest).
-            interp = self._reply_by_right_click(job)
+            # With Messages in the background when accessibility allows (Harry: replies interrupted
+            # his typing and clicking). Otherwise every reply aims at its own message with a
+            # right-click (Harry: "i want it to pick the right one"); only if that couldn't start and
+            # the root is the newest message anyway, the menu bar's "Reply to Last Message".
+            interp = None
+            if self.ax is not None:
+                job.ran_script = True
+                outcome = self.ax.reply(job)
+                if not self._ax_falls_back(outcome):
+                    interp = interpret_reply(outcome, job.title)
+            if interp is None:
+                interp = self._reply_by_right_click(job)
             if interp.state == "nothing" and job.root_is_newest:
                 log.info("Reply in Messages: right-click didn't start (%s); newest message, menu bar instead", interp.code)
                 job.ran_script = True
@@ -1344,6 +1384,14 @@ class MessagesUI:
             elif result.kind == "regular":  # unthreaded, or threaded under the wrong message
                 self.note_reply_proof(False)
         return result
+
+    @staticmethod
+    def _ax_falls_back(outcome: Any, emoji: bool = False) -> bool:
+        """The background helper couldn't run (no accessibility, or Messages has no window to work
+        in), or an emoji isn't among Messages' quick ones (its picker needs Messages in front): the
+        AppleScript helpers take over."""
+        code = _split(outcome)[0]
+        return code in ("ax-unavailable", "no-window") or (emoji and code == "no-tapback-item")
 
     def _covered(self, x: float, y: float, box: list[float] | None, pid: int | None) -> str | None:
         """Why a click at (x, y) wouldn't land on the message, or None: what's under the point has to
@@ -1455,7 +1503,7 @@ class MessagesUI:
         near = self.db.query(
             f"""SELECT {self.db.message_select(fields=fields)} FROM message m
                 JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-                WHERE cmj.chat_id IN ({marks}) AND m.date BETWEEN ? AND ? AND m.is_from_me != ?
+                WHERE cmj.chat_id IN ({marks}) AND cmj.message_date BETWEEN ? AND ? AND m.is_from_me != ?
                   AND m.associated_message_type = 0""",
             (*conv.chat_ids, (row["date"] or 0) - TWIN_NANOSECONDS, (row["date"] or 0) + TWIN_NANOSECONDS,
              1 if row["is_from_me"] else 0),
@@ -1464,8 +1512,16 @@ class MessagesUI:
         return [guid, *[r["guid"] for r in near if _norm(message_text(r)) == text]]
 
     def _is_root(self, job: ReplyJob, guid: str | None) -> bool:
-        """The reply's thread root is the message replied to (either copy, in your own chat)."""
-        return bool(guid) and (guid == job.root_id or guid in self.copies_of(job.conversation_id, job.root_id))
+        """The reply's thread root is the message replied to (either copy, in your own chat), or, when
+        that message is itself a reply, its thread's root: Messages files a reply to a reply under
+        the thread's first message."""
+        if not guid:
+            return False
+        if guid == job.root_id or guid in self.copies_of(job.conversation_id, job.root_id):
+            return True
+        rows = self.db.messages_by_guid([job.root_id])
+        origin = rows[0]["thread_originator_guid"] if rows else None
+        return bool(origin) and (guid == origin or guid in self.copies_of(job.conversation_id, origin))
 
     def _has_newer(self, job: ReplyJob, reply_guid: str) -> bool:
         try:

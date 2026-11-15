@@ -67,10 +67,11 @@ export function Rail() {
   const unreadDms = useStore((s) => Object.values(s.conversations).filter((c) => !c.isAutomated && !c.prefs.muted && c.unreadCount > 0).length)
   // Compare instants, not strings: the server writes local times with an offset (…-07:00), the app UTC (…Z).
   const newActivity = useStore((s) => {
+    // Mentions and thread replies only; tapbacks are listed but not counted (like Slack).
     // The server counts past the 50 items loaded; its count holds until the user looks again.
     if (s.activityNew && s.activityNew.since === s.activitySeenAt) return s.activityNew.count
     const seen = s.activitySeenAt ? Date.parse(s.activitySeenAt) : 0
-    return s.activity.filter((a) => Date.parse(a.at) > seen).length
+    return s.activity.filter((a) => a.type !== 'reaction' && Date.parse(a.at) > seen).length
   })
   // Badge only what needs attention now: reminders that fired and aren't done.
   const laterCount = useStore((s) => s.later.filter((l) => isDue(l)).length)

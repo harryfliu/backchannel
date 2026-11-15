@@ -72,7 +72,8 @@ Access instead.
   top of a conversation, or ⌥-click a message (or its ⋮ › Mark unread from here). It
   stays unread until you open it again.
 - **Catch up**: what needs you, with replies drafted in your voice. **Open** takes the suggested reply
-  into the conversation's message box. Settings › About you tells the AI who's who and your nicknames.
+  into the conversation's message box, and every item (plans too) opens at the message it's about.
+  Settings › About you tells the AI who's who and your nicknames.
 - **Waiting on you**: people who asked you something you haven't answered.
 - **Draft reply**: three suggestions in any conversation.
 - **Apps & alerts**: codes, deliveries and reminders filed away, with a copy-code button.
@@ -95,11 +96,14 @@ Messages app itself. Backchannel can do them by operating Messages for you throu
 macOS Accessibility. Turn each one on in Settings (⌘,) › Messages helpers, and allow
 Backchannel in System Settings › Privacy & Security › Accessibility.
 - **Send tapbacks**: ❤️ 👍 👎 HA HA ‼️ ❓ and emoji from the smiley on any text, or click a reaction to add yours.
-  Messages offers its recent emoji as quick tapbacks (that row updates as you use them); others are in "Any emoji".
-- **Send thread replies as real replies**: they thread on everyone's phone. Messages
-  comes to the front for a few seconds while it sends. If it can't be sent as a real
+  Messages offers its recent emoji as quick tapbacks (that row updates as you use them); others are in "Any emoji"
+  (those bring Messages to the front for a moment, to use its emoji picker).
+- **Send thread replies as real replies**: they thread on everyone's phone. If it can't be sent as a real
   reply, nothing is sent: the message says why, with Try again and Send as a regular
   text.
+
+Tapbacks and replies run with Messages left in the background: your pointer and keyboard stay yours, so
+you can keep typing and clicking while they go out (a tapback takes 1–3 seconds, a reply 2–5).
 - **Mark texts read in Messages**: opening a conversation here marks it read there
   too, so your phone matches.
 - **Send links with previews**: a message that is just a link goes out from Messages'

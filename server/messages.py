@@ -144,6 +144,9 @@ class MessageBuilder:
             for i in range(parts + 1):
                 candidates[f"p:{i}/{guid}"] = guid
             candidates[f"bp:{guid}"] = guid
+            # Some tapbacks name the whole message, not a part ("p:a/GUID"): from other people's
+            # devices since 2025, and from Messages' own accessibility action on a long message.
+            candidates[f"p:a/{guid}"] = guid
         if not candidates:
             return {}
         tapbacks = self.db.reaction_rows(list(candidates))
@@ -390,7 +393,8 @@ class MessageBuilder:
     # ------------------------------------------------------------------ activity & threads
 
     def activity(self, limit: int, days: int = 30, new_since: float | None = None) -> dict[str, Any]:
-        """The newest `limit` events, plus `newCount` (all events after `new_since`, Unix seconds) when given."""
+        """The newest `limit` events, plus `newCount` when `new_since` (Unix seconds) is given: mentions and
+        thread replies after it. Tapbacks are listed but not counted, like Slack's Activity badge."""
         directory = self.convs.directory()
         me = directory.me
         since = now_apple_ns() - days * DAY_NS
@@ -478,7 +482,7 @@ class MessageBuilder:
         new_count = None
         if new_since is not None:
             cutoff = unix_to_apple_ns(new_since)
-            new_count = sum(1 for e in events if e["date"] > cutoff)
+            new_count = sum(1 for e in events if e["date"] > cutoff and e["type"] != "reaction")
         events = events[:limit]
         built = self.by_guids([e["target"] for e in events])
         out = []

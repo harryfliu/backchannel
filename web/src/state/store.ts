@@ -697,6 +697,7 @@ function enterConversation(cid: string, opts: { auto?: boolean } = {}) {
 export function openConversation(cid: string, highlightId?: string, opts: { auto?: boolean } = {}) {
   if (!state.conversations[cid]) return
   enterConversation(cid, opts)
+  if (highlightId) void revealMessage(cid, highlightId)
   pushView({ kind: 'conversation', id: cid })
   setState((s) => ({
     mobilePane: 'main',
@@ -719,6 +720,15 @@ export function setRail(tab: RailTab) {
     mobilePane: 'list',
     activitySeenAt: tab === 'activity' ? new Date().toISOString() : s.activitySeenAt,
   }))
+}
+
+/** Opening a conversation at a message that isn't loaded yet: load older pages (a few at most)
+ *  until it is, then scroll to it. */
+async function revealMessage(cid: string, id: string) {
+  const has = () => !!state.messages[cid]?.items.some((m) => m.id === id)
+  for (let i = 0; i < 40 && state.messages[cid]?.loading; i++) await new Promise((r) => setTimeout(r, 50))
+  for (let page = 0; page < 6 && !has() && state.messages[cid]?.nextCursor; page++) await loadOlder(cid)
+  if (has() && state.highlight?.id === id) setState({ highlight: { id, at: Date.now() } })
 }
 
 export async function loadOlder(cid: string) {
@@ -801,10 +811,10 @@ export function setDraft(key: string, text: string) {
 
 /** Open a conversation with a suggested reply in its message box (catch-up's Open), so it's ready to
  *  finish and send. A draft you already started there is kept. */
-export function openWithDraft(cid: string, text: string) {
+export function openWithDraft(cid: string, text: string, messageId?: string | null) {
   const key = draftKey(cid)
   if (text.trim() && !state.drafts[key]?.trim()) setDraft(key, text)
-  openConversation(cid)
+  openConversation(cid, messageId ?? undefined)
 }
 
 export async function sendMessage(

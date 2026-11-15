@@ -1659,8 +1659,9 @@ end typeReply
 """
 
 # --------------------------------------------------------------------------- reply to an older message
-# "Reply to Last Message" only answers the newest message, and accessibility can't open a message's
-# own menu on macOS 26.3 (its "Reply…" action and AXShowMenu do nothing). So: this script finds the
+# "Reply to Last Message" only answers the newest message, and System Events can't open a message's
+# own menu on macOS 26.3 (its "Reply…" action and AXShowMenu do nothing; direct accessibility calls
+# can, and server/messages_ax.py runs first, in the background). So, as the fallback: this script finds the
 # message and says where it is on screen (aim:x,y, plus its frame and Messages' pid; Messages stays
 # in front), the server checks that the point is that message and right-clicks there
 # (server/mouse.py), and REPLY_FINISH_ACT chooses Reply… in the menu that opened (an AXMenu in the

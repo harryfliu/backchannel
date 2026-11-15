@@ -27,6 +27,7 @@ from .config import Settings, load_dotenv, load_settings, system_full_name
 from .contacts import ContactBook
 from .conversations import ConversationService, NotFound, build_me, conv_title, my_handles
 from .emoji import EmojiError, EmojiStore, clean_name
+from .messages_ax import MessagesAX
 from .messages_ui import HELPER_SETTINGS, TAPBACKS_OFF, MessagesUI, Runner, Simulator, osascript_runner
 from .stickers import StickerLibrary
 from .unfurl import Unfurler
@@ -201,7 +202,8 @@ class Services:
             simulator = Simulator(settings.chat_db, my_handle=self.sending._my_handle)
         self.messages_ui = MessagesUI(self.db, self.state, messages_ui_runner, publish=self.hub.publish,
                                       simulator=simulator, convs=self.convs, builder=self.builder,
-                                      contacts=self.contacts)
+                                      contacts=self.contacts,
+                                      ax=MessagesAX() if messages_ui_runner is osascript_runner else None)
         self.sending.helpers = self.messages_ui
         self.ai = AIService(settings, self.convs, self.builder, self.state, client_factory=ai_client_factory)
 

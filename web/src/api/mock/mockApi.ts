@@ -438,7 +438,7 @@ export function createMockApi(): Api {
       const seen = since ? Date.parse(since) : null
       return clone({
         items: activity.slice(0, 50),
-        ...(seen === null ? {} : { newCount: activity.filter((a) => Date.parse(a.at) > seen).length }),
+        ...(seen === null ? {} : { newCount: activity.filter((a) => a.type !== 'reaction' && Date.parse(a.at) > seen).length }),
       })
     },
     async threads() {

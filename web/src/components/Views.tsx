@@ -121,7 +121,7 @@ function CatchUpBlock({ s, done }: { s: CatchUpSection; done: string[] }) {
         <ul className="cu-list">
           {items.map((it) => (
             <li key={itemKey(s.kind, it)}>
-              <button type="button" className="link-btn" onClick={() => openConversation(it.conversationId)}>
+              <button type="button" className="link-btn" onClick={() => openConversation(it.conversationId, it.messageId ?? undefined)}>
                 {it.title}
               </button>{' '}
               {it.summary}
@@ -156,7 +156,7 @@ function ReplyCard({ it, k }: { it: CatchUpItem; k: string }) {
     <article className="cu-card">
       <header className="cu-card-head">
         <ConversationGlyph c={c} size={28} />
-        <button type="button" className="cu-card-title" onClick={() => openWithDraft(c.id, sent ? '' : text)}>
+        <button type="button" className="cu-card-title" onClick={() => openWithDraft(c.id, sent ? '' : text, it.messageId)}>
           {it.title}
         </button>
         {c.awaitingSince && <span className="age-pill is-light">waiting {ageShort(c.awaitingSince)}</span>}
@@ -185,7 +185,7 @@ function ReplyCard({ it, k }: { it: CatchUpItem; k: string }) {
             <button type="button" className="btn is-quiet" onClick={() => markCatchUpDone(k)}>
               Done
             </button>
-            <button type="button" className="btn" title="Open the conversation with this reply in the message box" onClick={() => openWithDraft(c.id, text)}>
+            <button type="button" className="btn" title="Open the conversation with this reply in the message box" onClick={() => openWithDraft(c.id, text, it.messageId)}>
               Open
             </button>
             <button type="submit" className="btn is-primary" disabled={!text.trim()}>
@@ -204,7 +204,7 @@ function PlanRow({ it, k }: { it: CatchUpItem; k: string }) {
       <Icon name="calendar" size={18} />
       <div className="cu-plan-body">
         <div className="cu-plan-top">
-          <button type="button" className="cu-card-title" onClick={() => openConversation(it.conversationId)}>
+          <button type="button" className="cu-card-title" onClick={() => openConversation(it.conversationId, it.messageId ?? undefined)}>
             {it.title}
           </button>
           {it.status && <span className={`status-chip ${it.status === 'locked_in' ? 'is-locked' : 'is-action'}`}>{it.status === 'locked_in' ? 'Locked in' : 'Needs action'}</span>}

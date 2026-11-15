@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -105,7 +106,7 @@ def test_catchup(ai):
     assert [s["kind"] for s in result["sections"]] == ["reply_now", "reply_soon", "plans", "caught_up"]
     assert sections["reply_now"]["items"][0] == {
         "conversationId": "dm:+14155550161", "title": "Marcus Webb", "summary": "Wants to start demo Thursday 9am.",
-        "draft": "thursday at 9 works!", "status": None}
+        "draft": "thursday at 9 works!", "status": None, "messageId": None}
     assert [i["conversationId"] for i in sections["reply_soon"]["items"]] == ["dm:+14155550134"]  # bogus id dropped
     assert sections["plans"]["items"][0]["status"] == "locked_in"
     assert sections["caught_up"]["items"][0]["conversationId"] == "g:chat100000000000000001"  # matched by title
@@ -195,3 +196,30 @@ def test_catchup_sends_whats_new_after_a_little_context(ai):
             assert lines[0] == "(earlier, for context)" and "(new)" in lines
             assert lines.index("(new)") - 1 <= 8  # at most 8 older messages
         assert lines[-1] not in ("(new)", "(earlier, for context)")
+
+
+def test_catchup_items_point_at_their_message(ai):
+    """Harry: a plan's link only opened the chat; it should scroll to the message about the plan.
+    Each message in the prompt carries a tag ("[m12]", unique across the prompt); the model names
+    one per item and it comes back as the message's id."""
+    harness, _stub = ai(CATCHUP_REPLY)
+    svc = harness.services.ai
+    picked = svc.pick_conversations()
+    _system, user = svc.build_catchup_prompt(picked)
+    tags = re.findall(r"^\[(m\d+)\] ", user, re.M)
+    assert tags and len(tags) == len(set(tags))  # every message tagged, no tag twice
+    line = next(ln for ln in user.splitlines() if "Hinodeya" in ln)
+    tag = re.match(r"\[(m\d+)\] ", line).group(1)
+    dinner = next(c for c in picked if c["id"] == "g:chat100000000000000003")
+    other = next(t for c in picked if c["id"] != dinner["id"] for t in c["_refs"])
+    data = {"vibe": "v", "reply_now": [], "reply_soon": [], "caught_up": [], "plans": [
+        {"conversation_id": dinner["id"], "title": "Dinner Club", "summary": "s", "draft": "", "status": "locked_in",
+         "message_ref": f"[{tag}]"},
+        {"conversation_id": dinner["id"], "title": "Wrong chat", "summary": "s", "draft": "", "status": "none",
+         "message_ref": other},
+        {"conversation_id": dinner["id"], "title": "No ref", "summary": "s", "draft": "", "status": "none",
+         "message_ref": ""}]}
+    plans = parse_catchup(data, picked)["sections"][2]["items"]
+    found = harness.services.builder.by_guid(plans[0]["messageId"])
+    assert "hinodeya" in found["text"].lower() and found["conversationId"] == dinner["id"]
+    assert plans[1]["messageId"] is None and plans[2]["messageId"] is None  # another chat's tag, no tag

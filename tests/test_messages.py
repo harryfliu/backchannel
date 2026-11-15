@@ -170,10 +170,12 @@ def test_activity_new_count(ro):
     everything = ro.get("/api/activity", params={"limit": 200})["items"]
     assert len(everything) >= 3 and "newCount" not in ro.get("/api/activity")
     since = everything[len(everything) // 2]["at"]
-    expected = sum(1 for i in everything if parse_iso(i["at"]) > parse_iso(since))
+    expected = sum(1 for i in everything if parse_iso(i["at"]) > parse_iso(since) and i["type"] != "reaction")
     feed = ro.get("/api/activity", params={"limit": 1, "since": since})
     assert len(feed["items"]) == 1 and feed["newCount"] == expected > 1
-    assert ro.get("/api/activity", params={"since": "2001-01-01T00:00:00Z"})["newCount"] == len(everything)
+    counted = [i for i in everything if i["type"] != "reaction"]
+    assert len(counted) < len(everything)  # the fixture has tapbacks on Harry's messages: listed, not counted
+    assert ro.get("/api/activity", params={"since": "2001-01-01T00:00:00Z"})["newCount"] == len(counted)
     assert ro.get("/api/activity", params={"since": "2999-01-01T00:00:00Z"})["newCount"] == 0
 
 

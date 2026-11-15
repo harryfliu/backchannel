@@ -56,7 +56,7 @@ not be able to drive it.
 | DELETE | `/api/later/{messageId}` | 204 |
 | GET | `/api/scheduled` | `{ items: ScheduledMessage[] }` |
 | DELETE | `/api/scheduled/{id}` | 204 |
-| GET | `/api/activity?limit=50&since=` | `{ items: ActivityItem[], newCount? }` — newest first, last 30 days; with `since` (ISO time the user last looked), `newCount` counts every event after it, even past `limit` (the Activity badge uses it) |
+| GET | `/api/activity?limit=50&since=` | `{ items: ActivityItem[], newCount? }` — newest first, last 30 days; with `since` (ISO time the user last looked), `newCount` counts the mentions and thread replies after it (not tapbacks), even past `limit` (the Activity badge uses it) |
 | GET | `/api/threads?limit=40` | `{ items: Message[] }` — thread roots (messages with `thread` set) across conversations, newest reply first, last 30 days |
 | GET | `/api/search?q=&conversationId=&limit=40` | `{ results: SearchResult[] }` |
 | POST | `/api/ai/draft` | body `{ conversationId, threadRootId?, hint? }` → `{ drafts: string[] }` |
@@ -147,7 +147,12 @@ is the user's own note on who's who and nicknames. It's appended to both
 prompts, and changing it drops the cached catch-up. In the Catch up view, a
 reply card's **Open** (or its title) opens the conversation with the suggested
 reply, as edited on the card, in the message box. A draft already started
-there is kept.
+there is kept. Every message in the catch-up prompt carries a tag (`[m12]`,
+unique across the prompt) and the model names the one each item is about
+(`message_ref`); it comes back as `CatchUpItem.messageId` (null when no single
+message fits, or the tag isn't from that conversation), and opening an item
+(a plan, a caught-up line, a reply card) scrolls to that message, loading
+older pages if needed.
 
 **Needs you (priority).** What needs the user first, so important texts don't
 get buried in busy chats. Computed on the Mac, no AI, for every non-automated,

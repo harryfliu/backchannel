@@ -244,8 +244,8 @@ turned on in Settings › Messages helpers (`PATCH /api/settings`):
 | Setting | What Messages is asked to do | Checked in chat.db |
 |---|---|---|
 | `markReadInMessages` | on `POST /read`, when chat.db still has unread incoming messages there: find the conversation's row in Messages' list (scrolling to it if needed, then back) and use its "Mark as Read" action | 3 s later the messages that were unread are read |
-| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: open the chat (see below), find the bubble, use its action for the tapback ("Heart", "Thumbs up"…) | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
-| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): open the chat, bring Messages forward, find the root bubble, right-click it (a real click, `server/mouse.py`), choose "Reply…" in its menu, check the reply field opened, paste the text, press Return, close the thread Messages leaves open | within ~5 s your row with the same text and `thread_originator_guid` = the root (in your own chat, either copy of it) |
+| `tapbacksViaMessages` | `POST …/messages/{id}/tapback`: open the chat (see below), find the bubble, use its action for the tapback ("Heart", "Thumbs up"…), with Messages left in the background | within ~5 s a new row of yours with `associated_message_guid` → the message and type 2000+k (add) / 3000+k (remove) |
+| `threadRepliesViaMessages` | a send with `threadRootId` (now or scheduled, not `regularText`): open the chat, find the root bubble, open its menu and choose "Reply…", check the thread view shows that message, put the text in the field, send it, close the thread Messages leaves open — all with Messages in the background (see *In the background*) | within ~5 s your row with the same text and `thread_originator_guid` = the root, or, when the root is itself a reply, its thread's root (in your own chat, either copy of it) |
 
 **Permissions.** Two macOS prompts, both for the app that runs the server
 (Backchannel.app, or your terminal): *Accessibility* (System Settings › Privacy
@@ -277,6 +277,40 @@ the error; tests enforce all three. A repeated mark-read
 for a conversation already in the queue is dropped; jobs whose setting was
 turned off while they waited are dropped. Nothing runs in dry-run or fake-DB
 mode (see below).
+
+**In the background** (`server/messages_ax.py`, `server/ax.py`). Tapbacks
+and replies first run through direct accessibility calls from the server
+(ctypes, about a millisecond each, where System Events takes tens): Messages
+never comes to the front, the pointer never moves and nothing is typed into the
+app you're using, so you can keep typing and clicking while it works. Found on
+macOS 26.3, all with Messages in the background: a bubble's tapbacks are its own
+actions (`Name:Thumbs up`, `Name:😂`…); AXShowMenu opens its real menu (an
+AXMenu in the window) and pressing "Reply…" there puts the field in reply mode
+for exactly that message; the field takes the reply as its AXValue and keeps
+replying; Return posted to Messages' process alone (`CGEventPostToPid`) sends
+it (Edit › Send Message is greyed out unless Messages is in front); AXCancel on
+the transcript closes the thread view; the transcript and the sidebar page with
+AXScrollUp/DownByPage; `open -g` with Messages' link opens a one-to-one chat
+without activating Messages. Each step is checked before the next: the chat's
+title, the message's label (text, minute and, for multi-line messages, the
+first 120 characters, so daily digests with the same first line and minute
+are told apart) right before acting and only once the chat has stopped
+scrolling, reply mode, the thread view showing that message at its minute, the
+field holding exactly the reply. Nothing is typed unless all pass
+(`wrong-thread`, `field-busy`, `no-menu`…); if Return didn't take, the text is
+taken back out (`not-sent`). Scrolling animates (~0.5 s a page), so a search
+pages up every 0.15 s while reading the rows twice a page, finds the message
+again once the chat stops, and falls back to a settled page-by-page pass back
+down if it missed it (at most 25 pages). The chat and the sidebar are scrolled
+back after the answer goes out. Measured on Harry's Mac from another chat:
+tapbacks 1–3 s, replies 2.5–5 s (each page up adds ~0.3 s), against 20–40 s
+for the AppleScript way. The AppleScript helpers below still run when this
+can't: no accessibility for the server, Messages without a window (they reopen
+it), or an emoji Messages doesn't offer as a quick tapback (its picker needs
+Messages in front). The log keeps the same codes (`sent-ax` for a background
+reply) and trail. `tools/messages_eval.py` times both ways step by step on
+older messages in your own chat (`--tapbacks N --replies N --depths 2,6,12
+--cold`, `--applescript` to compare) and checks chat.db.
 
 **Finding things in Messages.**
 - *The conversation*: the descriptions of every item in the conversation list
@@ -378,7 +412,10 @@ mode (see below).
   Messages shows both. A reply threads under, and a tapback lands on, whichever
   copy was used, and a removed tapback may leave only the received-side row. So
   there either copy (and either side) counts when checking chat.db, and "you
-  already have that tapback" looks at both copies.
+  already have that tapback" looks at both copies, from you or from your own
+  number. A tapback chosen through accessibility on a long message may be
+  written as `p:a/GUID` (the whole message, not a part); other people's devices
+  write that too, so it counts like `p:0/GUID` everywhere.
 
 **Outcomes.** Every tapback and reply ends with one `ui-action` event
 (`done` / `fallback` / `failed` + a sentence); read sync only reports failures

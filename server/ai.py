@@ -57,8 +57,9 @@ _ITEM_SCHEMA = {
         "summary": {"type": "string"},
         "draft": {"type": "string"},
         "status": {"type": "string", "enum": ["needs_action", "locked_in", "none"]},
+        "message_ref": {"type": "string"},
     },
-    "required": ["conversation_id", "title", "summary", "draft", "status"],
+    "required": ["conversation_id", "title", "summary", "draft", "status", "message_ref"],
     "additionalProperties": False,
 }
 CATCHUP_SCHEMA = {
@@ -127,6 +128,7 @@ Rules:
 - draft: for reply_now and reply_soon, a reply he could send as-is, in his voice; use [brackets] for details he must fill in. Use an empty string elsewhere. status is "none" outside plans.
 - vibe: one short line, e.g. "Nothing on fire. Two people are waiting on you."
 - Copy conversation_id exactly from the conversation header.
+- message_ref: the [m…] tag of the one message the item is about (for plans, the message with the plan's details or the question about it), copied exactly, e.g. "m12"; an empty string if no single message fits.
 
 {short}'s texting style:
 {profile}{about}"""
@@ -169,14 +171,19 @@ def _attachment_note(message: dict[str, Any]) -> str:
 
 
 def transcript(messages: list[dict[str, Any]], names: Callable[[str | None], str], me_short: str,
-               roots: dict[str, str] | None = None) -> str:
-    """Plain-text transcript with real names, oldest first."""
+               roots: dict[str, str] | None = None, refs: dict[str, str] | None = None) -> str:
+    """Plain-text transcript with real names, oldest first. With `refs`, each message gets a tag
+    ("[m12] "), numbered on from what `refs` already holds, and `refs` maps the tag to its id."""
     lines = []
     roots = roots or {}
     for m in messages:
         if m.get("event"):
             lines.append(f"[{_stamp(m['sentAt'])}] ({m['event']['text']})")
             continue
+        tag = ""
+        if refs is not None:
+            tag = f"[m{len(refs) + 1}] "
+            refs[tag[1:-2]] = m["id"]
         who = me_short if m["fromMe"] else names(m.get("senderHandle"))
         body = "(unsent a message)" if m.get("unsent") else (m.get("text") or "")
         extra = _attachment_note(m)
@@ -190,7 +197,7 @@ def transcript(messages: list[dict[str, Any]], names: Callable[[str | None], str
             for r in m.get("reactions") or []
         )
         tail = f"  [reactions: {reactions}]" if reactions else ""
-        lines.append(f"[{_stamp(m['sentAt'])}] {who}: {prefix}{content}{tail}")
+        lines.append(f"{tag}[{_stamp(m['sentAt'])}] {who}: {prefix}{content}{tail}")
     return "\n".join(lines)
 
 
@@ -500,6 +507,7 @@ class AIService:
         me = directory.me
         names = lambda h: directory.person(h).name  # noqa: E731
         blocks = []
+        refs: dict[str, str] = {}
         for summary in picked:
             conv = directory.get(summary["id"])
             messages = self.builder.recent(conv, 30)
@@ -518,10 +526,14 @@ class AIService:
             members = ", ".join(p.name for p in conv.persons)
             header = (f"### {summary['title']} — {kind}" + (f" with {members}" if conv.kind == "group" else "") +
                       f" [conversation_id: {conv.id}] ({'; '.join(details)})")
-            body = transcript(newer, names, me.short_name, roots)
+            # Tags let an item point at its message ("[m12]", unique in the prompt), so opening it
+            # scrolls there.
+            known = set(refs)
+            earlier = transcript(older, names, me.short_name, roots, refs) if older else ""
+            body = transcript(newer, names, me.short_name, roots, refs)
             if older:
-                body = ("(earlier, for context)\n" + transcript(older, names, me.short_name, roots) +
-                        "\n(new)\n" + body)
+                body = "(earlier, for context)\n" + earlier + "\n(new)\n" + body
+            summary["_refs"] = {tag: mid for tag, mid in refs.items() if tag not in known}
             blocks.append(header + "\n" + body)
         now = datetime.now().strftime("%A, %b %d, %I:%M %p").replace(" 0", " ")
         user = f"Now: {now}.\n\n" + "\n\n".join(blocks)
@@ -586,12 +598,15 @@ def parse_catchup(data: dict[str, Any], picked: list[dict[str, Any]]) -> dict[st
                 continue
             status = raw.get("status")
             draft = (raw.get("draft") or "").strip() or None
+            ref = str(raw.get("message_ref") or "").strip().strip("[]")
             items.append({
                 "conversationId": cid,
                 "title": (raw.get("title") or by_id[cid]["title"]).strip(),
                 "summary": (raw.get("summary") or "").strip(),
                 "draft": draft,
                 "status": status if kind == "plans" and status in ("needs_action", "locked_in") else None,
+                # Only a message from this conversation's own transcript.
+                "messageId": (by_id[cid].get("_refs") or {}).get(ref),
             })
         sections.append({"kind": kind, "title": title, "items": items})
     vibe = (data.get("vibe") or "").strip() or "Here's what happened."

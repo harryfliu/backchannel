@@ -295,7 +295,7 @@ export interface ActivityItem {
 export interface ActivityFeed {
   /** Newest first, at most 50. */
   items: ActivityItem[]
-  /** With `since`: how many events came after it, including ones past the 50 in `items`. */
+  /** With `since`: mentions and thread replies after it (not tapbacks), including ones past the 50 in `items`. */
   newCount?: number
 }
 
@@ -401,6 +401,8 @@ export interface CatchUpItem {
   draft: string | null
   /** For plans. */
   status: 'needs_action' | 'locked_in' | null
+  /** The message it's about, to scroll to when it's opened (null when no single one fits). */
+  messageId?: string | null
 }
 
 export interface CatchUpSection {
