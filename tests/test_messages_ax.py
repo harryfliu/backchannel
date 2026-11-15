@@ -10,7 +10,7 @@ import pytest
 
 from fake_messages import FakeMessages, chat_of, write_reply, write_tapback
 from server import fakedb
-from server.messages_ax import (Answer, MessagesAX, find_index, matches_bubble, names_all, pick_action, quick_emoji,
+from server.messages_ax import (Answer, MessagesAX, find_index, same_number, matches_bubble, names_all, pick_action, quick_emoji,
                                 row_index, timed_index, title_matches)
 from server.messages_ui import SYNONYMS, Bubble, TapbackJob
 
@@ -443,9 +443,25 @@ def test_switching_presses_off_whatever_else_is_selected():
 
 def test_a_failed_switch_puts_the_selection_back():
     app = FakeApp(open_chat="Jordan Park")
-    app.title_el.dyn["AXDescription"] = lambda: "Something else"  # never shows ours
+    app.rows[1].on["AXPress"] = lambda: None  # Jordan's row won't let go: ours is never the only one
     head, _ = code(make(app).tapback(soccer_job(28)))
     assert head == "not-selected" and app.selected == {"Jordan Park"}
+
+
+def test_a_title_worded_differently_still_counts_when_only_its_row_is_selected():
+    app = FakeApp(open_chat="Jordan Park")
+    app.title_el.dyn["AXDescription"] = lambda: "Something else" if app.shown() else None
+    head, trail = code(make(app).tapback(soccer_job(28)))
+    assert head == "chosen-action" and app.selected == {"Sunday Soccer ⚽"}
+
+
+def test_numbers_match_however_they_are_written():
+    assert same_number("+44 7950 779682", "+447950779682")
+    assert same_number("+1 (415) 393-2943", "(415) 393-2943") and not same_number("(415) 393-2943", "(415) 393-2944")
+    assert not same_number("Victor Xie", "Victor Xie") and not same_number("12345", "12345")  # too short
+    labels = ["+44 7464 298359, Thanks", "+44 7950 779682, Hello there, I’m Victoria"]
+    assert row_index(labels, [], ["+447950779682"], 1, []) == 1
+    assert title_matches("\u202a+44 7950 779682\u202c", ["+447950779682"], [], 1)
 
 
 def test_titles_with_more_after_the_name():
@@ -477,3 +493,11 @@ def test_sidebar_labels_with_doubled_spaces():
     labels = ["Hanyul Lee, Unread, hey", "Han Family (A&W,  J&R,  C&H,  A&R), the live chicken…, 5:50 PM"]
     assert row_index(labels, [], ["Han Family (A&W, J&R, C&H, A&R)"], 1, []) == 1
     assert title_matches("Han Family (A&W,  J&R,  C&H,  A&R)", ["Han Family (A&W, J&R, C&H, A&R)"], [], 1)
+
+
+def test_middle_names_are_candidates():
+    from server.messages_ui import candidate_names
+    names, loose = candidate_names("Tommy Leung", full_name="Tommy Leung", person_name="Tommy Leung",
+                                   with_middle="Tommy (Carmen's Dad) Leung", short_name="Tommy")
+    assert "Tommy (Carmen's Dad) Leung" in names[:loose]
+    assert row_index(["Tommy (Carmen's Dad) Leung, Got it, 8/29/26 "], [], names, loose, []) == 0

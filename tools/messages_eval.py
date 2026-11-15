@@ -1,6 +1,12 @@
 """Time and check tapbacks and thread replies in the real Messages app, in your own chat only.
 
     .venv/bin/python tools/messages_eval.py --tapbacks 4 --replies 3 [--cold] [--depths 2,6,12,24]
+    .venv/bin/python tools/messages_eval.py --sidebar
+
+--sidebar touches nothing: it reads every row of Messages' sidebar once (scrolling it in the
+background, then back to the top) and checks that each of your conversations matches one the way
+the helpers look for it, so a name Messages writes differently shows up here, not as a failed
+tapback. Chats Messages files apart (unknown senders, businesses) are listed separately.
 
 Runs the same code the server runs (MessagesUI), on older messages in your note-to-self chat, and
 prints how long each step took and whether chat.db shows the tapback or reply on the right message.
@@ -133,6 +139,42 @@ def show(steps, total, result) -> str:
     return f"{total:5.2f}s  {result:<40} {parts}"
 
 
+def sidebar_check(svc: Services) -> None:
+    from server.messages_ax import _Run, row_index
+
+    ui = svc.messages_ui
+    pid = ui.ax.find_pid()
+    if not pid:
+        raise SystemExit("Messages isn't running.")
+    run = _Run(pid, ui.ax.application(pid))
+    if not ui.ax._look(run) or run.spots.get("ConversationList") is None:
+        raise SystemExit("Couldn't find Messages' conversation list.")
+    chats = run.spots["ConversationList"]
+    labels: list[str] = []
+
+    def grab(rows) -> bool:
+        labels.extend(label for label, _top in rows if label and label not in labels)
+        return False
+
+    ui.ax._sweep(chats, "AXScrollUpByPage", lambda rows: False, 200)
+    grab(ui.ax._snapshot(chats))
+    pages = ui.ax._sweep(chats, "AXScrollDownByPage", grab, 400)
+    ui.ax._sweep(chats, "AXScrollUpByPage", lambda rows: False, pages + 10)
+    convs = [c for c in svc.convs.list() if not c["isAutomated"]]
+    contacts, others = [], []
+    for c in convs:
+        conv = svc.convs.get(c["id"])
+        _title, names, loose = ui._names(conv)
+        if row_index(labels, [], names, loose, ui._members(conv)) < 0:
+            known = any(p.is_contact for p in conv.persons)
+            (contacts if known else others).append(f"{c['title']} ({c['kind']}, last {(c.get('lastMessage') or {}).get('sentAt', '')[:10]})")
+    print(f"{len(labels)} rows in Messages' sidebar ({pages} pages); {len(convs)} conversations checked")
+    print(f"not found, contacts and groups (these would fail): {len(contacts)}")
+    for line in contacts:
+        print("  ", line)
+    print(f"not found, unknown senders (Messages files them apart; links still reach one-to-one chats): {len(others)}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tapbacks", type=int, default=3)
@@ -142,12 +184,15 @@ def main() -> None:
     ap.add_argument("--cold", action="store_true", help="switch Messages to another chat before each action")
     ap.add_argument("--json", help="also write results here")
     ap.add_argument("--applescript", action="store_true", help="the old helpers only (to compare)")
+    ap.add_argument("--sidebar", action="store_true", help="check every conversation can be found (read-only)")
     args = ap.parse_args()
 
     svc = services()
     ui = svc.messages_ui
     if ui.runner is None:
         raise SystemExit("The helper isn't using osascript (dry run or fake chat.db).")
+    if args.sidebar:
+        return sidebar_check(svc)
     if args.applescript:
         ui.ax = None
     clock = Clock(ui)

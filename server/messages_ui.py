@@ -182,14 +182,16 @@ def osascript_runner(script: tuple[str, ...], argv: list[str], timeout: float) -
 
 def candidate_names(title: str, *, full_name: str | None = None, nickname: str | None = None,
                     organization: str | None = None, person_name: str | None = None,
-                    handle: str | None = None, short_name: str | None = None) -> tuple[list[str], int]:
+                    handle: str | None = None, short_name: str | None = None,
+                    with_middle: str | None = None) -> tuple[list[str], int]:
     """(names Messages might show for a conversation, how many of them may match as a prefix).
 
     Full names, nicknames, organizations and numbers can match the start of a
     label ("Jordan Park, can carpool…, 2:41 PM"); the short name has to match a
     whole label (or "Jordan, …") so it can't pick another Jordan.
     """
-    loose: list[str] = [title, full_name or "", nickname or "", organization or "", person_name or ""]
+    loose: list[str] = [title, full_name or "", nickname or "", organization or "", person_name or "",
+                        with_middle or ""]
     if handle:
         if "@" in handle:
             loose.append(handle)
@@ -360,6 +362,7 @@ class Job:
     loose: int | None = None  # how many of `candidates` may match a label's beginning (default: all)
     force: bool = False  # run even when chat.db shows nothing unread (it was marked unread)
     members: list[str] = field(default_factory=list)  # an unnamed group's people (G:, "nickname|first|full")
+    quiet_missing: bool = False  # not in Messages' list: log it, no note (unknown senders)
     action = "mark-read"
 
     def key(self) -> tuple | None:
@@ -902,7 +905,8 @@ class MessagesUI:
                 full_name=" ".join(p for p in (contact.first, contact.last) if p) if contact else None,
                 nickname=contact.nickname if contact else None,
                 organization=contact.organization if contact else None,
-                person_name=person.name, handle=person.handle, short_name=person.short_name)
+                person_name=person.name, handle=person.handle, short_name=person.short_name,
+                with_middle=contact.full_with_middle if contact else None)
         else:
             names, loose = candidate_names(title)
         return title, names, loose
@@ -916,7 +920,7 @@ class MessagesUI:
         for person in conv.persons:
             contact = self.contacts.lookup(person.handle) if self.contacts is not None else None
             alts = [person.short_name, contact.nickname if contact else None, contact.first if contact else None,
-                    person.name]
+                    person.name, contact.full_with_middle if contact else None]
             alts = [a.replace("|", " ").strip() for a in dict.fromkeys(a for a in alts if a and a.strip())]
             if alts:
                 out.append("|".join(alts))
@@ -926,7 +930,11 @@ class MessagesUI:
         conv_name, names, loose = self._names(conv)
         if title and title != conv_name:
             names, loose = [title, *[n for n in names if n != title]], loose + 1
-        return Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose, force, members=self._members(conv))
+        job = Job(conv.id, title or conv_name, names, list(conv.chat_ids), loose, force, members=self._members(conv))
+        # Messages files unknown senders apart from its list (Harry's Mac: 25 numbers and businesses
+        # never in it), so not finding those isn't worth a note.
+        job.quiet_missing = not any(p.is_contact for p in conv.persons)
+        return job
 
     def mark_unread_job(self, conv: Conv, title: str | None = None) -> UnreadJob:
         job = self.mark_read_job(conv, title)
@@ -1193,7 +1201,8 @@ class MessagesUI:
                 pass
         self._record(interp, result, "Mark read")
         # Successes stay quiet, and so does "Messages isn't open" (nothing to tell on every open).
-        if not succeeded and interp.code not in ("not-running", "no-window"):
+        quiet = interp.code.startswith("row-not-found") and job.quiet_missing
+        if not succeeded and not quiet and interp.code not in ("not-running", "no-window"):
             self._ui_action("mark-read", job.conversation_id, "failed", result)
 
     def _mark_in_background(self, job: Job | UnreadJob, read: bool) -> Any:

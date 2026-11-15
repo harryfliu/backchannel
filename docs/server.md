@@ -313,9 +313,23 @@ for the AppleScript way. The AppleScript helpers below still run when this
 can't: no accessibility for the server, Messages without a window (they reopen
 it), or an emoji Messages doesn't offer as a quick tapback (its picker needs
 Messages in front). The log keeps the same codes (`sent-ax` for a background
-reply) and trail. `tools/messages_eval.py` times both ways step by step on
-older messages in your own chat (`--tapbacks N --replies N --depths 2,6,12
---cold`, `--applescript` to compare) and checks chat.db.
+reply) and trail. Mark read and unread run there too (the sidebar row's own
+action). Finding a chat in the sidebar: to the top, then down while reading (40
+pages; ~0.3 s a page), with names compared ignoring spacing (Messages writes
+"Han Family (A&W,  J&R,  C&H,  A&R)" with doubled spaces), phone numbers by
+their digits ("+44 7950 779682" = "+447950779682"), and contacts' middle names
+included ("Tommy (Carmen's Dad) Leung"). Switching chats reads the list's
+`AXSelectedChildren` (it includes pinned chats, whose rows never say they're
+selected), presses ours, presses everything else off ("2 Conversations
+Selected" otherwise), counts the chat as open when its title matches or its
+row is the only one selected, and puts the selection back if it can't.
+Unknown senders and spam groups aren't in Messages' list at all (it files
+them apart): one-to-one ones are reached by their link, and mark read doesn't
+leave a note when it can't find them. `tools/messages_eval.py` times both ways
+step by step on older messages in your own chat (`--tapbacks N --replies N
+--depths 2,6,12 --cold`, `--applescript` to compare) and checks chat.db;
+`--sidebar` (read-only) checks that every conversation matches a row in
+Messages' sidebar. Run it after a macOS update or when a chat can't be found.
 
 **Finding things in Messages.**
 - *The conversation*: the descriptions of every item in the conversation list

@@ -28,6 +28,7 @@ import logging
 import shutil
 import subprocess
 import time
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -83,9 +84,33 @@ def title_matches(title: str, names: list[str], members: list[str], loose: int |
     loose = len(names) if loose is None else loose
     for k, name in enumerate(names):
         name = _flat(name)
-        if name and (title == name or (k < loose and title.startswith(name + ", "))):
+        if name and (title == name or (k < loose and title.startswith(name + ", ")) or same_number(title, name)):
             return True
     return names_all(title, members)
+
+
+_PHONE = re.compile(r"^[+\d\s().\-\u200e\u200f\u202a-\u202e\u2066-\u2069]{7,}$")
+
+
+def _digits(text: str | None) -> str:
+    """A phone number's digits, however it's written ("+44 7950 779682", "+447950779682"); "" for
+    anything that isn't just a number."""
+    text = (text or "").strip()
+    if not _PHONE.match(text):
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits if len(digits) >= 7 else ""
+
+
+def same_number(a: str | None, b: str | None) -> bool:
+    """Two ways of writing one number (a missing country code allowed: 10 digits or more alike)."""
+    x, y = _digits(a), _digits(b)
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    short, long = sorted((x, y), key=len)
+    return len(short) >= 10 and long.endswith(short)
 
 
 def _flat(text: str | None) -> str:
@@ -104,10 +129,11 @@ def row_index(labels: list[str], roles: list[str], names: list[str], loose: int,
     for i, label in enumerate(labels):
         if i < len(roles) and roles[i] == "AXGroup":
             continue
+        head = label.split(", ", 1)[0]
         for k, name in enumerate(names):
             if not name:
                 continue
-            if label == name or label.startswith(name + ", "):
+            if label == name or label.startswith(name + ", ") or same_number(head, name):
                 if best is None or k < best:
                     best, best_at = k, i
             elif k < loose and label.startswith(name):
@@ -487,8 +513,18 @@ class MessagesAX:
             return [el for el in (chats.get("AXSelectedChildren") or []) if el is not None]
 
         def shown() -> bool:
-            return self._look(run) and title_matches(self._title(run), names, members, loose)
+            """Its title says so, or its row is the only one selected and a chat shows (a title
+            Messages words in a way we don't expect shouldn't make a chat unreachable)."""
+            if not self._look(run):
+                return False
+            if title_matches(self._title(run), names, members, loose):
+                return True
+            sel = selection()
+            return len(sel) == 1 and ours(sel[0]) and bool(self._title(run))
 
+        if shown():
+            run.trail.append("selected")
+            return
         was = selection()
         was_labels = [label(el) for el in was]
         at = self._find_row(run, chats, names, loose, members)

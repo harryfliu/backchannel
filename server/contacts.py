@@ -84,6 +84,14 @@ class Contact:
     emails: list[str] = field(default_factory=list)
     photo: PhotoSource | None = None
     photo_status: str = "none"  # for `backchannel doctor`: inline, external, images_dir, invalid, …
+    middle: str | None = None  # Messages shows it ("Tommy (Carmen's Dad) Leung"); Backchannel doesn't
+
+    @property
+    def full_with_middle(self) -> str | None:
+        """First, middle and last name, when there is a middle one."""
+        if not self.middle:
+            return None
+        return " ".join(p for p in (self.first, self.middle, self.last) if p) or None
 
     @property
     def name(self) -> str:
@@ -197,7 +205,7 @@ class ContactBook:
             pick = lambda name: f"r.{name}" if name in cols else f"NULL AS {name}"  # noqa: E731
             head = lambda name: f"substr(r.{name}, 1, 64) AS {name}_head" if name in cols else f"NULL AS {name}_head"  # noqa: E731
             rows = conn.execute(
-                f"""SELECT r.Z_PK, {pick('ZFIRSTNAME')}, {pick('ZLASTNAME')}, {pick('ZNICKNAME')},
+                f"""SELECT r.Z_PK, {pick('ZFIRSTNAME')}, {pick('ZMIDDLENAME')}, {pick('ZLASTNAME')}, {pick('ZNICKNAME')},
                            {pick('ZORGANIZATION')}, {pick('ZUNIQUEID')},
                            {head('ZTHUMBNAILIMAGEDATA')}, {head('ZIMAGEDATA')}
                     FROM ZABCDRECORD r"""
@@ -215,6 +223,7 @@ class ContactBook:
                     nickname=(row["ZNICKNAME"] or "").strip() or None,
                     organization=(row["ZORGANIZATION"] or "").strip() or None,
                     db_path=Path(path),
+                    middle=(row["ZMIDDLENAME"] or "").strip() or None,
                 )
                 self._choose_photo(contacts[row["Z_PK"]], row["ZTHUMBNAILIMAGEDATA_head"], row["ZIMAGEDATA_head"])
             for owner, number in conn.execute("SELECT ZOWNER, ZFULLNUMBER FROM ZABCDPHONENUMBER"):
