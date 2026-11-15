@@ -37,7 +37,7 @@ log = logging.getLogger("backchannel.messages_ax")
 
 RETURN_KEY = 36
 PAGES = 25  # how far up a chat to look for a message (tall bubbles: Harry's digests)
-LIST_PAGES = 12
+LIST_PAGES = 40  # how far down the sidebar to look for a chat (Harry: ~14 chats a page, unread ones 5+ pages down)
 POLL = 0.05
 SWEEP_STEP = 0.15  # between page scrolls while sweeping: closer together and Messages drops some
 IDS = ("TranscriptCollectionView", "MessageEntryView", "ConversationList", "ConversationTitle")
@@ -77,45 +77,30 @@ def title_matches(title: str, names: list[str], members: list[str], loose: int |
     """The chat's title is one of its names. Messages may add to it ("Wifey 4 Lifey 🥰, San Francisco,
     CA": a shared location; Harry's Mac), so a loose name (full name, group name) may also start it
     as "Name, …"; a short name ("Jordan") has to be the whole title."""
-    title = " ".join((title or "").split())  # "Coming In Hot 🥵 " ends in a space (Harry's Mac)
+    title = _flat(title)  # "Coming In Hot 🥵 " ends in a space; group titles may double them (Harry's Mac)
     if not title:
         return False
     loose = len(names) if loose is None else loose
     for k, name in enumerate(names):
-        name = " ".join((name or "").split())
+        name = _flat(name)
         if name and (title == name or (k < loose and title.startswith(name + ", "))):
             return True
     return names_all(title, members)
 
 
-def _row_for_title(labels: list[str], title: str, skip: int = -1) -> int:
-    """The sidebar row of the chat whose title this is ("Wifey 4 Lifey 🥰, San Francisco, CA" →
-    "Wifey 4 Lifey 🥰, Pinned"): the longest "Name, " start of a label that the title is or starts
-    with. -1 for none."""
-    title = " ".join((title or "").split())
-    best, best_len = -1, 0
-    for i, label in enumerate(labels):
-        if i == skip:
-            continue
-        flat = " ".join(label.split())
-        cut = 0
-        while True:
-            cut = flat.find(", ", cut + 1)
-            if cut < 0:
-                break
-            name = flat[:cut].strip()
-            if name and (title == name or title.startswith(name + ", ")) and len(name) > best_len:
-                best, best_len = i, len(name)
-        if flat and title == flat and len(flat) > best_len:
-            best, best_len = i, len(flat)
-    return best
+def _flat(text: str | None) -> str:
+    """Whitespace runs as single spaces, ends trimmed."""
+    return " ".join((text or "").split())
 
 
 def row_index(labels: list[str], roles: list[str], names: list[str], loose: int, members: list[str]) -> int:
     """The sidebar row for the conversation, or -1: a label that is a name or starts "Name, " (the
     earliest name wins); else one starting with a loose name; else an unnamed group's shortest
-    label naming all its members."""
+    label naming all its members. Spacing doesn't count: Messages writes "Han Family (A&W,  J&R,  C&H,
+    A&R)" with two spaces after each comma (Harry's Mac: the chat was never found)."""
     best, best_at, loose_best, loose_at = None, -1, None, -1
+    labels = [_flat(label) for label in labels]
+    names = [_flat(name) for name in names]
     for i, label in enumerate(labels):
         if i < len(roles) and roles[i] == "AXGroup":
             continue
@@ -486,46 +471,59 @@ class MessagesAX:
         chats = run.spots.get("ConversationList")
         if chats is None:
             raise _Stop("no-list")
-        before = self._title(run)  # the chat on screen now, to press off if both end up selected
-        at = self._find_row(run, chats, names, loose, members)
-        if at < 0:
-            raise _Stop("row-not-found")
-        pressed_before = False
+        # The list says what's selected (AXSelectedChildren, pinned chats too; the rows' own
+        # AXSelected never says for pinned ones). Pressing a row toggles it like a Command-click, so:
+        # press ours, then press off whatever else is selected (Harry's Mac: a leftover draft or the
+        # chat that was showing stayed selected, and Messages showed "2 Conversations Selected").
+        # If it can't be done, the selection is put back the way it was.
+        def label(el: Any) -> str:
+            value = el.get("AXDescription")
+            return value if isinstance(value, str) else ""
+
+        def ours(el: Any) -> bool:
+            return row_index([label(el)], [], names, loose, members) >= 0
+
+        def selection() -> list[Any]:
+            return [el for el in (chats.get("AXSelectedChildren") or []) if el is not None]
 
         def shown() -> bool:
             return self._look(run) and title_matches(self._title(run), names, members, loose)
 
-        # Pressing a row toggles it, like a Command-click, and pinned rows never say whether they're
-        # selected (Harry's Mac: pressing EastMeetEast while Wifey's chat showed selected both, and
-        # Messages showed neither). So: press, look at the title, and fix what it shows.
-        for step in range(5):
-            kids, labels, roles, selected = self._rows(run.spots.get("ConversationList") or chats)
-            at = row_index(labels, roles, names, loose, members)
-            if at < 0:
-                raise _Stop("row-not-found")
-            title = self._title(run)
-            if not title or (step and title != before and not shown()):
-                # Two or more selected: press off the one that was showing, and any that say so.
-                prev = _row_for_title(labels, before, skip=at) if before and not pressed_before else -1
-                if prev >= 0:
-                    kids[prev].perform("AXPress")
-                    pressed_before = True
-                    run.trail.append(f"off{prev + 1}")
-                for i, on in enumerate(selected):
-                    if on and i != at:
-                        kids[i].perform("AXPress")
-                if prev < 0 and not any(on and i != at for i, on in enumerate(selected)):
-                    kids[at].perform("AXPress")  # nothing else to press off: start over from ours
-            else:
-                kids[at].perform("AXPress")
-            if self._wait(shown, 1.2):
-                run.trail.append(f"row{at + 1}/{run.list_down}" + (f" p{step + 1}" if step else ""))
-                return
-            self._wait(lambda: self._look(run) and self._title(run) != title, 0.4)
-        raise _Stop("not-selected")
+        was = selection()
+        was_labels = [label(el) for el in was]
+        at = self._find_row(run, chats, names, loose, members)
+        if at < 0:
+            raise _Stop("row-not-found")
+        row = chats.children()[at]
+        try:
+            for step in range(3):
+                if not any(ours(el) for el in selection()):
+                    row.perform("AXPress")
+                    self._wait(lambda: any(ours(el) for el in selection()), 0.6)
+                for el in selection():
+                    if not ours(el):
+                        el.perform("AXPress")
+                        run.trail.append("off")
+                if self._wait(shown, 1.5):
+                    run.trail.append(f"row{at + 1}/{run.list_down}" + (f" p{step + 1}" if step else ""))
+                    return
+            raise _Stop("not-selected")
+        except _Stop:
+            # Back to how it was: press off what we added, press back what was selected.
+            now = selection()
+            for el in now:
+                if label(el) not in was_labels:
+                    el.perform("AXPress")
+            now_labels = [label(el) for el in selection()]
+            for el in was:
+                if label(el) not in now_labels:
+                    el.perform("AXPress")
+            raise
 
     def _find_row(self, run: _Run, chats: Any, names: list[str], loose: int, members: list[str]) -> int:
-        """The chat's row, scrolling the sidebar (top first, then down a page at a time) if needed."""
+        """The chat's row, scrolling the sidebar if needed: to the top, then down while looking (a
+        page every SWEEP_STEP seconds), at most LIST_PAGES pages. Older chats are far down: Harry's
+        unread ones from 5 days back were 5 pages down, past the old 4-page limit."""
         def look() -> int:
             _kids, labels, roles, _sel = self._rows(chats)
             return row_index(labels, roles, names, loose, members)
@@ -533,24 +531,76 @@ class MessagesAX:
         at = look()
         if at >= 0:
             return at
-        for _ in range(6):
-            if not self._page(chats, "AXScrollUpByPage"):
-                break
+        self._sweep(chats, "AXScrollUpByPage", lambda rows: False, 60)
         at = look()
-        while at < 0 and run.list_down < LIST_PAGES:
-            if not self._page(chats, "AXScrollDownByPage"):
+        if at >= 0:
+            return at
+
+        def seen(rows: tuple) -> bool:
+            return row_index([label for label, _top in rows], [], names, loose, members) >= 0
+
+        run.list_down = self._sweep(chats, "AXScrollDownByPage", seen, LIST_PAGES)
+        return look()
+
+    def _sweep(self, container: Any, action: str, seen: Callable[[tuple], bool], limit: int) -> int:
+        """Scroll a page every SWEEP_STEP seconds, reading the rows twice a page, until `seen` says
+        what's on screen has it (then wait for the scrolling to stop), the end, or `limit` pages.
+        How many pages it scrolled."""
+        moved = 0
+        last = self._snapshot(container)
+        while moved < limit:
+            if not container.perform(action):
                 break
-            run.list_down += 1
-            at = look()
-        return at
+            moved += 1
+            self.sleep(SWEEP_STEP / 2)
+            hit = seen(self._snapshot(container))
+            self.sleep(SWEEP_STEP / 2)
+            now = self._snapshot(container)
+            if hit or seen(now):
+                break
+            if now == last and not self._wait(lambda: self._snapshot(container) != last, 0.6):
+                moved -= 1  # nothing moved: the end
+                break
+            last = self._snapshot(container)
+        self._settle(container)
+        return moved
 
     def _list_home(self, run: _Run) -> None:
         chats = run.spots.get("ConversationList")
         if run.list_down and chats is not None:
-            for _ in range(run.list_down + 2):
-                if not self._page(chats, "AXScrollUpByPage"):
-                    break
+            self._sweep(chats, "AXScrollUpByPage", lambda rows: False, run.list_down + 4)
             run.list_down = 0
+
+    # ------------------------------------------------------------------ read state
+
+    def mark(self, job: Any, read: bool) -> Answer:
+        """Mark a chat read (or unread) by its sidebar row's own action; the chat isn't opened."""
+        return self._run(job, lambda run, j: self._mark(run, j, read))
+
+    def _mark(self, run: _Run, job: Any, read: bool) -> str:
+        if not self._look(run):
+            raise _Stop("no-window")
+        chats = run.spots.get("ConversationList")
+        if chats is None:
+            return "no-list"
+        names = list(job.candidates)
+        loose = len(names) if job.loose is None else int(job.loose)
+        members = list(job.members)
+        at = self._find_row(run, chats, names, loose, members)
+        run.trail.append(f"row{at + 1}/{run.list_down}")
+        if run.list_down:
+            self._tidy.append(lambda: self._list_home(run))
+        if at < 0:
+            return "row-not-found"
+        row = chats.children()[at]
+        actions = row.actions()
+        want, other = ("Mark as Read", "Mark as Unread") if read else ("Mark as Unread", "Mark as Read")
+        action = pick_action(actions, [want])
+        if action is not None:
+            return "ok-action" if row.perform(action) else "no-mark-item"
+        if pick_action(actions, [other]) is not None:
+            return "already-read" if read else "already-unread"
+        return "no-mark-item"
 
     def _leave_thread(self, run: _Run) -> None:
         """After a reply Messages keeps the thread open; close it (only with nothing typed in it)."""

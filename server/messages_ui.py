@@ -1177,7 +1177,7 @@ class MessagesUI:
         if newest is None and not job.force:
             return  # Messages already agrees: nothing to do
         assert self.runner is not None
-        outcome = self.runner(MARK_READ_SCRIPT, job.argv(), TIMEOUT)
+        outcome = self._mark_in_background(job, read=True) or self.runner(MARK_READ_SCRIPT, job.argv(), TIMEOUT)
         base = _common(outcome, TIMEOUT)
         interp = base or _specific(outcome, MARK_READ_ANSWERS, job.title, "nothing")
         result = interp.sentence
@@ -1196,11 +1196,19 @@ class MessagesUI:
         if not succeeded and interp.code not in ("not-running", "no-window"):
             self._ui_action("mark-read", job.conversation_id, "failed", result)
 
+    def _mark_in_background(self, job: Job | UnreadJob, read: bool) -> Any:
+        """The row's Mark as Read / Unread through the background helper (it pages further down the
+        sidebar, fast); None when the AppleScript helper should do it."""
+        if self.ax is None:
+            return None
+        outcome = self.ax.mark(job, read)
+        return None if self._ax_falls_back(outcome) else outcome
+
     def _run_mark_unread(self, job: UnreadJob) -> None:
         if not self.mark_read_on:
             return  # turned off while this was queued
         assert self.runner is not None
-        outcome = self.runner(MARK_UNREAD_SCRIPT, job.argv(), TIMEOUT)
+        outcome = self._mark_in_background(job, read=False) or self.runner(MARK_UNREAD_SCRIPT, job.argv(), TIMEOUT)
         base = _common(outcome, TIMEOUT)
         interp = base or _specific(outcome, MARK_UNREAD_ANSWERS, job.title, "nothing")
         succeeded = interp.state == "done" and base is None

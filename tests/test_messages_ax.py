@@ -10,13 +10,14 @@ import pytest
 
 from fake_messages import FakeMessages, chat_of, write_reply, write_tapback
 from server import fakedb
-from server.messages_ax import (Answer, MessagesAX, _row_for_title, find_index, matches_bubble, names_all, pick_action, quick_emoji,
+from server.messages_ax import (Answer, MessagesAX, find_index, matches_bubble, names_all, pick_action, quick_emoji,
                                 row_index, timed_index, title_matches)
 from server.messages_ui import SYNONYMS, Bubble, TapbackJob
 
 ACTION = "Name:{}\nTarget:0x0\nSelector:(null)"
 VISIBLE = 6  # rows on screen
 PAGE = 5  # rows a page scroll moves
+LIST_VISIBLE, LIST_PAGE = 14, 12  # the sidebar
 
 
 # --------------------------------------------------------------------------- matching
@@ -85,7 +86,7 @@ class El:
     def __init__(self, role="AXGroup", ident=None, desc=None, kids=(), actions=(), dyn=None, on=None, **attrs):
         self.attrs = {"AXRole": role, "AXIdentifier": ident, "AXDescription": desc, **attrs}
         self.kids = kids
-        self.acts = list(actions)
+        self.acts = actions if callable(actions) else list(actions)
         self.dyn = dyn or {}
         self.on = on or {}
         self.parent = None
@@ -109,7 +110,7 @@ class El:
         return self.get("AXChildren") or []
 
     def actions(self):
-        return list(self.acts)
+        return list(self.acts() if callable(self.acts) else self.acts)
 
     def perform(self, action):
         handler = self.on.get(action) or self.on.get(action.split("\n")[0])
@@ -126,11 +127,14 @@ class El:
 class FakeApp:
     """Two chats (a group and a DM); the transcript shows VISIBLE rows and pages PAGE at a time."""
 
-    def __init__(self, open_chat="Jordan Park"):
+    def __init__(self, open_chat="Jordan Park", others=0):
         self.chats = {
             "Sunday Soccer ⚽": [f"Sam, game {i} on sunday, 1:{i:02d} PM" for i in range(30)],
             "Jordan Park": [f"Jordan Park, hike {i}?, 2:{i:02d} PM" for i in range(10)],
+            **{f"Friend {i}": [f"Friend {i}, hey, 9:00 AM"] for i in range(others)},
         }
+        self.unread = {"Friend 50"}
+        self.top = 0  # the sidebar's first row on screen
         self.selected = {open_chat}
         self.bottom = {name: len(msgs) for name, msgs in self.chats.items()}
         self.thread: str | None = None  # the label of the message whose thread is open
@@ -140,9 +144,17 @@ class FakeApp:
         self.tapbacks: list[tuple[str, str]] = []
         self.reply_opens = None  # the label a Reply… press opens (tests: the wrong one)
         self.return_works = True
-        rows = [El("AXStaticText", desc=f"{name}, hi", dyn={"AXSelected": (lambda n=name: n in self.selected)},
-                   on={"AXPress": (lambda n=name: self._toggle(n))}) for name in self.chats]
-        self.list = El(ident="ConversationList", kids=rows)
+        self.rows = [El("AXStaticText", desc=f"{name}, hi", dyn={"AXSelected": (lambda n=name: n in self.selected)},
+                        on={"AXPress": (lambda n=name: self._toggle(n)),
+                            "Name:Mark as Read": (lambda n=name: self.unread.discard(n)),
+                            "Name:Mark as Unread": (lambda n=name: self.unread.add(n))})
+                     for name in self.chats]
+        for row, name in zip(self.rows, self.chats):
+            row.acts = (lambda n=name: ["AXPress", ACTION.format("Mark as Read" if n in self.unread else "Mark as Unread")])
+        self.list = El(ident="ConversationList", kids=lambda: self.rows[self.top:self.top + LIST_VISIBLE],
+                       dyn={"AXSelectedChildren": lambda: [r for r, n in zip(self.rows, self.chats) if n in self.selected]},
+                       on={"AXScrollDownByPage": lambda: self._list_scroll(LIST_PAGE),
+                           "AXScrollUpByPage": lambda: self._list_scroll(-LIST_PAGE)})
         self.transcript = El(ident="TranscriptCollectionView", kids=self._rows,
                              on={"AXScrollUpByPage": lambda: self._scroll(-PAGE),
                                  "AXScrollDownByPage": lambda: self._scroll(PAGE), "AXCancel": self._cancel})
@@ -167,6 +179,9 @@ class FakeApp:
 
     def _toggle(self, name):
         self.selected ^= {name}
+
+    def _list_scroll(self, rows):
+        self.top = min(max(0, len(self.rows) - LIST_VISIBLE), max(0, self.top + rows))
 
     def _rows(self):
         name = self.shown()
@@ -248,7 +263,7 @@ def test_tapback_on_an_older_message_in_another_chat():
     assert head == "chosen-action"
     assert app.tapbacks == [("Sam, game 12 on sunday, 1:12 PM", "Thumbs up")]
     assert app.selected == {"Sunday Soccer ⚽"}  # opened from the sidebar, Jordan pressed off again
-    assert trail.startswith("row1/0") and " t" in trail
+    assert "row1/0" in trail.split() and " t" in trail
     assert "quick\t😂" in answer.stdout  # Messages' quick emoji, for the app's picker
     assert app.bottom["Sunday Soccer ⚽"] < 30
     ax.tidy()  # after the answer: back to the newest messages
@@ -414,24 +429,51 @@ def test_a_tapback_on_the_whole_message_counts(ax_rw):
     assert rw.services.messages_ui.current_tapback(target, "dm:+14155550134") == ("like", None)
 
 
-def test_switching_from_a_pinned_chat_that_hides_its_selection():
+def test_switching_presses_off_whatever_else_is_selected():
     """Harry's Mac: pinned rows never say they're selected, and pressing another chat's row while one
-    showed selected both (Messages showed neither): "Couldn't open EastMeetEast in Messages". The
-    chat that was showing is found by its title and pressed off."""
+    (or a leftover draft) was selected selected both: "2 Conversations Selected". The list's
+    AXSelectedChildren does say, pinned ones too: everything else selected is pressed off."""
     app = FakeApp(open_chat="Jordan Park")
-    app.title_el.dyn["AXDescription"] = lambda: (("Jordan Park, San Francisco, CA" if app.shown() == "Jordan Park"
-                                                  else app.shown()) if app.shown() else None)
-    for row in app.list.kids:
+    for row in app.rows:
         row.dyn["AXSelected"] = lambda: False  # pinned: never says
     head, trail = code(make(app).tapback(soccer_job(28)))
     assert head == "chosen-action" and app.selected == {"Sunday Soccer ⚽"}
-    assert "off2" in trail  # Jordan's row (the second) pressed off
+    assert "off" in trail.split()
+
+
+def test_a_failed_switch_puts_the_selection_back():
+    app = FakeApp(open_chat="Jordan Park")
+    app.title_el.dyn["AXDescription"] = lambda: "Something else"  # never shows ours
+    head, _ = code(make(app).tapback(soccer_job(28)))
+    assert head == "not-selected" and app.selected == {"Jordan Park"}
 
 
 def test_titles_with_more_after_the_name():
     assert title_matches("Wifey 4 Lifey 🥰, San Francisco, CA", ["Wifey 4 Lifey 🥰", "Carmen"], [], 1)
     assert title_matches("Coming In Hot 🥵 ", ["Coming In Hot 🥵"], [], 1)  # a trailing space
     assert not title_matches("Jordan, Sam & Lee", ["Jordan Park", "Jordan"], [], 1)  # short names: whole title only
-    assert _row_for_title(["Tuesday Gang, Pinned", "Wifey 4 Lifey 🥰, Pinned", "EastMeetEast, Pinned"],
-                          "Wifey 4 Lifey 🥰, San Francisco, CA") == 1
-    assert _row_for_title(["EastMeetEast, Pinned"], "EastMeetEast", skip=0) == -1
+
+
+def test_mark_read_finds_a_chat_far_down_the_sidebar():
+    """Harry: "it couldn't find a convo in the sidebar": the chat was 5 pages down and the helper
+    only looked 4. It sweeps down (40 pages at most), uses the row's own action, and scrolls back up
+    after the answer."""
+    app = FakeApp(others=80)
+    ax = make(app)
+    job = SimpleNamespace(candidates=["Friend 50"], loose=None, members=[])
+    head, trail = code(ax.mark(job, read=True))
+    assert head == "ok-action" and app.unread == set()
+    assert trail.startswith("row") and app.top > 0
+    ax.tidy()
+    assert app.top == 0
+    assert code(make(app).mark(job, read=True))[0] == "already-read"
+    assert code(make(app).mark(job, read=False))[0] == "ok-action" and app.unread == {"Friend 50"}
+    gone = SimpleNamespace(candidates=["Nobody"], loose=None, members=[])
+    assert code(make(app).mark(gone, read=True))[0] == "row-not-found"
+
+
+def test_sidebar_labels_with_doubled_spaces():
+    """Messages labels "Han Family (A&W, J&R, C&H, A&R)" as "Han Family (A&W,  J&R,  C&H,  A&R), …"."""
+    labels = ["Hanyul Lee, Unread, hey", "Han Family (A&W,  J&R,  C&H,  A&R), the live chicken…, 5:50 PM"]
+    assert row_index(labels, [], ["Han Family (A&W, J&R, C&H, A&R)"], 1, []) == 1
+    assert title_matches("Han Family (A&W,  J&R,  C&H,  A&R)", ["Han Family (A&W, J&R, C&H, A&R)"], [], 1)
