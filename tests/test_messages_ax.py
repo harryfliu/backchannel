@@ -441,6 +441,23 @@ def test_switching_presses_off_whatever_else_is_selected():
     assert "off" in trail.split()
 
 
+def test_a_selected_chat_scrolled_out_of_the_sidebar_is_pressed_off_where_it_shows():
+    """Harry's Mac, Nov 2026: a chat far down the sidebar stayed selected after the list was scrolled
+    home. Off screen, Messages hands it back as a blank stand-in that ignores presses, so every group
+    failed "not-selected [off off off]" with two chats selected. It is pressed off where it shows."""
+    app = FakeApp(open_chat="Friend 35", others=40)
+
+    def selected():
+        visible = range(app.top, app.top + LIST_VISIBLE)
+        return [row if i in visible else El("AXStaticText", desc="")  # off screen: a blank stand-in
+                for i, (row, name) in enumerate(zip(app.rows, app.chats)) if name in app.selected]
+
+    app.list.dyn["AXSelectedChildren"] = selected
+    head, trail = code(make(app).tapback(soccer_job(28)))
+    assert head == "chosen-action" and app.selected == {"Sunday Soccer ⚽"}
+    assert "hidden1" in trail.split() and app.top == 0  # and the sidebar is back at the top
+
+
 def test_a_failed_switch_puts_the_selection_back():
     app = FakeApp(open_chat="Jordan Park")
     app.rows[1].on["AXPress"] = lambda: None  # Jordan's row won't let go: ours is never the only one

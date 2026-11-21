@@ -537,9 +537,15 @@ class MessagesAX:
                     row.perform("AXPress")
                     self._wait(lambda: any(ours(el) for el in selection()), 0.6)
                 for el in selection():
-                    if not ours(el):
+                    if not ours(el) and label(el):
                         el.perform("AXPress")
                         run.trail.append("off")
+                if any(not label(el) for el in selection()) and len(selection()) > 1:
+                    # Selected, but scrolled out of the sidebar: Messages hands back a blank stand-in
+                    # that ignores presses (Harry's Mac, Nov 2026: a chat far down the list stayed
+                    # selected after the list was scrolled home, and every group then failed
+                    # "not-selected [off off off]" with Messages showing two chats at once).
+                    run.trail.append(f"hidden{self._press_off_hidden(chats, ours, label, selection)}")
                 if self._wait(shown, 1.5):
                     run.trail.append(f"row{at + 1}/{run.list_down}" + (f" p{step + 1}" if step else ""))
                     return
@@ -555,6 +561,35 @@ class MessagesAX:
                 if label(el) not in now_labels:
                     el.perform("AXPress")
             raise
+
+    def _press_off_hidden(self, chats: Any, ours: Callable[[Any], bool], label: Callable[[Any], str],
+                          selection: Callable[[], list[Any]]) -> int:
+        """Press off selected chats that are scrolled out of the sidebar: from the top, a page at a
+        time (each settled), press each one off once its row shows; stop when only ours is left, then
+        back to the top. A row only toggles while it's on screen. How many it pressed off."""
+        self._sweep(chats, "AXScrollUpByPage", lambda rows: False, LIST_PAGES + 20)
+        pressed = down = 0
+        # A row's label comes and goes between reads while the list redraws, so a press can land on a
+        # stand-in and do nothing. One that took (the selection shrank) is never pressed again: a second
+        # press would select it again.
+        done: set[str] = set()
+        while True:
+            for el in selection():
+                name = label(el)
+                if name and not ours(el) and name not in done:
+                    count = len(selection())
+                    el.perform("AXPress")
+                    pressed += 1
+                    if self._wait(lambda: len(selection()) < count, 0.8):
+                        done.add(name)
+            # Done when only one chat is selected: ours (while it's off screen its stand-in is blank too).
+            if len(selection()) <= 1 or down >= LIST_PAGES or not self._page(chats, "AXScrollDownByPage"):
+                break
+            down += 1
+            self._settle(chats)
+        if down:
+            self._sweep(chats, "AXScrollUpByPage", lambda rows: False, down + 4)
+        return pressed
 
     def _find_row(self, run: _Run, chats: Any, names: list[str], loose: int, members: list[str]) -> int:
         """The chat's row, scrolling the sidebar if needed: to the top, then down while looking (a
