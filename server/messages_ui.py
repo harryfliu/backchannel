@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from . import fakedb, mouse
 from . import heuristics as H
@@ -317,12 +318,29 @@ def _attachment_kind(message: dict[str, Any]) -> str | None:
     return first.get("kind") or "file"
 
 
+def preview_terms(message: dict[str, Any]) -> list[str]:
+    """What a link-preview bubble's label says instead of the link. Messages labels those
+    "Jason Yun, The Introverted Attorney on Instagram, instagram.com, 10:38 AM" (title, then site; seen
+    on macOS 26.3, Nov 2026): the link itself is never in it, so a search by the link's text paged up
+    the whole chat and missed. The title when there is one, else the site."""
+    link = message.get("linkPreview")
+    if not link or not only_a_link(message.get("text") or ""):
+        return []
+    title = _clip(" ".join((link.get("title") or "").split()))
+    if len(title) >= 3:
+        return [title]
+    host = (urlsplit(link.get("url") or "").hostname or "").removeprefix("www.")
+    return [host] if "." in host else []
+
+
 def bubble_terms(message: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """(needles, exacts) for a message: its first line of text, else its attachment's placeholder words."""
+    """(needles, exacts) for a message: its first line of text (and for a link with a preview, what
+    the preview shows), else its attachment's placeholder words."""
     line = _first_line(message.get("text") or "")
     if line:
         needle = _clip(line)
-        return ([needle], []) if len(needle) >= SHORT_NEEDLE else ([], [needle])
+        found = ([needle], []) if len(needle) >= SHORT_NEEDLE else ([], [needle])
+        return found[0] + preview_terms(message), found[1]
     kind = _attachment_kind(message)
     if kind is None:
         return [], []
@@ -335,7 +353,8 @@ def _bubble_hit(message: dict[str, Any], needles: list[str], exacts: list[str], 
     if message.get("unsent") or message.get("event"):
         return False
     text = (message.get("text") or "").lower()
-    if any(n.lower() in text for n in needles if n):
+    shown = " ".join([text, *preview_terms(message)]).lower()  # a newer link preview shows the same title
+    if any(n.lower() in shown for n in needles if n):
         return True
     if kind is not None:  # placeholder words: any newer attachment of the same kind
         return not text.strip() and _attachment_kind(message) == kind

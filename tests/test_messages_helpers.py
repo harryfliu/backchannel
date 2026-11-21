@@ -20,7 +20,7 @@ from fake_messages import FakeMessages, chat_of, tagged, write_reply, write_tapb
 from server import fakedb
 from server.messages_scripts import REPLY_AIM_SCRIPT, REPLY_FINISH_SCRIPT
 from server.messages_ui import (DENIED_TEXT, REPLY_SCRIPT, REPLY_TIMEOUT, TAPBACK_SCRIPT, TAPBACK_TIMEOUT, TAPBACKS_OFF,
-                                Outcome)
+                                Outcome, preview_terms)
 from server.sending import REPLY_DONE, REPLY_UNCONFIRMED
 from ts_shapes import validate
 
@@ -225,6 +225,22 @@ def test_bubble_terms_for_repeats_and_attachments(fake_rw):
     assert sticker.bubble.exacts == ["Sticker"] and sticker.bubble.senders == ["Your ", "You,", "You:"]
     long_text = ui.tapback_job(conv, rw.guid("j_place"), "love", False)
     assert long_text.bubble.needles == ["the new place 🏠"]
+
+
+def test_a_link_with_a_preview_is_found_by_what_the_preview_shows(fake_rw):
+    # Messages labels a link-preview bubble "Priya Shah, <title>, <site>, 6:01 PM": no link in it (Harry's
+    # Mac, Nov 2026: a reply to an Instagram link paged up the whole chat and never found it).
+    rw = fake_rw
+    link = rw.message("d_link")
+    title = link["linkPreview"]["title"]
+    assert title and link["text"] == "https://www.hinodeya.example/sf"
+    job = rw.services.messages_ui.tapback_job(rw.services.convs.get("g:chat100000000000000003"), link["id"], "love", False)
+    assert job.bubble.needles == ["https://www.hinodeya.example/sf", title]
+    no_title = {"text": "www.instagram.com/reel/DfXY86etuzW/?utm_source=ig_web_copy_link",
+                "linkPreview": {"url": "https://www.instagram.com/reel/DfXY86etuzW/", "title": None}}
+    assert preview_terms(no_title) == ["instagram.com"]  # the site, as Messages writes it
+    assert preview_terms({"text": "look www.instagram.com/x", "linkPreview": no_title["linkPreview"]}) == []  # text too
+    assert preview_terms({"text": "https://x.example/a", "linkPreview": None}) == []
 
 
 # --------------------------------------------------------------------------- real thread replies
