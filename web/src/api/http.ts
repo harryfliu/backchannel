@@ -80,6 +80,7 @@ export function createHttpApi(): Api {
     health: () => get<Health>('/api/health'),
     me: () => get<Me>('/api/me'),
     conversations: async () => (await get<{ conversations: Conversation[] }>('/api/conversations')).conversations,
+    spam: async () => (await get<{ conversations: Conversation[] }>('/api/spam')).conversations,
     messages: (cid, before) =>
       get<MessagePage>(`/api/conversations/${enc(cid)}/messages?limit=80${before ? `&before=${enc(before)}` : ''}`),
     thread: (cid, mid) => get<ThreadResponse>(`/api/conversations/${enc(cid)}/threads/${enc(mid)}`),

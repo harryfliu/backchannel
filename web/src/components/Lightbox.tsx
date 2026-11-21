@@ -12,8 +12,9 @@ const MAX = 8
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export function Lightbox({ a, fallbackSrc, onClose }: { a: Attachment; fallbackSrc: string | null; onClose: () => void }) {
-  const isVideo = a.kind === 'video' && !a.url.startsWith('data:') && a.url !== '#'
-  const src = a.url !== '#' ? a.url : (fallbackSrc ?? '')
+  // In iCloud, not on this Mac: only the smaller copy Messages kept (fallbackSrc) can be shown.
+  const isVideo = a.kind === 'video' && !a.missing && !a.url.startsWith('data:') && a.url !== '#'
+  const src = a.url !== '#' && !a.missing ? a.url : (fallbackSrc ?? '')
   const stage = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
   const [pos, setPos] = useState({ x: 0, y: 0 })
@@ -109,9 +110,11 @@ export function Lightbox({ a, fallbackSrc, onClose }: { a: Attachment; fallbackS
             </button>
           </span>
         )}
-        <a className="icon-btn" href={a.url} target="_blank" rel="noreferrer" aria-label={isNative ? 'Open in Preview' : 'Open original'} title={isNative ? 'Open in Preview' : 'Open original'}>
-          <Icon name="external" size={18} />
-        </a>
+        {!a.missing && (
+          <a className="icon-btn" href={a.url} target="_blank" rel="noreferrer" aria-label={isNative ? 'Open in Preview' : 'Open original'} title={isNative ? 'Open in Preview' : 'Open original'}>
+            <Icon name="external" size={18} />
+          </a>
+        )}
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
           <Icon name="x" size={18} />
         </button>
@@ -158,7 +161,13 @@ export function Lightbox({ a, fallbackSrc, onClose }: { a: Attachment; fallbackS
           />
         </div>
       )}
-      {!isVideo && <p className="lb-hint">Pinch or scroll to zoom · drag to move · double-click to fit</p>}
+      {a.missing ? (
+        <p className="lb-hint">
+          A smaller copy Messages kept. The full-size {a.kind === 'video' ? 'video' : 'photo'} is in iCloud: opening this conversation in Messages downloads it.
+        </p>
+      ) : (
+        !isVideo && <p className="lb-hint">Pinch or scroll to zoom · drag to move · double-click to fit</p>
+      )}
     </Modal>
   )
 }

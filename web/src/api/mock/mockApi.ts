@@ -243,7 +243,16 @@ export function createMockApi(): Api {
     },
     async conversations() {
       return clone(
-        [...db.conversations.values()].sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? '')),
+        [...db.conversations.values()]
+          .filter((c) => !c.isSpam)
+          .sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? '')),
+      )
+    },
+    async spam() {
+      return clone(
+        [...db.conversations.values()]
+          .filter((c) => c.isSpam)
+          .sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? '')),
       )
     },
     async messages(cid) {
@@ -357,10 +366,11 @@ export function createMockApi(): Api {
         markedUnread: false,
         mentionCount: 0,
         isAutomated: false,
+        isSpam: false,
         awaitingReply: false,
         awaitingSince: null,
         priority: null,
-        prefs: { starred: false, muted: false, snoozedUntil: null, section: null },
+        prefs: { starred: false, muted: false, snoozedUntil: null, section: null, spam: null },
       }
       db.conversations.set(id, c)
       db.messages.set(id, [])
@@ -395,6 +405,8 @@ export function createMockApi(): Api {
     async setPrefs(cid, prefs) {
       const c = convo(cid)
       c.prefs = { ...c.prefs, ...prefs }
+      c.isSpam = !!c.prefs.spam
+      if (c.isSpam) c.priority = null
       emit({ type: 'conversation', conversation: c })
       return clone(c)
     },

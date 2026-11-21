@@ -8,6 +8,7 @@ import {
   displayName,
   getState,
   markUnread,
+  mePerson,
   openChiefDraft,
   openProfile,
   openThread,
@@ -66,7 +67,7 @@ export const MessageRow = memo(function MessageRow({ m, opts }: { m: Message; op
       <div className="msg-gutter">
         {head ? (
           m.fromMe ? (
-            <Avatar name={getState().me?.name ?? 'You'} size={36} />
+            <Avatar person={mePerson()} name={getState().me?.name ?? 'You'} size={36} />
           ) : (
             <Avatar person={sender} name={name} size={36} onClick={() => m.senderHandle && openProfile(m.senderHandle, m.conversationId)} />
           )
@@ -242,18 +243,22 @@ function OtpChip({ code }: { code: string }) {
   )
 }
 
+/** An attachment that's in iCloud, not on this Mac, with no smaller copy to show instead. */
+function InCloudCard({ a }: { a: Attachment }) {
+  return (
+    <div className="file-card is-missing" title="Messages keeps older attachments in iCloud and downloads them when you view them there.">
+      <Icon name="cloud" size={20} />
+      <span className="file-meta">
+        <span className="file-name">{a.kind === 'image' ? 'Photo in iCloud' : a.kind === 'video' ? 'Video in iCloud' : a.name}</span>
+        <span className="file-sub">Not on this Mac yet. Opening this conversation in Messages downloads it.</span>
+      </span>
+    </div>
+  )
+}
+
 function AttachmentView({ a, isAudioMessage }: { a: Attachment; isAudioMessage: boolean }) {
-  if (a.missing) {
-    return (
-      <div className="file-card is-missing" title="Messages keeps older attachments in iCloud and downloads them when you view them there.">
-        <Icon name="cloud" size={20} />
-        <span className="file-meta">
-          <span className="file-name">{a.kind === 'image' ? 'Photo in iCloud' : a.kind === 'video' ? 'Video in iCloud' : a.name}</span>
-          <span className="file-sub">Not on this Mac yet. Opening this conversation in Messages downloads it.</span>
-        </span>
-      </div>
-    )
-  }
+  // In iCloud: a photo or video Messages kept a smaller preview of still shows (thumbUrl is that preview).
+  if (a.missing && !a.thumbUrl) return <InCloudCard a={a} />
   if (a.kind === 'image' || a.kind === 'video') return <MediaThumb a={a} />
   if (a.kind === 'audio') return <AudioRow a={a} voice={isAudioMessage} />
   return (
@@ -289,6 +294,7 @@ function MediaThumb({ a }: { a: Attachment }) {
   const base = natural ?? (a.width && a.height ? { w: a.width, h: a.height } : { w: 4, h: 3 })
   const box = fitBox(base.w, base.h, a.isSticker ? 140 : 360)
   const lightbox = open && <Lightbox a={a} fallbackSrc={src} onClose={() => setOpen(false)} />
+  if (a.missing && (broken || !src)) return <InCloudCard a={a} />
   if (a.kind === 'image' && (broken || !src)) {
     return (
       <a className="file-card" href={a.url} target="_blank" rel="noreferrer noopener">
@@ -310,6 +316,7 @@ function MediaThumb({ a }: { a: Attachment }) {
         className={`media-thumb ${a.isSticker ? 'is-sticker' : ''} ${a.kind === 'video' ? 'is-video' : ''} ${broken || !src ? 'is-placeholder' : ''}`}
         onClick={() => setOpen(true)}
         aria-label={`Open ${a.name}`}
+        title={a.missing ? `A smaller copy Messages kept. The full-size ${a.kind === 'video' ? 'video' : 'photo'} is in iCloud.` : undefined}
       >
         {src && !broken ? (
           <img
@@ -327,9 +334,15 @@ function MediaThumb({ a }: { a: Attachment }) {
         ) : (
           <span className="media-placeholder">{a.name}</span>
         )}
-        {a.kind === 'video' && (
+        {/* Messages draws its own play button on a video's preview, and the video itself isn't here. */}
+        {a.kind === 'video' && !a.missing && (
           <span className="media-play">
             <Icon name="play" size={22} filled />
+          </span>
+        )}
+        {a.missing && (
+          <span className="media-cloud" aria-hidden="true">
+            <Icon name="cloud" size={13} />
           </span>
         )}
       </button>
@@ -491,7 +504,7 @@ function ThreadSummary({ m }: { m: Message }) {
     <button type="button" className="thread-summary" onClick={() => openThread(m.conversationId, m.id)}>
       <span className="thread-avatars">
         {t.participants.slice(0, 4).map((h) => (
-          <Avatar key={h} person={h === 'me' ? null : personFor(h)} name={displayName(h)} size={24} radius={5} />
+          <Avatar key={h} person={personFor(h)} name={displayName(h)} size={24} radius={5} />
         ))}
       </span>
       <span className="thread-count">

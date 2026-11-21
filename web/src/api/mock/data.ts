@@ -529,10 +529,11 @@ export function buildMockDb() {
       markedUnread: false,
       mentionCount: unread.filter((m) => m.mentionsMe).length,
       isAutomated: !!d.automated,
+      isSpam: false,
       awaitingReply: !!awaitingSince,
       awaitingSince,
       priority: null,
-      prefs: { starred: !!d.starred, muted: !!d.muted, snoozedUntil: null, section: null },
+      prefs: { starred: !!d.starred, muted: !!d.muted, snoozedUntil: null, section: null, spam: null },
     }
     prioritize(c, list, awaitingSince, mockVips)
     conversations.set(d.id, c)

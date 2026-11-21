@@ -7,6 +7,7 @@ import {
   loadMedia,
   loadOlder,
   markConversationRead,
+  markSpam,
   markUnread,
   openDetails,
   openProfile,
@@ -106,7 +107,7 @@ export function ConversationView({ c }: { c: Conversation }) {
         <>
           <ScheduledBanner c={c} />
           <MessageList c={c} />
-          <Composer c={c} />
+          {c.isSpam ? <SpamBar c={c} /> : <Composer c={c} />}
         </>
       ) : (
         <MediaTab c={c} />
@@ -217,10 +218,30 @@ function ConversationHeader({ c, tab, setTab }: { c: Conversation; tab: string; 
             { divider: true, label: '' },
             { label: 'Search in this conversation', icon: 'search', onSelect: () => openSearch(c.id) },
             { label: dm ? 'View profile' : 'Conversation details', icon: 'users', onSelect: () => (dm ? openProfile(dm.handle, c.id) : openDetails(c.id)) },
+            { divider: true, label: '' },
+            c.isSpam
+              ? { label: 'Not spam', icon: 'check', onSelect: () => void markSpam(c.id, false) }
+              : { label: 'Mark as spam', icon: 'ban', onSelect: () => void markSpam(c.id, true) },
           ]}
         />
       )}
     </header>
+  )
+}
+
+/** In place of the composer for a conversation in Spam: replying tells the sender the number works. */
+function SpamBar({ c }: { c: Conversation }) {
+  const byMessages = c.prefs.spam !== true
+  return (
+    <div className="spam-bar">
+      <Icon name="ban" size={18} />
+      <span className="spam-bar-text">
+        {byMessages ? 'Messages filed this as spam.' : 'You marked this as spam.'} Replying would tell the sender this number works.
+      </span>
+      <button type="button" className="btn" onClick={() => void markSpam(c.id, false)}>
+        Not spam
+      </button>
+    </div>
   )
 }
 
@@ -478,14 +499,21 @@ function MediaTab({ c }: { c: Conversation }) {
           <h3 className="media-heading">Photos & videos</h3>
           <div className="media-grid">
             {visual.map((i) => (
-              <a key={i.attachment.id} className="media-cell" href={i.attachment.url} target="_blank" rel="noreferrer" title={i.attachment.name}>
+              <a
+                key={i.attachment.id}
+                className="media-cell"
+                href={i.attachment.missing && i.attachment.thumbUrl ? i.attachment.thumbUrl : i.attachment.url}
+                target="_blank"
+                rel="noreferrer"
+                title={i.attachment.missing ? `${i.attachment.name} (in iCloud: this is the smaller copy Messages kept)` : i.attachment.name}
+              >
                 <img
                   src={i.attachment.thumbUrl ?? i.attachment.url}
                   alt={i.attachment.name}
                   loading="lazy"
                   onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
                 />
-                {i.attachment.kind === 'video' && (
+                {i.attachment.kind === 'video' && !i.attachment.missing && (
                   <span className="media-play is-small">
                     <Icon name="play" size={14} filled />
                   </span>

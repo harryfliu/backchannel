@@ -258,3 +258,13 @@ def heic_without_pitm(sizes: list[tuple[int, int]]) -> bytes:
     ipco = _box(b"ipco", b"".join(_fullbox(b"ispe", 0, 0, struct.pack(">II", w, h)) for w, h in sizes))
     meta = _fullbox(b"meta", 0, 0, _box(b"iprp", ipco))
     return ftyp + meta
+
+
+# --------------------------------------------------------------------------- Messages' cached previews
+
+
+def messages_preview(width: int, height: int) -> bytes:
+    """The start of one of Messages' -preview.ktx files (Apple's "AAPL" texture): magic, then the HEAD
+    chunk with the size. No texture data: tests use a fake sips that doesn't read it."""
+    head = struct.pack("<I", 1) + b"\x00" * 12 + struct.pack("<IIII", 0x93B0, 0x1908, width, height) + b"\x00" * 52
+    return b"AAPL\r\n\x1a\n" + struct.pack("<I", len(head)) + b"HEAD" + head

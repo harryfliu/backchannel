@@ -76,7 +76,7 @@ not be able to drive it.
 | POST | `/api/stickers/{id}/save` | body `{ name }` → `CustomEmoji` |
 | GET | `/api/avatar/{handle}` | contact photo (JPEG/PNG) or 404 |
 | GET | `/api/attachments/{id}` | the file (HEIC converted to JPEG) |
-| GET | `/api/attachments/{id}/thumb` | ~800px JPEG preview, falls back to the file |
+| GET | `/api/attachments/{id}/thumb` | ~800px JPEG preview, falls back to the file; for a photo or video in iCloud, the preview Messages kept (see `docs/server.md`) |
 | GET | `/api/unfurl/{id}` | a link preview's image (see "Link previews") |
 | GET | `/api/events` | Server-sent events, `data: <ServerEvent JSON>` |
 | GET | `/` and `/assets/*` | the built UI from `web/dist` |

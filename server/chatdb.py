@@ -69,6 +69,8 @@ class ChatInfo:
     service: str
     display_name: str | None
     handle_rowids: tuple[int, ...]
+    # chat.is_filtered: 0 a known sender, 1 an unknown sender, 2 Messages filed it as spam (macOS 26).
+    filtered: int = 0
 
     @property
     def is_group(self) -> bool:
@@ -194,9 +196,10 @@ class ChatDB:
             members.setdefault(row["chat_id"], []).append(row["handle_id"])
         chat_cols = self.columns("chat")
         display = "display_name" if "display_name" in chat_cols else "NULL AS display_name"
+        filtered = "is_filtered" if "is_filtered" in chat_cols else "0 AS is_filtered"
         chats: dict[int, ChatInfo] = {}
         for row in self.query(
-            f"SELECT ROWID, guid, style, chat_identifier, service_name, {display} FROM chat"
+            f"SELECT ROWID, guid, style, chat_identifier, service_name, {display}, {filtered} FROM chat"
         ):
             chats[row["ROWID"]] = ChatInfo(
                 rowid=row["ROWID"],
@@ -206,6 +209,7 @@ class ChatDB:
                 service=row["service_name"] or "",
                 display_name=(row["display_name"] or "").strip() or None,
                 handle_rowids=tuple(members.get(row["ROWID"], ())),
+                filtered=row["is_filtered"] or 0,
             )
         return Meta(handles=handles, chats=chats)
 

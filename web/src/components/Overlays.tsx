@@ -11,6 +11,7 @@ import {
   removeCustomEmoji,
   saveStickerAsEmoji,
   closeSearch,
+  dismissToast,
   displayName,
   refreshHealth,
   setServerSetting,
@@ -18,6 +19,7 @@ import {
   openConversation,
   openProfile,
   openView,
+  mePerson,
   personFor,
   requestDrafts,
   runSearch,
@@ -174,7 +176,7 @@ function SearchInner() {
         {!q.trim() && <p className="side-empty">Search every text on this Mac, going back years. Try “wifi password”, “address” or a name.</p>}
         {q.trim() && !search.loading && search.results.length === 0 && <p className="side-empty">No messages match “{q}”.</p>}
         {search.results.map((r, i) => {
-          const sender = r.message.fromMe ? null : personFor(r.message.senderHandle)
+          const sender = r.message.fromMe ? mePerson() : personFor(r.message.senderHandle)
           return (
             <button
               key={r.message.id}
@@ -533,6 +535,18 @@ export function Toasts() {
         <div key={t.id} className={`toast ${t.tone === 'error' ? 'is-error' : ''}`}>
           {t.tone === 'error' && <Icon name="alert" size={16} />}
           {t.text}
+          {t.action && (
+            <button
+              type="button"
+              className="toast-action"
+              onClick={() => {
+                dismissToast(t.id)
+                t.action?.run()
+              }}
+            >
+              {t.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

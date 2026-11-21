@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS unfurl (
 );
 """
 
-DEFAULT_PREFS = {"starred": False, "muted": False, "snoozed_until": None, "section": None}
+# spam: None follows Messages (spam when Messages filed it as spam), True / False is what Harry said.
+DEFAULT_PREFS = {"starred": False, "muted": False, "snoozed_until": None, "section": None, "spam": None}
 
 # Columns added after the first release: (table, column, definition).
 MIGRATIONS = (
@@ -119,6 +120,7 @@ MIGRATIONS = (
     ("later", "resolved_by_reply", "INTEGER NOT NULL DEFAULT 0"),
     ("later", "fired_at", "REAL"),
     ("pending_sends", "handle", "TEXT"),
+    ("prefs", "spam", "INTEGER"),  # NULL: as Messages says; 1 / 0: marked spam / not spam in Backchannel
 )
 UNSET: Any = object()
 
@@ -127,6 +129,16 @@ UNSET: Any = object()
 SERVER_SETTINGS: dict[str, Any] = {"markReadInMessages": False, "tapbacksViaMessages": False,
                                    "threadRepliesViaMessages": False, "linkPreviewsViaMessages": False,
                                    "aboutMe": ""}
+
+
+def _prefs(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "starred": bool(row["starred"]),
+        "muted": bool(row["muted"]),
+        "snoozed_until": row["snoozed_until"],
+        "section": row["section"],
+        "spam": None if row["spam"] is None else bool(row["spam"]),
+    }
 
 
 class State:
@@ -176,39 +188,28 @@ class State:
         row = self._prefs_row(conversation_id, aliases)
         if not row:
             return dict(DEFAULT_PREFS)
-        return {
-            "starred": bool(row["starred"]),
-            "muted": bool(row["muted"]),
-            "snoozed_until": row["snoozed_until"],
-            "section": row["section"],
-        }
+        return _prefs(row)
 
     def all_prefs(self) -> dict[str, dict[str, Any]]:
-        return {
-            r["conversation_id"]: {
-                "starred": bool(r["starred"]),
-                "muted": bool(r["muted"]),
-                "snoozed_until": r["snoozed_until"],
-                "section": r["section"],
-            }
-            for r in self._all("SELECT * FROM prefs")
-        }
+        return {r["conversation_id"]: _prefs(r) for r in self._all("SELECT * FROM prefs")}
 
     def set_prefs(self, conversation_id: str, patch: dict[str, Any], aliases: Sequence[str] = ()) -> dict[str, Any]:
         current = self.get_prefs(conversation_id, aliases)
         current.update({k: v for k, v in patch.items() if k in DEFAULT_PREFS})
         with self._lock:
             self._conn.execute(
-                """INSERT INTO prefs (conversation_id, starred, muted, snoozed_until, section, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO prefs (conversation_id, starred, muted, snoozed_until, section, spam, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(conversation_id) DO UPDATE SET starred=excluded.starred, muted=excluded.muted,
-                     snoozed_until=excluded.snoozed_until, section=excluded.section, updated_at=excluded.updated_at""",
+                     snoozed_until=excluded.snoozed_until, section=excluded.section, spam=excluded.spam,
+                     updated_at=excluded.updated_at""",
                 (
                     conversation_id,
                     int(bool(current["starred"])),
                     int(bool(current["muted"])),
                     current["snoozed_until"],
                     current["section"],
+                    None if current["spam"] is None else int(bool(current["spam"])),
                     time.time(),
                 ),
             )

@@ -41,6 +41,8 @@ export interface ConversationPrefs {
   snoozedUntil: string | null
   /** Custom sidebar section name (reserved for later). */
   section: string | null
+  /** true: marked as spam here; false: marked "Not spam" here; null: as Messages files it. */
+  spam: boolean | null
 }
 
 export interface MessagePreview {
@@ -72,6 +74,9 @@ export interface Conversation {
   mentionCount: number
   /** Short codes, no-reply senders, verification codes and the like. */
   isAutomated: boolean
+  /** Marked as spam here, or filed as spam by Messages (and not marked "Not spam" here). Never in
+   *  `conversations()`: `spam()` lists them. */
+  isSpam: boolean
   /** The ball is in the user's court. */
   awaitingReply: boolean
   /** When the message the user hasn't answered arrived. */
@@ -143,8 +148,10 @@ export interface Attachment {
   size: number | null
   /** Full file. HEIC is served as JPEG. */
   url: string
-  /** Smaller preview for images and videos, or null. */
+  /** Smaller preview for images and videos, or null. When `missing`, the preview Messages kept of the
+   *  photo or video (up to ~1000px; a video's has a play button drawn on), if it kept one. */
   thumbUrl: string | null
+  /** For a `missing` one with a preview, the preview's size. */
   width: number | null
   height: number | null
   isSticker: boolean
@@ -468,6 +475,8 @@ export interface Api {
   /** Mark as unread from `messageId` on (default: the newest incoming message). Reading clears it. */
   markUnread(conversationId: string, messageId?: string | null): Promise<Conversation>
   setPrefs(conversationId: string, prefs: Partial<ConversationPrefs>): Promise<Conversation>
+  /** Conversations marked as spam here or filed as spam by Messages, last 90 days, newest first. */
+  spam(): Promise<Conversation[]>
   later(): Promise<LaterItem[]>
   saveForLater(conversationId: string, messageId: string, remindAt: string | null, ifNoReply?: boolean): Promise<LaterItem>
   /** Mark a saved item done (or not done). */

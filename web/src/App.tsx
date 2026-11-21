@@ -21,7 +21,7 @@ import {
 import { ConversationView } from './components/Conversation'
 import { RightPanel } from './components/Panels'
 import { Rail, SidebarColumn, useSections } from './components/Sidebar'
-import { CatchUpView, ScheduledView, ThreadsView, UnreadsView } from './components/Views'
+import { CatchUpView, ScheduledView, SpamView, ThreadsView, UnreadsView } from './components/Views'
 import {
   AddEmojiModal,
   ChiefLoopModal,
@@ -130,7 +130,7 @@ export function App() {
 
 function MainView() {
   const view = useStore((s) => s.view)
-  const c = useStore((s) => (s.view?.kind === 'conversation' ? s.conversations[s.view.id] : undefined))
+  const c = useStore((s) => (s.view?.kind === 'conversation' ? (s.conversations[s.view.id] ?? s.spam[s.view.id]) : undefined))
   if (!view) {
     return (
       <div className="msg-list is-empty">
@@ -143,6 +143,7 @@ function MainView() {
   if (view.kind === 'unreads') return <UnreadsView />
   if (view.kind === 'threads') return <ThreadsView />
   if (view.kind === 'scheduled') return <ScheduledView />
+  if (view.kind === 'spam') return <SpamView />
   if (!c) return null
   return <ConversationView key={c.id} c={c} />
 }

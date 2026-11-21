@@ -33,6 +33,7 @@ export type View =
   | { kind: 'unreads' }
   | { kind: 'threads' }
   | { kind: 'scheduled' }
+  | { kind: 'spam' }
 
 export type Panel =
   | { kind: 'thread'; cid: string; mid: string }
@@ -58,6 +59,8 @@ export interface Toast {
   id: string
   text: string
   tone?: 'default' | 'error'
+  /** A button in the toast (e.g. Undo); pressing it closes the toast. */
+  action?: { label: string; run: () => void }
 }
 
 interface ThreadState {
@@ -82,6 +85,9 @@ export interface State {
   health: Health | null
   connection: 'open' | 'reconnecting'
   conversations: Record<string, Conversation>
+  /** Marked as spam here or filed as spam by Messages: kept out of `conversations` (the sidebar,
+   *  Unreads, Needs you, Catch up, notifications), listed in the Spam view. */
+  spam: Record<string, Conversation>
   people: Record<string, Person>
   messages: Record<string, MessagesState>
   threads: Record<string, ThreadState>
@@ -180,6 +186,7 @@ let state: State = {
   health: null,
   connection: 'open',
   conversations: {},
+  spam: {},
   people: {},
   messages: {},
   threads: {},
@@ -267,7 +274,14 @@ export const draftKey = (cid: string, threadRootId?: string | null) => (threadRo
 
 export function personFor(handle: string | null | undefined): Person | null {
   if (!handle) return null
+  if (handle === 'me') return mePerson()
   return state.people[handle] ?? null
+}
+
+/** You, as a Person (your Contacts photo included) for avatars. */
+export function mePerson(): Person | null {
+  const me = state.me
+  return me ? { handle: 'me', handles: me.handles, name: me.name, shortName: me.shortName, isContact: true, avatarUrl: me.avatarUrl } : null
 }
 
 export function displayName(handle: string | null | undefined, short = false): string {
@@ -290,9 +304,22 @@ function indexPeople(convs: Record<string, Conversation>) {
 
 function upsertConversation(c: Conversation) {
   setState((s) => {
-    const conversations = { ...s.conversations, [c.id]: c }
-    return { conversations, people: indexPeople({ [c.id]: c }) }
+    const conversations = { ...s.conversations }
+    const spam = { ...s.spam }
+    if (c.isSpam) {
+      delete conversations[c.id]
+      spam[c.id] = c
+    } else {
+      delete spam[c.id]
+      conversations[c.id] = c
+    }
+    return { conversations, spam, people: indexPeople({ [c.id]: c }) }
   })
+}
+
+/** A conversation, wherever it's filed (spam included). */
+export function findConversation(cid: string): Conversation | undefined {
+  return state.conversations[cid] ?? state.spam[cid]
 }
 
 function replaceMessage(list: Message[], m: Message): Message[] {
@@ -322,10 +349,13 @@ function patchMessage(cid: string, id: string, patch: Partial<Message>) {
   })
 }
 
-export function toast(text: string, tone: Toast['tone'] = 'default') {
-  const t = { id: uid(), text, tone }
+export function toast(text: string, tone: Toast['tone'] = 'default', action?: Toast['action']) {
+  const t: Toast = { id: uid(), text, tone, action }
   setState((s) => ({ toasts: [...s.toasts, t] }))
-  setTimeout(() => setState((s) => ({ toasts: s.toasts.filter((x) => x.id !== t.id) })), 4200)
+  setTimeout(() => dismissToast(t.id), action ? 7000 : 4200)
+}
+export function dismissToast(id: string) {
+  setState((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }))
 }
 
 const isNarrow = () => window.matchMedia('(max-width: 760px)').matches
@@ -337,11 +367,13 @@ let hellos = 0
 /** After a dropped connection: reload the sidebar and the open conversation so nothing is missed. */
 async function resync() {
   try {
-    const list = await api.conversations()
+    const [list, spamList] = await Promise.all([api.conversations(), api.spam().catch(() => Object.values(state.spam))])
     const convs: Record<string, Conversation> = {}
     for (const c of list) convs[c.id] = c
+    const spam: Record<string, Conversation> = {}
+    for (const c of spamList) spam[c.id] = c
     const open = state.view?.kind === 'conversation' ? state.view.id : null
-    setState({ conversations: convs, people: indexPeople(convs), messages: {}, threads: {}, media: {} })
+    setState({ conversations: convs, spam, people: indexPeople(convs), messages: {}, threads: {}, media: {} })
     if (open) await loadMessages(open)
     const p = state.panel
     if (p?.kind === 'thread') void refreshThread(p.cid, p.mid)
@@ -534,6 +566,7 @@ function previewOf(m: Message) {
 function maybeNotify(m: Message) {
   if (!isNative || !state.settings.notify || m.fromMe || m.event) return
   if (document.hasFocus()) return
+  if (state.spam[m.conversationId]) return
   const c = state.conversations[m.conversationId]
   if (c?.prefs.muted) return
   const needsYou = !!m.importance?.some((r) => r.kind !== 'vip')
@@ -575,9 +608,10 @@ export async function boot(initial?: string) {
       return
     }
     const since = state.activitySeenAt
-    const [me, conversations, later, scheduled, feed, health] = await Promise.all([
+    const [me, conversations, spamList, later, scheduled, feed, health] = await Promise.all([
       api.me(),
       api.conversations(),
+      api.spam().catch((): Conversation[] => []),
       api.later().catch(() => []),
       api.scheduled().catch(() => []),
       api.activity(since).catch((): ActivityFeed => ({ items: [] })),
@@ -585,9 +619,12 @@ export async function boot(initial?: string) {
     ])
     const convs: Record<string, Conversation> = {}
     for (const c of conversations) convs[c.id] = c
+    const spam: Record<string, Conversation> = {}
+    for (const c of spamList) spam[c.id] = c
     setState({
       me,
       conversations: convs,
+      spam,
       people: indexPeople(convs),
       later,
       scheduled,
@@ -695,7 +732,7 @@ function enterConversation(cid: string, opts: { auto?: boolean } = {}) {
 }
 
 export function openConversation(cid: string, highlightId?: string, opts: { auto?: boolean } = {}) {
-  if (!state.conversations[cid]) return
+  if (!findConversation(cid)) return
   enterConversation(cid, opts)
   if (highlightId) void revealMessage(cid, highlightId)
   pushView({ kind: 'conversation', id: cid })
@@ -708,7 +745,7 @@ export function openConversation(cid: string, highlightId?: string, opts: { auto
   }))
 }
 
-export function openView(kind: 'catchup' | 'unreads' | 'threads' | 'scheduled') {
+export function openView(kind: 'catchup' | 'unreads' | 'threads' | 'scheduled' | 'spam') {
   pushView({ kind })
   setState({ mobilePane: 'main', panel: null })
   if (kind === 'catchup' && !state.catchUp.data) void loadCatchUp(false)
@@ -1077,6 +1114,35 @@ export function toggleMute(cid: string) {
   void setPrefs(cid, { muted: !c.prefs.muted })
   toast(c.prefs.muted ? `Unmuted ${c.title}` : `Muted ${c.title}. You won't get notifications for it.`)
 }
+/** Move a conversation to Spam (or back). Out of the sidebar at once; the server keeps the mark. */
+export async function markSpam(cid: string, spam: boolean, opts: { undo?: boolean } = {}) {
+  const c = findConversation(cid)
+  if (!c) return
+  const before = c.prefs.spam
+  const open = state.view?.kind === 'conversation' && state.view.id === cid
+  upsertConversation({ ...c, isSpam: spam, prefs: { ...c.prefs, spam }, priority: spam ? null : c.priority })
+  if (spam && open) leaveConversation(cid)
+  try {
+    upsertConversation(await api.setPrefs(cid, { spam }))
+  } catch (err) {
+    upsertConversation(c)
+    toast(err instanceof Error ? err.message : "Couldn't save that change.", 'error')
+    return
+  }
+  if (opts.undo === false) return
+  const undo = { label: 'Undo', run: () => void setPrefs(cid, { spam: before }) }
+  toast(spam ? `Moved ${c.title} to Spam` : `${c.title} is out of Spam`, 'default', undo)
+}
+
+/** The open conversation went to Spam: show the next one instead of an empty page. */
+function leaveConversation(cid: string) {
+  const next = Object.values(state.conversations)
+    .filter((x) => x.id !== cid && !x.isAutomated)
+    .sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? ''))[0]
+  if (next) openConversation(next.id)
+  else setState({ view: null, panel: null })
+}
+
 export function snooze(cid: string, until: string) {
   const c = state.conversations[cid]
   if (!c) return

@@ -268,3 +268,62 @@ def test_the_real_sips_turns_the_pixels(tmp_path):
     assert _jpeg_size(path.read_bytes()) == (16, 32)  # still shown portrait…
     out = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)], capture_output=True, text=True)
     assert "pixelWidth: 16" in out.stdout and "pixelHeight: 32" in out.stdout  # …now stored that way too
+
+
+# --------------------------------------------------------------------------- in iCloud: the preview Messages kept
+
+
+def test_icloud_photos_show_the_preview_messages_kept(make_rw, fake_sips):
+    harness = make_rw()
+    harness.services.media.sips = str(fake_sips)
+    kept, gone, video = harness.message("j_icloud")["attachments"]
+    assert kept["missing"] and kept["thumbUrl"] == kept["url"] + "/thumb"
+    assert (kept["width"], kept["height"]) == (750, 1000)  # the preview's size, read from its header
+    assert video["missing"] and video["kind"] == "video" and video["thumbUrl"] == video["url"] + "/thumb"
+    assert (video["width"], video["height"]) == (600, 980)
+    assert gone["missing"] and gone["thumbUrl"] is None and gone["width"] is None  # Messages kept nothing
+    for _ in range(2):
+        thumb = harness.client.get(kept["thumbUrl"])
+        assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg" and thumb.content == JPEG
+        assert 'filename*=UTF-8\'\'IMG_4951.jpg' in thumb.headers["content-disposition"]
+    log = (Path(fake_sips).parent / "sips.log").read_text().splitlines()
+    assert len(log) == 1 and log[0].startswith("-s format jpeg ") and "IMG_4951-preview.ktx" in log[0]  # then cached
+    assert harness.client.get(video["thumbUrl"]).status_code == 200
+    assert harness.client.get(gone["url"] + "/thumb").status_code == 404
+    full = harness.client.get(kept["url"])  # the original is still only in iCloud
+    assert full.status_code == 404 and "iCloud" in full.json()["error"]
+
+
+def test_icloud_previews_need_sips(ro):
+    kept, gone, video = ro.message("j_icloud")["attachments"]
+    assert kept["missing"] and kept["thumbUrl"] is None and video["thumbUrl"] is None
+    assert ro.client.get(kept["url"] + "/thumb").status_code == 404
+
+
+def test_finding_the_preview_messages_kept(tmp_path):
+    from server.media import Media
+
+    media = Media(tmp_path / "Messages" / "Attachments", tmp_path / "cache")
+    previews = tmp_path / "Messages" / "Caches" / "Previews" / "Attachments"
+    assert media.previews_root == previews
+    exact = previews / "75" / "05" / "AAAA" / "IMG_1-preview.ktx"
+    exact.parent.mkdir(parents=True)
+    exact.write_bytes(media_gen.messages_preview(750, 1000))
+    assert media.messages_preview("~/Library/Messages/Attachments/75/05/AAAA/IMG_1.heic") == exact.resolve()
+    # The folder is the attachment's own: its only preview is it, even under another name.
+    other = previews / "22" / "02" / "BBBB" / "Screenshot at 3.34.11_PM-preview.ktx"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(media_gen.messages_preview(600, 450))
+    assert media.messages_preview("~/Library/Messages/Attachments/22/02/BBBB/Screenshot at 3.34.11 PM.png") == other.resolve()
+    (other.parent / "second-preview.ktx").write_bytes(b"x")
+    assert media.messages_preview("~/Library/Messages/Attachments/22/02/BBBB/Screenshot.png") is None  # which one?
+    for elsewhere in ("~/Library/Messages/Attachments/75/05/AAAA/../AAAA/IMG_1.heic", "~/Library/Messages/Attachments/IMG_1.heic",
+                      "~/Library/Messages/StickerCache/75/05/AAAA/IMG_1.heic", "/var/folders/x/AAAA/IMG_1.heic", "", None):
+        assert media.messages_preview(elsewhere) is None, elsewhere
+    outside = tmp_path / "secret-preview.ktx"
+    outside.write_bytes(b"x")
+    (previews / "75" / "06").mkdir(parents=True)
+    (previews / "75" / "06" / "CCCC").symlink_to(tmp_path)  # a link out of the previews folder isn't followed
+    assert media.messages_preview("~/Library/Messages/Attachments/75/06/CCCC/secret.heic") is None
+    assert sniff_dimensions(exact, "image") == (750, 1000)
+    assert sniff_dimensions(outside, "image") == (None, None)

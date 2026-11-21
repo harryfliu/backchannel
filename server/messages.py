@@ -102,6 +102,12 @@ class MessageBuilder:
             thumb = url + "/thumb"  # a browser image, or one we can convert (HEIC/TIFF on macOS)
         elif exists and kind == "video" and self.media.video_thumbnails:
             thumb = url + "/thumb"
+        elif not exists and kind in ("image", "video") and self.media.sips and not att["is_sticker"]:
+            # In iCloud, not on this Mac: Messages' own smaller preview, when it kept one.
+            preview = self.media.messages_preview(att["filename"])
+            if preview is not None:
+                thumb = url + "/thumb"
+                width, height = self.media.dimensions(preview, kind)
         return {
             "id": att["guid"],
             "kind": kind,

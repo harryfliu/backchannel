@@ -6,6 +6,7 @@ import {
   closePanel,
   loadChiefCard,
   loadMedia,
+  mePerson,
   openConversation,
   openProfile,
   toast,
@@ -253,7 +254,7 @@ function DetailsPanel({ cid }: { cid: string }) {
           <h4>Members</h4>
           {me && (
             <div className="member-row">
-              <Avatar name={me.name} size={28} />
+              <Avatar person={mePerson()} name={me.name} size={28} />
               <span className="member-name">{me.name} (you)</span>
             </div>
           )}

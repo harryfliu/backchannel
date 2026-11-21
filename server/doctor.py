@@ -136,6 +136,8 @@ def check_attachments(report: Report, services: Any, days: int = 90) -> None:
             continue
         if not path.is_file():
             where["missing (in iCloud or deleted)"] += 1
+            if kind in ("image", "video") and media.messages_preview(row["filename"]) is not None:
+                where["missing, with Messages' smaller copy"] += 1
             continue
         where["on disk"] += 1
         if kind == "image":

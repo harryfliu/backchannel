@@ -63,7 +63,7 @@ steps below are for running the server yourself in a terminal.
    prints a report to paste back — counts, file formats, timings and versions
    only, never message text, names or handles: chat.db and attachment counts,
    attachments from the last 90 days by kind/extension/format and how many are
-   on disk vs in iCloud, real HEIC/TIFF → JPEG (sips) and video thumbnail
+   on disk vs in iCloud (and of those, how many have Messages' smaller copy), real HEIC/TIFF → JPEG (sips) and video thumbnail
    (qlmanage) attempts with timings, contact photos by storage, the AI backend
    and `claude --version`, Chief, and the macOS version. `--ai` adds one tiny
    real Claude call. `--messages-ui` describes the Messages window for tuning
@@ -159,6 +159,22 @@ variables override both — mostly for dev and tests:
   gets an upright cached copy for `/attachments/{id}`. Thumbnails cached before
   this are fixed the first time they're shown; `?raw=1` stays the original. Genmoji
   attachments carry `isGenmoji` and `emojiDescription`.
+- **Photos and videos in iCloud** (`missing`: Messages moved the file off this
+  Mac). Messages keeps its own preview of most of them in
+  `~/Library/Messages/Caches/Previews/Attachments/<same folders>/<name without
+  extension>-preview.ktx` (next to `Attachments/`; the fixtures use
+  `Caches/Previews/Attachments` beside their `Attachments`): Apple's "AAPL"
+  texture file, up to ~1000px, made when the file arrived; a video's is a frame
+  with a play button drawn on. Each attachment has its own folder, so when the
+  name doesn't match exactly the folder's only `-preview.ktx` is it; the real
+  path must stay inside the previews folder. With sips (it reads them), such an
+  attachment gets `thumbUrl` and the preview's `width`/`height` (from the file's
+  HEAD chunk), and `/thumb` serves a JPEG made with `sips -s format jpeg`
+  (cached as `<guid>-messages-preview.jpg`, ~40 ms the first time).
+  `/api/attachments/{id}` still answers 404: the full-size file is only in
+  iCloud, and opening the conversation in Messages downloads it. Stickers are
+  left out. On Harry's Mac (Nov 2026) 87% of the last month's photos that
+  weren't on the Mac had a preview; older ones mostly don't.
 
 ## Custom emoji, stickers and settings
 

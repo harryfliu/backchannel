@@ -36,6 +36,7 @@ from .typedstream import clean_text, decode_text, extract_mentions
 log = logging.getLogger("backchannel.conversations")
 
 DAY_NS = 86400 * 1_000_000_000
+SPAM_DAYS = 90  # Messages deletes spam after 90 days
 # Columns needed for previews, the unanswered run and automated detection (no payload blobs).
 FACT_FIELDS = (
     "ROWID", "guid", "text", "attributedBody", "handle_id", "service", "date", "date_edited", "date_retracted",
@@ -143,6 +144,22 @@ class Conv:
     @property
     def chat_ids(self) -> list[int]:
         return [c.rowid for c in self.chats]
+
+    @property
+    def filed_as_spam(self) -> bool:
+        """Messages filed every chat of it as spam (chat.is_filtered = 2)."""
+        return bool(self.chats) and all(c.filtered == 2 for c in self.chats)
+
+
+def is_spam(conv: Conv, prefs: dict[str, Any]) -> bool:
+    """Marked as spam in Backchannel, or filed as spam by Messages and not marked "not spam" here."""
+    said = prefs.get("spam")
+    return bool(said) if said is not None else conv.filed_as_spam
+
+
+def prefs_of(conv: Conv, prefs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """A conversation's prefs out of State.all_prefs(): its own id first, then its aliases."""
+    return next((prefs[k] for k in (conv.id, *conv.aliases) if k in prefs), {})
 
 
 def _join_names(names: list[str]) -> str:
@@ -470,6 +487,8 @@ class ConversationService:
             starred: list[Conv] = []
             recent: list[tuple[int, Conv]] = []
             for conv in directory.unique_convs():
+                if is_spam(conv, prefs_of(conv, prefs)):
+                    continue  # in the Spam list instead (spam_list)
                 is_starred = any(prefs.get(k, {}).get("starred") for k in (conv.id, *conv.aliases))
                 last = self.last_date(conv)
                 if is_starred:
@@ -485,6 +504,20 @@ class ConversationService:
                 item.pop("_last", None)
             self._list_cache = (key, out)
             return out
+
+    def spam_list(self, days: int = SPAM_DAYS, limit: int = 200) -> list[dict[str, Any]]:
+        """Conversations marked as spam here or filed as spam by Messages, newest first, from the last
+        `days` days (Messages deletes its spam after 90 days)."""
+        with self._lock:
+            self.refresh()
+            directory = self._directory
+            assert directory is not None
+            prefs = self.state.all_prefs()
+            cutoff = now_apple_ns() - days * DAY_NS
+            found = [(self.last_date(conv), conv) for conv in directory.unique_convs()
+                     if is_spam(conv, prefs_of(conv, prefs))]
+            found = sorted(((last, conv) for last, conv in found if last >= cutoff), key=lambda item: item[0], reverse=True)
+            return [self.public_summary(conv) for _, conv in found[:limit]]
 
     # ------------------------------------------------------------------ one conversation
 
@@ -516,6 +549,7 @@ class ConversationService:
                 "mentionCount": mentions,
                 "markedUnread": marked_since is not None,
                 "isAutomated": facts.automated,
+                "isSpam": is_spam(conv, prefs),
                 "awaitingReply": awaiting,
                 "awaitingSince": iso_apple(facts.awaiting_since) if awaiting else None,
                 "priority": result.priority,
@@ -524,6 +558,7 @@ class ConversationService:
                     "muted": bool(prefs.get("muted")),
                     "snoozedUntil": iso(snoozed) if snoozed else None,
                     "section": prefs.get("section"),
+                    "spam": prefs.get("spam"),
                 },
             }
             if not public:
@@ -709,7 +744,7 @@ class ConversationService:
         """"Needs you" for one conversation. Cached per conversation: recomputed when its own messages,
         read mark, prefs or the VIPs change, and at least every 5 minutes. Conversations with nothing in
         the last 3 days cost nothing (no query)."""
-        if facts.automated or prefs.get("muted") or conv.is_self:
+        if facts.automated or prefs.get("muted") or conv.is_self or is_spam(conv, prefs):
             return Result(None, {})
         now = self.clock()
         since = now - PRIORITY_WINDOW.total_seconds()

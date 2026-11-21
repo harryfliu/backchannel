@@ -149,6 +149,12 @@ const paths: Record<string, ReactNode> = {
       <path d="M12 16.5h.01" />
     </>
   ),
+  ban: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m5.6 5.6 12.8 12.8" />
+    </>
+  ),
   image: (
     <>
       <rect x="3" y="3" width="18" height="18" rx="2" />

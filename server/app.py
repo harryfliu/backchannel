@@ -87,6 +87,7 @@ class PrefsBody(BaseModel):
     muted: bool | None = None
     snoozedUntil: str | None = None
     section: str | None = None
+    spam: bool | None = None  # null: as Messages files it
 
 
 class LaterBody(BaseModel):
@@ -389,6 +390,11 @@ def create_app(
     def conversations():
         return {"conversations": s.convs.list()}
 
+    @app.get("/api/spam")
+    def spam():
+        """Conversations marked as spam here or filed as spam by Messages (not in /api/conversations)."""
+        return {"conversations": s.convs.spam_list()}
+
     @app.get("/api/conversations/{conv_id}")
     def conversation(conv_id: str):
         return s.convs.public_summary(s.convs.get(conv_id))
@@ -535,6 +541,8 @@ def create_app(
             patch["snoozed_until"] = _parse_time(body.snoozedUntil, "snoozedUntil")
         if "section" in fields:
             patch["section"] = (body.section or "").strip() or None
+        if "spam" in fields:
+            patch["spam"] = body.spam
         summary = s.convs.set_prefs(conv, patch)
         s.watcher.note_state_change(summary["id"])
         return summary
@@ -772,6 +780,14 @@ def create_app(
 
     @app.get("/api/attachments/{att_id}/thumb")
     def attachment_thumb(att_id: str):
+        row = s.db.attachment_by_guid(att_id)
+        if row is not None and not s.media.exists(row["filename"]) and not row["is_sticker"]:
+            # In iCloud, not on this Mac: Messages' own smaller preview, when it kept one.
+            kept = s.media.messages_preview_jpeg(row["filename"], row["guid"])
+            if kept is not None:
+                name = Path(row["transfer_name"] or Path(row["filename"]).name).with_suffix(".jpg").name
+                mime, headers = serving_headers(kept[1], name)
+                return FileResponse(kept[0], media_type=mime, headers=headers)
         row, path, name, mime = _attachment_file(att_id)
         kind = kind_of(row["mime_type"], row["uti"], name)
         preview = s.media.preview_file(path, row["guid"], kind)

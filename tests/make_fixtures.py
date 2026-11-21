@@ -269,7 +269,7 @@ class ChatBuilder:
 
     def _attachment(self, msg_guid: str, part: int, name: str, data: bytes | None, mime: str | None,
                     uti: str | None, *, sticker: bool = False, outgoing: bool = False, when: float,
-                    location: str = "attachments", **columns: Any) -> dict:
+                    location: str = "attachments", preview: bytes | None = None, **columns: Any) -> dict:
         guid = f"at_{part}_{msg_guid}"
         if location == "varfolders":  # a transient temp file Backchannel never serves
             filename, size = f"/var/folders/h2/b7k2q0x51_9c0000gn/T/com.apple.MobileSMS/{guid}/{name}", 1_204_220
@@ -283,8 +283,13 @@ class ChatBuilder:
             dest.write_bytes(data or b"")
             filename, size = f"{prefix}/{rel}", len(data or b"")
         elif data is None:  # offloaded to iCloud: the row exists, the file doesn't
-            filename = f"~/Library/Messages/Attachments/{fakedb.attachment_relpath(guid, name)}"
+            rel = fakedb.attachment_relpath(guid, name)
+            filename = f"~/Library/Messages/Attachments/{rel}"
             size = 2_481_337
+            if preview is not None:  # the smaller copy Messages keeps in Caches/Previews
+                kept = self.out / "Caches" / "Previews" / "Attachments" / Path(rel).parent / f"{Path(name).stem}-preview.ktx"
+                kept.parent.mkdir(parents=True, exist_ok=True)
+                kept.write_bytes(preview)
         else:
             filename, size = fakedb.store_attachment_file(self.attachments_root, guid, name, data)
         self.manifest["attachments"][f"{msg_guid}:{part}"] = guid
@@ -494,6 +499,11 @@ def build_story(b: ChatBuilder) -> None:
           attachments=[("party.png", party_sticker, "image/png", "public.png", {"sticker": True})])
     b.msg("jordan", "jordan", None, b.day(10, 9, 0), label="j_gone_sticker",
           attachments=[("old-sticker.heic", None, "image/heic", "public.heic", {"sticker": True})])
+    # In iCloud, not on this Mac: Messages kept smaller previews of the first photo and the video only.
+    b.msg("jordan", "jordan", "from the trip", b.day(10, 9, 5), label="j_icloud",
+          attachments=[("IMG_4951.HEIC", None, HEIC, "public.heic", {"preview": media_gen.messages_preview(750, 1000)}),
+                       ("IMG_4982.HEIC", None, HEIC, "public.heic"),
+                       ("MOV_1077.MOV", None, MOV, "com.apple.quicktime-movie", {"preview": media_gen.messages_preview(600, 980)})])
     b.msg("jordan", "jordan", "are you down to hike Saturday?", b.ago(hours=2), label="j_hike", unread=True)
     b.msg("jordan", "jordan", "can carpool from mine", b.ago(hours=1, minutes=54), label="j_carpool", unread=True)
 
@@ -758,7 +768,7 @@ def generate(out: Path = DEFAULT_OUT, now: datetime | None = None) -> dict[str, 
     out.mkdir(parents=True, exist_ok=True)
     for name in ("chat.db", "chat.db-wal", "chat.db-shm", "manifest.json"):
         (out / name).unlink(missing_ok=True)
-    for folder in ("AddressBook", "Attachments", "StickerCache", "Containers"):
+    for folder in ("AddressBook", "Attachments", "StickerCache", "Containers", "Caches"):
         shutil.rmtree(out / folder, ignore_errors=True)
     for stale in (out / "state").glob("search.db*") if (out / "state").exists() else []:
         stale.unlink()  # row ids change between generations

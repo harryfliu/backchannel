@@ -1863,6 +1863,7 @@ button.msg-name:hover {
 .attachments {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start; /* a landscape photo next to a portrait one keeps its own height (no grey band) */
   gap: 8px;
   margin-top: 6px;
 }
@@ -1923,6 +1924,19 @@ button.msg-name:hover {
 .media-play.is-small {
   width: 30px;
   height: 30px;
+}
+/* A smaller copy Messages kept of a photo or video that's in iCloud. */
+.media-cloud {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
 }
 .file-card {
   display: flex;
@@ -3517,6 +3531,38 @@ button.member-row:hover {
 }
 .toast.is-error svg {
   color: var(--danger);
+}
+.toast-action {
+  pointer-events: auto; /* the toasts let clicks through to the page, except on their buttons */
+  margin-left: 4px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.9;
+}
+.toast-action:hover {
+  opacity: 1;
+}
+/* Where the composer goes, for a conversation in Spam. */
+.spam-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 16px 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--sunk);
+  color: var(--fg-2, var(--fg));
+  font-size: 14px;
+}
+.spam-bar-text {
+  flex: 1;
 }
 @keyframes rise {
   from {

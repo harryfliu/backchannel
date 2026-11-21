@@ -34,6 +34,14 @@ STICKER_CACHE_PREFIX = "~/Library/Messages/StickerCache"
 MESSAGES_CONTAINER_PREFIX = "~/Library/Containers/com.apple.MobileSMS"
 TRANSIENT_PREFIXES = ("/var/folders/", "/private/var/folders/")
 CONVERT_TIMEOUT = 30
+# Messages' own previews, next to Attachments/ in ~/Library/Messages: Caches/Previews/Attachments/<same
+# folders>/<file name without extension>-preview.ktx. Messages makes one (up to ~1000px; videos get a
+# frame with a play button drawn on) when a photo or video arrives and keeps it after moving the file to
+# iCloud, so a photo that isn't on this Mac anymore can still be shown. sips reads them. On Harry's Mac
+# (Nov 2026) 87% of the last month's photos that weren't on the Mac had one; older ones mostly don't.
+MESSAGES_PREVIEWS_SUBDIR = Path("Caches") / "Previews" / "Attachments"
+# The preview's container: Apple's "AAPL" texture file, an ASTC texture whose HEAD chunk holds the size.
+APPLE_TEXTURE_MAGIC = b"AAPL\r\n\x1a\n"
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".webp", ".tif", ".tiff", ".bmp"}
 VIDEO_EXTS = {".mov", ".mp4", ".m4v", ".3gp", ".avi"}
@@ -308,6 +316,15 @@ def _movie_size(data: bytes) -> tuple[int, int] | None:
             return (h, w) if b != 0 else (w, h)
 
 
+def _apple_texture_size(data: bytes) -> tuple[int, int] | None:
+    """Width and height of one of Messages' -preview.ktx files: magic, then a HEAD chunk (length, "HEAD",
+    then version, 12 zero bytes, GL format, GL base format, width, height: little-endian 32-bit numbers)."""
+    if len(data) < 48 or data[12:16] != b"HEAD":
+        return None
+    w, h = struct.unpack("<II", data[40:48])
+    return (w, h) if 0 < w <= 16384 and 0 < h <= 16384 else None
+
+
 def sniff_dimensions(path: Path, kind: str) -> tuple[int | None, int | None]:
     try:
         with path.open("rb") as f:
@@ -321,7 +338,9 @@ def sniff_dimensions(path: Path, kind: str) -> tuple[int | None, int | None]:
     except OSError:
         return None, None
     found: tuple[int, int] | None = None
-    if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+    if head.startswith(APPLE_TEXTURE_MAGIC):
+        found = _apple_texture_size(head)
+    elif head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
         found = struct.unpack(">II", head[16:24])
     elif head[:6] in (b"GIF87a", b"GIF89a"):
         found = struct.unpack("<HH", head[6:10])
@@ -347,6 +366,7 @@ class Media:
     def __init__(self, attachments_root: Path, cache_dir: Path, *, sticker_cache_root: Path | None = None,
                  messages_container_root: Path | None = None):
         self.attachments_root = Path(attachments_root)
+        self.previews_root = self.attachments_root.parent / MESSAGES_PREVIEWS_SUBDIR
         self.cache_dir = Path(cache_dir)
         # chat.db path prefix → where those files are on this machine (fixtures point them elsewhere).
         self.prefixes: list[tuple[str, Path]] = [
@@ -398,6 +418,42 @@ class Media:
     def exists(self, filename: str | None) -> bool:
         path = self.resolve(filename)
         return bool(path and path.is_file())
+
+    def messages_preview(self, filename: str | None) -> Path | None:
+        """Messages' own preview of a file in Attachments/ (see MESSAGES_PREVIEWS_SUBDIR), or None.
+
+        Each attachment has a folder of its own, so when the name doesn't match exactly (Messages may
+        write some characters differently) the folder's only -preview.ktx is it."""
+        prefix = MESSAGES_ATTACHMENTS_PREFIX + "/"
+        if not filename or not filename.startswith(prefix):
+            return None
+        rel = Path(filename[len(prefix):])
+        if not rel.parent.parts or ".." in rel.parts or rel.is_absolute():
+            return None
+        folder = self.previews_root / rel.parent
+        found = folder / f"{rel.stem}-preview.ktx"
+        if not found.is_file():
+            try:
+                others = [p for p in folder.iterdir() if p.name.endswith("-preview.ktx")]
+            except OSError:
+                return None
+            if len(others) != 1:
+                return None
+            found = others[0]
+        real = Path(os.path.realpath(found))
+        root = Path(os.path.realpath(self.previews_root))
+        return real if root in real.parents and real.is_file() else None
+
+    def messages_preview_jpeg(self, filename: str | None, guid: str) -> tuple[Path, str] | None:
+        """Messages' preview of a file that isn't on this Mac, as a JPEG (macOS: sips reads it); cached."""
+        ktx = self.messages_preview(filename)
+        if ktx is None or not self.sips:
+            return None
+        out = self._cache_path(guid, "-messages-preview.jpg")
+        if self._fresh(out, ktx) or self._run([self.sips, "-s", "format", "jpeg", str(ktx), "--out", "{out}"], out):
+            if sniff_file(out) == "jpeg":
+                return out, "image/jpeg"
+        return None
 
     def dimensions(self, path: Path, kind: str) -> tuple[int | None, int | None]:
         if kind not in ("image", "video"):

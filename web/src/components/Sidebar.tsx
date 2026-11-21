@@ -7,6 +7,8 @@ import {
   displayName,
   getState,
   markConversationRead,
+  mePerson,
+  markSpam,
   markUnread,
   openConversation,
   openRowMenu,
@@ -98,7 +100,7 @@ export function Rail() {
         <Icon name="plus" size={20} strokeWidth={2.2} />
       </button>
       <button type="button" className="rail-me" aria-label="Settings" title="Settings" onClick={() => setState({ settingsOpen: true })}>
-        <Avatar name={me?.name ?? 'Me'} person={me ? { handle: 'me', handles: [], name: me.name, shortName: me.shortName, isContact: true, avatarUrl: me.avatarUrl } : null} size={32} />
+        <Avatar name={me?.name ?? 'Me'} person={mePerson()} size={32} />
         <span className="rail-presence" />
       </button>
     </nav>
@@ -140,6 +142,8 @@ function RowMenu() {
         { divider: true, label: '' },
         { label: c.prefs.starred ? 'Unstar' : 'Star', icon: 'star', onSelect: () => toggleStar(c.id) },
         { label: c.prefs.muted ? 'Unmute' : 'Mute', icon: 'bellOff', onSelect: () => toggleMute(c.id) },
+        { divider: true, label: '' },
+        { label: 'Mark as spam', icon: 'ban', onSelect: () => void markSpam(c.id, true) },
       ]}
     />
   )
@@ -152,6 +156,7 @@ function HomeSidebar() {
     (st) => st.catchUp.data?.sections.filter((x) => x.kind === 'reply_now' || x.kind === 'reply_soon').reduce((n, x) => n + x.items.length, 0) ?? 0,
   )
   const scheduledCount = useStore((st) => st.scheduled.filter((x) => x.status === 'pending').length)
+  const spamCount = useStore((st) => Object.keys(st.spam).length)
   const convs = useStore((st) => st.conversations)
   const unreadCount = useMemo(() => unreadConversations(convs).length, [convs])
   const threadsUnread = 0
@@ -173,6 +178,7 @@ function HomeSidebar() {
           <NavItem icon="sparkles" label="Catch up" active={view?.kind === 'catchup'} badge={catchUpCount || undefined} onClick={() => openView('catchup')} accent />
           <NavItem icon="thread" label="Threads" active={view?.kind === 'threads'} badge={threadsUnread || undefined} onClick={() => openView('threads')} />
           <NavItem icon="send" label="Scheduled" active={view?.kind === 'scheduled'} count={scheduledCount || undefined} onClick={() => openView('scheduled')} />
+          {spamCount > 0 && <NavItem icon="ban" label="Spam" active={view?.kind === 'spam'} count={spamCount} onClick={() => openView('spam')} />}
         </div>
 
         {s.waiting.length > 0 && (
@@ -230,7 +236,7 @@ function NavItem({
   accent,
   bold,
 }: {
-  icon: 'sparkles' | 'thread' | 'send' | 'inbox'
+  icon: 'sparkles' | 'thread' | 'send' | 'inbox' | 'ban'
   label: string
   active: boolean
   badge?: number
@@ -430,7 +436,7 @@ function LaterList() {
             <span className="activity-time">{c?.title}</span>
           </span>
           <span className="activity-main">
-            <Avatar person={m && !m.fromMe ? getState().people[m.senderHandle ?? ''] : null} name={m ? displayName(m.senderHandle) : '?'} size={32} />
+            <Avatar person={m ? (m.fromMe ? mePerson() : getState().people[m.senderHandle ?? '']) : null} name={m ? displayName(m.senderHandle) : '?'} size={32} />
             <span className="activity-text">
               <strong>{m ? displayName(m.senderHandle) : 'Message'}</strong>
               <span className="activity-quote">{m?.text || (m?.attachments.length ? 'Photo' : '')}</span>

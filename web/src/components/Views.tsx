@@ -12,6 +12,8 @@ import {
   markAllRead,
   markCatchUpDone,
   markConversationRead,
+  markSpam,
+  mePerson,
   openConversation,
   openThread,
   openWithDraft,
@@ -27,7 +29,7 @@ import { Composer } from './Composer'
 import { MessageContent, MessageRow } from './Message'
 import { byNeed, ReasonChips } from './Priority'
 
-function ViewHeader({ icon, title, sub, right }: { icon: 'sparkles' | 'thread' | 'send' | 'inbox'; title: string; sub?: string; right?: React.ReactNode }) {
+function ViewHeader({ icon, title, sub, right }: { icon: 'sparkles' | 'thread' | 'send' | 'inbox' | 'ban'; title: string; sub?: string; right?: React.ReactNode }) {
   return (
     <header className="view-head">
       <button type="button" className="mobile-back icon-btn" aria-label="Back" onClick={() => goBack()}>
@@ -246,7 +248,7 @@ export function ThreadsView() {
           {items?.length === 0 && <p className="side-empty">No threads yet. When someone swipes to reply to a text, the thread shows up here.</p>}
           {items?.map((m) => {
             const c = convs[m.conversationId]
-            const sender = m.fromMe ? null : personFor(m.senderHandle)
+            const sender = m.fromMe ? mePerson() : personFor(m.senderHandle)
             return (
               <article key={m.id} className="thread-card">
                 <header className="thread-card-head">
@@ -460,6 +462,51 @@ export function ScheduledView() {
               ))}
             </>
           )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/** Conversations marked as spam here or filed as spam by Messages (last 90 days). */
+export function SpamView() {
+  const spam = useStore((s) => s.spam)
+  const items = useMemo(
+    () => Object.values(spam).sort((a, b) => (b.lastMessage?.sentAt ?? '').localeCompare(a.lastMessage?.sentAt ?? '')),
+    [spam],
+  )
+  return (
+    <section className="view">
+      <ViewHeader
+        icon="ban"
+        title="Spam"
+        sub="Kept out of your sidebar, Unreads and notifications. Messages deletes the ones it filed as spam after 90 days."
+      />
+      <div className="view-scroll">
+        <div className="threads-inner">
+          {items.length === 0 && <p className="side-empty">Nothing in Spam.</p>}
+          {items.map((c) => (
+            <article key={c.id} className="sched-card">
+              <div className="sched-when">
+                <Icon name="ban" size={15} /> {c.prefs.spam === true ? 'You marked this as spam' : 'Messages filed this as spam'}
+                {c.lastMessage && <> · {ageShort(c.lastMessage.sentAt)}</>}
+              </div>
+              <div className="sched-body">
+                <ConversationGlyph c={c} size={28} />
+                <div>
+                  <button type="button" className="cu-card-title" onClick={() => openConversation(c.id)}>
+                    {c.title}
+                  </button>
+                  {c.lastMessage && <p className="sched-text">{c.lastMessage.text}</p>}
+                </div>
+              </div>
+              <div className="cu-actions">
+                <button type="button" className="btn is-quiet" onClick={() => void markSpam(c.id, false)}>
+                  Not spam
+                </button>
+              </div>
+            </article>
+          ))}
         </div>
       </div>
     </section>
